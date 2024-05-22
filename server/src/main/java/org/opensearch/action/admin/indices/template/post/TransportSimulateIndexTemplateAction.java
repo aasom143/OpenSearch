@@ -35,6 +35,7 @@ package org.opensearch.action.admin.indices.template.post;
 import org.opensearch.Version;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -92,6 +93,7 @@ public class TransportSimulateIndexTemplateAction extends TransportClusterManage
 
     @Inject
     public TransportSimulateIndexTemplateAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -102,6 +104,7 @@ public class TransportSimulateIndexTemplateAction extends TransportClusterManage
         IndicesService indicesService
     ) {
         super(
+            client,
             SimulateIndexTemplateAction.NAME,
             transportService,
             clusterService,

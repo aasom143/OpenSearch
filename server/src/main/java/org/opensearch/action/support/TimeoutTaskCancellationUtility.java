@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.opensearch.action.admin.cluster.node.tasks.get.GetTaskAction.TASKS_ORIGIN;
 import static org.opensearch.action.search.TransportSearchAction.SEARCH_CANCEL_AFTER_TIME_INTERVAL_SETTING;
+import static org.opensearch.common.unit.TimeValue.timeValueMillis;
 
 /**
  * Utility to cancel a timeout task
@@ -43,7 +44,6 @@ public class TimeoutTaskCancellationUtility {
      * generic thread pool
      * @param client - {@link NodeClient}
      * @param taskToCancel - task to schedule cancellation for
-     * @param clusterSettings - {@link ClusterSettings}
      * @param listener - original listener associated with the task
      * @return wrapped listener
      */
@@ -66,6 +66,7 @@ public class TimeoutTaskCancellationUtility {
 
         try {
             final TimeoutRunnableListener<Response> wrappedListener = new TimeoutRunnableListener<>(timeoutInterval, listener, () -> {
+                logger.info("Under Cancellation Here " + client.getLocalNodeId() + " " + taskToCancel.getId());
                 final CancelTasksRequest cancelTasksRequest = new CancelTasksRequest();
                 cancelTasksRequest.setTaskId(new TaskId(client.getLocalNodeId(), taskToCancel.getId()));
                 cancelTasksRequest.setReason("Cancellation timeout of " + timeoutInterval + " is expired");
@@ -90,13 +91,16 @@ public class TimeoutTaskCancellationUtility {
                             )
                         )
                     );
+                logger.info("Came here");
             });
             wrappedListener.cancellable = client.threadPool().schedule(wrappedListener, timeoutInterval, ThreadPool.Names.GENERIC);
             listenerToReturn = wrappedListener;
         } catch (Exception ex) {
             // if there is any exception in scheduling the cancellation task then continue without it
+            logger.info("reached here1");
             logger.warn("Failed to schedule the cancellation task for original task: {}, will continue without it", taskToCancel.getId());
         }
+        logger.info("reached here");
         return listenerToReturn;
     }
 

@@ -34,6 +34,7 @@ package org.opensearch.action.admin.cluster.repositories.get;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -66,6 +67,7 @@ public class TransportGetRepositoriesAction extends TransportClusterManagerNodeR
 
     @Inject
     public TransportGetRepositoriesAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -73,6 +75,7 @@ public class TransportGetRepositoriesAction extends TransportClusterManagerNodeR
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             GetRepositoriesAction.NAME,
             transportService,
             clusterService,

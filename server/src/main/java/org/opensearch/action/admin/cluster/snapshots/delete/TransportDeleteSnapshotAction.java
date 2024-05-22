@@ -35,6 +35,7 @@ package org.opensearch.action.admin.cluster.snapshots.delete;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -59,6 +60,7 @@ public class TransportDeleteSnapshotAction extends TransportClusterManagerNodeAc
 
     @Inject
     public TransportDeleteSnapshotAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -67,6 +69,7 @@ public class TransportDeleteSnapshotAction extends TransportClusterManagerNodeAc
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             DeleteSnapshotAction.NAME,
             transportService,
             clusterService,

@@ -125,6 +125,7 @@ public class ListViewNamesAction extends ActionType<ListViewNamesAction.Response
 
         @Override
         protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+            logger.info("Under doExecute 18");
             viewService.listViewNames(listener);
         }
 

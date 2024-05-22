@@ -78,6 +78,7 @@ public class PutPipelineTransportAction extends TransportClusterManagerNodeActio
         NodeClient client
     ) {
         super(
+            client,
             PutPipelineAction.NAME,
             transportService,
             ingestService.getClusterService(),

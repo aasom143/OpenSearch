@@ -310,6 +310,7 @@ public abstract class TransportReplicationAction<
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+        logger.info("Under doExecute 36");
         assert request.shardId() != null : "request shardId must be set";
         runReroutePhase(task, request, listener, true);
     }
@@ -986,6 +987,12 @@ public abstract class TransportReplicationAction<
                 }
             } else {
                 final IndexMetadata indexMetadata = state.metadata().index(request.shardId().getIndex());
+                if (indexMetadata == null){
+                    logger.info("Transport replication action, task: {}, index metadata : null", task.getAction());
+                }
+                else {
+                    logger.info("Transport replication action, task: {}, index: {}", task.getAction(), indexMetadata.getIndex());
+                }
                 if (indexMetadata == null) {
                     // ensure that the cluster state on the node is at least as high as the node that decided that the index was there
                     if (state.version() < request.routedBasedOnClusterVersion()) {
@@ -1018,10 +1025,11 @@ public abstract class TransportReplicationAction<
                     finishAsFailed(new IndexClosedException(indexMetadata.getIndex()));
                     return;
                 }
-
+                logger.info("Reached waitForActiveShards");
                 if (request.waitForActiveShards() == ActiveShardCount.DEFAULT) {
                     // if the wait for active shard count has not been set in the request,
                     // resolve it from the index settings
+                    logger.info("Under waitForActiveShards");
                     request.waitForActiveShards(indexMetadata.getWaitForActiveShards());
                 }
                 assert request.waitForActiveShards() != ActiveShardCount.DEFAULT
@@ -1059,10 +1067,13 @@ public abstract class TransportReplicationAction<
                 } else {
                     performRemoteAction(state, primary, node);
                 }
+                logger.info("After performRemoteAction");
             }
+            logger.info("After local or remote action");
         }
 
         private void performLocalAction(ClusterState state, ShardRouting primary, DiscoveryNode node, IndexMetadata indexMetadata) {
+            logger.info("Performing performLocalAction");
             setPhase(task, "waiting_on_primary");
             if (logger.isTraceEnabled()) {
                 logger.trace(
@@ -1089,6 +1100,7 @@ public abstract class TransportReplicationAction<
         }
 
         private void performRemoteAction(ClusterState state, ShardRouting primary, DiscoveryNode node) {
+            logger.info("Performing performRemoteAction");
             if (state.version() < request.routedBasedOnClusterVersion()) {
                 logger.trace(
                     "failed to find primary [{}] for request [{}] despite sender thinking it would be here. Local cluster state "
@@ -1133,6 +1145,7 @@ public abstract class TransportReplicationAction<
             final boolean isPrimaryAction,
             final TransportRequest requestToPerform
         ) {
+            logger.info("Perform action started. Node: {}, Action: {}", node, action);
             transportService.sendRequest(node, action, requestToPerform, transportOptions, new TransportResponseHandler<Response>() {
 
                 @Override
@@ -1147,12 +1160,14 @@ public abstract class TransportReplicationAction<
 
                 @Override
                 public void handleResponse(Response response) {
+                    logger.info("Perform action completed. Node: {}, Action: {}", node, action);
                     finishOnSuccess(response);
                 }
 
                 @Override
                 public void handleException(TransportException exp) {
                     try {
+                        logger.info("Perform action failed. Node: {}, Action: {}", node, action);
                         // if we got disconnected from the node, or the node / shard is not in the right state (being closed)
                         final Throwable cause = exp.unwrapCause();
                         if (cause instanceof ConnectTransportException

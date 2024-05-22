@@ -38,6 +38,7 @@ import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.SnapshotsInProgress;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -97,6 +98,7 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
 
     @Inject
     public TransportSnapshotsStatusAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -106,6 +108,7 @@ public class TransportSnapshotsStatusAction extends TransportClusterManagerNodeA
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             SnapshotsStatusAction.NAME,
             transportService,
             clusterService,

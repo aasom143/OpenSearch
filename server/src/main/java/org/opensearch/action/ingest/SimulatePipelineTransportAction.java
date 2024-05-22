@@ -74,6 +74,7 @@ public class SimulatePipelineTransportAction extends HandledTransportAction<Simu
 
     @Override
     protected void doExecute(Task task, SimulatePipelineRequest request, ActionListener<SimulatePipelineResponse> listener) {
+        logger.info("Under doExecute 24");
         final Map<String, Object> source = XContentHelper.convertToMap(request.getSource(), false, request.getXContentType()).v2();
 
         final SimulatePipelineRequest.Parsed simulateRequest;

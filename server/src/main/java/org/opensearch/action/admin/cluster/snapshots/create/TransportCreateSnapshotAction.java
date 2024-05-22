@@ -34,6 +34,7 @@ package org.opensearch.action.admin.cluster.snapshots.create;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -58,6 +59,7 @@ public class TransportCreateSnapshotAction extends TransportClusterManagerNodeAc
 
     @Inject
     public TransportCreateSnapshotAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -66,6 +68,7 @@ public class TransportCreateSnapshotAction extends TransportClusterManagerNodeAc
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             CreateSnapshotAction.NAME,
             transportService,
             clusterService,

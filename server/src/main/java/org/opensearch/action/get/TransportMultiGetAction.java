@@ -83,6 +83,7 @@ public class TransportMultiGetAction extends HandledTransportAction<MultiGetRequ
 
     @Override
     protected void doExecute(Task task, final MultiGetRequest request, final ActionListener<MultiGetResponse> listener) {
+        logger.info("Under doExecute 23");
         ClusterState clusterState = clusterService.state();
         clusterState.blocks().globalBlockedRaiseException(ClusterBlockLevel.READ);
 

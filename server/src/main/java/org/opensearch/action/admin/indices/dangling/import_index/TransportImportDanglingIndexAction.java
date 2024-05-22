@@ -85,6 +85,7 @@ public class TransportImportDanglingIndexAction extends HandledTransportAction<I
 
     @Override
     protected void doExecute(Task task, ImportDanglingIndexRequest importRequest, ActionListener<AcknowledgedResponse> importListener) {
+        logger.info("Under doExecute 7");
         findDanglingIndex(importRequest, new ActionListener<IndexMetadata>() {
             @Override
             public void onResponse(IndexMetadata indexMetaDataToImport) {

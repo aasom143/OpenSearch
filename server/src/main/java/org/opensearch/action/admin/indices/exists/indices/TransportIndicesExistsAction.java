@@ -35,6 +35,7 @@ package org.opensearch.action.admin.indices.exists.indices;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -58,6 +59,7 @@ public class TransportIndicesExistsAction extends TransportClusterManagerNodeRea
 
     @Inject
     public TransportIndicesExistsAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -65,6 +67,7 @@ public class TransportIndicesExistsAction extends TransportClusterManagerNodeRea
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             IndicesExistsAction.NAME,
             transportService,
             clusterService,

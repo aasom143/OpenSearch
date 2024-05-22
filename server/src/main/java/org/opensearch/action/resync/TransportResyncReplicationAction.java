@@ -118,6 +118,7 @@ public class TransportResyncReplicationAction extends TransportWriteAction<
 
     @Override
     protected void doExecute(Task parentTask, ResyncReplicationRequest request, ActionListener<ResyncReplicationResponse> listener) {
+        logger.info("Under doExecute 26");
         assert false : "use TransportResyncReplicationAction#sync";
     }
 

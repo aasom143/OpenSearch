@@ -45,6 +45,7 @@ import org.opensearch.action.admin.cluster.snapshots.delete.DeleteSnapshotReques
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.GroupedActionListener;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterChangedEvent;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateApplier;
@@ -200,6 +201,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
     private volatile int maxConcurrentOperations;
 
     public SnapshotsService(
+        NodeClient client,
         Settings settings,
         ClusterService clusterService,
         IndexNameExpressionResolver indexNameExpressionResolver,
@@ -216,6 +218,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
 
         // The constructor of UpdateSnapshotStatusAction will register itself to the TransportService.
         this.updateSnapshotStatusHandler = new UpdateSnapshotStatusAction(
+            client,
             transportService,
             clusterService,
             threadPool,
@@ -3178,6 +3181,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
         UpdateIndexShardSnapshotStatusRequest,
         UpdateIndexShardSnapshotStatusResponse> {
         UpdateSnapshotStatusAction(
+            NodeClient client,
             TransportService transportService,
             ClusterService clusterService,
             ThreadPool threadPool,
@@ -3185,6 +3189,7 @@ public class SnapshotsService extends AbstractLifecycleComponent implements Clus
             IndexNameExpressionResolver indexNameExpressionResolver
         ) {
             super(
+                client,
                 UPDATE_SNAPSHOT_STATUS_ACTION_NAME,
                 false,
                 transportService,

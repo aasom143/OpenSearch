@@ -70,6 +70,7 @@ public abstract class TransportSingleItemBulkWriteAction<
 
     @Override
     protected void doExecute(Task task, final Request request, final ActionListener<Response> listener) {
+        logger.info("Under doExecute 1 add logging");
         bulkAction.execute(task, toSingleItemBulkRequest(request), wrapBulkResponse(listener));
     }
 

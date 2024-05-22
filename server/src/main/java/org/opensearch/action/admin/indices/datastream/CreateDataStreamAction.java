@@ -40,6 +40,7 @@ import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedRequest;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -143,6 +144,7 @@ public class CreateDataStreamAction extends ActionType<AcknowledgedResponse> {
 
         @Inject
         public TransportAction(
+            NodeClient client,
             TransportService transportService,
             ClusterService clusterService,
             ThreadPool threadPool,
@@ -150,7 +152,7 @@ public class CreateDataStreamAction extends ActionType<AcknowledgedResponse> {
             IndexNameExpressionResolver indexNameExpressionResolver,
             MetadataCreateDataStreamService metadataCreateDataStreamService
         ) {
-            super(NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
+            super(client, NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
             this.metadataCreateDataStreamService = metadataCreateDataStreamService;
         }
 

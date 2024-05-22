@@ -1013,6 +1013,7 @@ public class TransportService extends AbstractLifecycleComponent
                 logger.debug("Exception while sending request, handler likely already notified due to timeout", e);
             }
         }
+//        logger.info("Came after sendRequestInternal");
     }
 
     private void sendLocalRequest(long requestId, final String action, final TransportRequest request, TransportRequestOptions options) {
@@ -1147,6 +1148,7 @@ public class TransportService extends AbstractLifecycleComponent
         Writeable.Reader<Request> requestReader,
         TransportRequestHandler<Request> handler
     ) {
+//        logger.info("under registerRequestHandler");
         validateActionName(action);
         handler = interceptor.interceptHandler(action, executor, false, handler);
         RequestHandlerRegistry<Request> reg = new RequestHandlerRegistry<>(
@@ -1697,6 +1699,7 @@ public class TransportService extends AbstractLifecycleComponent
                 delegate = new TransportResponseHandler<T>() {
                     @Override
                     public void handleResponse(T response) {
+//                        logger.info("reached under unregisterChildNode");
                         unregisterChildNode.close();
                         handler.handleResponse(response);
                     }

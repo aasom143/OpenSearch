@@ -42,6 +42,7 @@ import org.opensearch.action.admin.indices.shards.IndicesShardStoresRequest;
 import org.opensearch.action.admin.indices.shards.IndicesShardStoresResponse;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.AckedClusterStateUpdateTask;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -84,6 +85,7 @@ public class TransportClusterRerouteAction extends TransportClusterManagerNodeAc
 
     @Inject
     public TransportClusterRerouteAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -92,6 +94,7 @@ public class TransportClusterRerouteAction extends TransportClusterManagerNodeAc
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             ClusterRerouteAction.NAME,
             transportService,
             clusterService,

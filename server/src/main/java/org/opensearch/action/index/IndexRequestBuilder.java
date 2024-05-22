@@ -32,10 +32,14 @@
 
 package org.opensearch.action.index;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.action.DocWriteRequest;
+import org.opensearch.action.support.AdapterActionFuture;
 import org.opensearch.action.support.WriteRequestBuilder;
 import org.opensearch.action.support.replication.ReplicationRequestBuilder;
 import org.opensearch.client.OpenSearchClient;
+import org.opensearch.client.support.AbstractClient;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.annotation.PublicApi;
 import org.opensearch.core.common.bytes.BytesReference;
@@ -55,12 +59,14 @@ public class IndexRequestBuilder extends ReplicationRequestBuilder<IndexRequest,
     implements
         WriteRequestBuilder<IndexRequestBuilder> {
 
+    final Logger logger = LogManager.getLogger(IndexRequestBuilder.class);
     public IndexRequestBuilder(OpenSearchClient client, IndexAction action) {
         super(client, action, new IndexRequest());
     }
 
     public IndexRequestBuilder(OpenSearchClient client, IndexAction action, @Nullable String index) {
         super(client, action, new IndexRequest(index));
+        logger.info("Came After IndexRequestBuilder");
     }
 
     /**
@@ -159,7 +165,11 @@ public class IndexRequestBuilder extends ReplicationRequestBuilder<IndexRequest,
      * </p>
      */
     public IndexRequestBuilder setSource(Object... source) {
+
+        final Logger logger = LogManager.getLogger(IndexRequestBuilder.class);
+        logger.info("Came before IndexRequestBuilder setSource");
         request.source(source);
+        logger.info("Came after IndexRequestBuilder setSource");
         return this;
     }
 

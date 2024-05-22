@@ -38,6 +38,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.DestructiveOperations;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -80,6 +81,7 @@ public class TransportCloseIndexAction extends TransportClusterManagerNodeAction
 
     @Inject
     public TransportCloseIndexAction(
+        NodeClient client,
         Settings settings,
         TransportService transportService,
         ClusterService clusterService,
@@ -91,6 +93,7 @@ public class TransportCloseIndexAction extends TransportClusterManagerNodeAction
         DestructiveOperations destructiveOperations
     ) {
         super(
+            client,
             CloseIndexAction.NAME,
             transportService,
             clusterService,
@@ -122,6 +125,7 @@ public class TransportCloseIndexAction extends TransportClusterManagerNodeAction
 
     @Override
     protected void doExecute(Task task, CloseIndexRequest request, ActionListener<CloseIndexResponse> listener) {
+        logger.info("Under doExecute 6");
         destructiveOperations.failDestructive(request.indices());
         if (closeIndexEnabled == false) {
             throw new IllegalStateException(

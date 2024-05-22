@@ -38,6 +38,7 @@ import org.opensearch.action.ActionType;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -145,6 +146,7 @@ public class InternalOrPrivateSettingsPlugin extends Plugin implements ActionPlu
 
         @Inject
         public TransportUpdateInternalOrPrivateAction(
+            NodeClient client,
             final TransportService transportService,
             final ClusterService clusterService,
             final ThreadPool threadPool,
@@ -152,6 +154,7 @@ public class InternalOrPrivateSettingsPlugin extends Plugin implements ActionPlu
             final IndexNameExpressionResolver indexNameExpressionResolver
         ) {
             super(
+                client,
                 UpdateInternalOrPrivateAction.NAME,
                 transportService,
                 clusterService,

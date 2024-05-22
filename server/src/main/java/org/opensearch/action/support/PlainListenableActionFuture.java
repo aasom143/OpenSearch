@@ -32,7 +32,10 @@
 
 package org.opensearch.action.support;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ListenableActionFuture;
+import org.opensearch.common.util.concurrent.BaseFuture;
 import org.opensearch.core.action.ActionListener;
 
 import java.util.ArrayList;

@@ -39,6 +39,7 @@ import org.opensearch.action.admin.indices.stats.IndexShardStats;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.client.Client;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -114,7 +115,7 @@ public class TransportResizeAction extends TransportClusterManagerNodeAction<Res
         IndexNameExpressionResolver indexNameExpressionResolver,
         Client client
     ) {
-        super(actionName, transportService, clusterService, threadPool, actionFilters, ResizeRequest::new, indexNameExpressionResolver);
+        super((NodeClient) client, actionName, transportService, clusterService, threadPool, actionFilters, ResizeRequest::new, indexNameExpressionResolver);
         this.createIndexService = createIndexService;
         this.client = client;
     }

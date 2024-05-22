@@ -37,6 +37,7 @@ import org.opensearch.OpenSearchException;
 import org.opensearch.OpenSearchTimeoutException;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
 import org.opensearch.cluster.ClusterStateObserver.Listener;
@@ -90,6 +91,7 @@ public class TransportAddVotingConfigExclusionsAction extends TransportClusterMa
 
     @Inject
     public TransportAddVotingConfigExclusionsAction(
+        NodeClient client,
         Settings settings,
         ClusterSettings clusterSettings,
         TransportService transportService,
@@ -99,6 +101,7 @@ public class TransportAddVotingConfigExclusionsAction extends TransportClusterMa
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             AddVotingConfigExclusionsAction.NAME,
             transportService,
             clusterService,

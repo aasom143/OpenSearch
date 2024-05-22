@@ -54,6 +54,7 @@ public class PutSearchPipelineTransportAction extends TransportClusterManagerNod
         NodeClient client
     ) {
         super(
+            client,
             PutSearchPipelineAction.NAME,
             transportService,
             searchPipelineService.getClusterService(),

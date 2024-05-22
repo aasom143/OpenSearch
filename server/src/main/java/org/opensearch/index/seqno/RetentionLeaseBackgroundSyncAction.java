@@ -115,6 +115,7 @@ public class RetentionLeaseBackgroundSyncAction extends TransportReplicationActi
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<ReplicationResponse> listener) {
+        logger.info("Under doExecute 30");
         assert false : "use RetentionLeaseBackgroundSyncAction#backgroundSync";
     }
 

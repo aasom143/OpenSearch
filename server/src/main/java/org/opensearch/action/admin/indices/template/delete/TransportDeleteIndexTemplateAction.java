@@ -37,6 +37,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -66,6 +67,7 @@ public class TransportDeleteIndexTemplateAction extends TransportClusterManagerN
 
     @Inject
     public TransportDeleteIndexTemplateAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -74,6 +76,7 @@ public class TransportDeleteIndexTemplateAction extends TransportClusterManagerN
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             DeleteIndexTemplateAction.NAME,
             transportService,
             clusterService,

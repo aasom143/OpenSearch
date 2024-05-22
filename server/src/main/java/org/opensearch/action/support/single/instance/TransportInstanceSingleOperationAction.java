@@ -105,6 +105,7 @@ public abstract class TransportInstanceSingleOperationAction<
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+        logger.info("Under doExecute 37");
         new AsyncSingleAction(request, listener).start();
     }
 

@@ -33,6 +33,7 @@
 package org.opensearch.action;
 
 import org.opensearch.action.support.IndicesOptions;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.common.annotation.PublicApi;
 
 /**
@@ -56,6 +57,10 @@ public interface IndicesRequest {
      * accepted, whether an empty array will be converted to _all, and how wildcards will be expanded if needed.
      */
     IndicesOptions indicesOptions();
+
+    default NodeClient nodeClient() {
+        return null;
+    }
 
     /**
      * Determines whether the request should be applied to data streams. When {@code false}, none of the names or

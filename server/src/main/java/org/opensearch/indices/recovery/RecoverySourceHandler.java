@@ -201,6 +201,7 @@ public abstract class RecoverySourceHandler {
         final StepListener<Void> finalizeStep = new StepListener<>();
         // Recovery target can trim all operations >= startingSeqNo as we have sent all these operations in the phase 2
         final long trimAboveSeqNo = startingSeqNo - 1;
+        logger.info("Came after finalizeStepAndCompleteFuture");
         sendSnapshotStep.whenComplete(r -> {
             logger.debug("sendSnapshotStep completed");
             finalizeRecovery(r.targetLocalCheckpoint, trimAboveSeqNo, finalizeStep);
@@ -230,6 +231,7 @@ public abstract class RecoverySourceHandler {
                 IOUtils.close(resources);
             }
         }, onFailure);
+        logger.info("Came after finalizeStepAndCompleteFuture 2");
     }
 
     protected void onSendFileStepComplete(
@@ -818,6 +820,7 @@ public abstract class RecoverySourceHandler {
          * marking the shard as in-sync. If the relocation handoff holds all the permits then after the handoff completes and we acquire
          * the permit then the state of the shard will be relocated and this recovery will fail.
          */
+        logger.info("Under finalizeRecovery");
         RunUnderPrimaryPermit.run(
             () -> shard.markAllocationIdAsInSync(request.targetAllocationId(), targetLocalCheckpoint),
             shardId + " marking " + request.targetAllocationId() + " as in sync",

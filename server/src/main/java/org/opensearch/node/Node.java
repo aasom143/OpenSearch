@@ -1066,6 +1066,7 @@ public class Node implements Closeable {
             RepositoriesService repositoryService = repositoriesModule.getRepositoryService();
             repositoriesServiceReference.set(repositoryService);
             SnapshotsService snapshotsService = new SnapshotsService(
+                client,
                 settings,
                 clusterService,
                 clusterModule.getIndexNameExpressionResolver(),

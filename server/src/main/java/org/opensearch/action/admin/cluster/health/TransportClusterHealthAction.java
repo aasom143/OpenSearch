@@ -39,6 +39,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
 import org.opensearch.cluster.ClusterStateUpdateTask;
@@ -88,6 +89,7 @@ public class TransportClusterHealthAction extends TransportClusterManagerNodeRea
 
     @Inject
     public TransportClusterHealthAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -97,6 +99,7 @@ public class TransportClusterHealthAction extends TransportClusterManagerNodeRea
         Discovery discovery
     ) {
         super(
+            client,
             ClusterHealthAction.NAME,
             false,
             transportService,

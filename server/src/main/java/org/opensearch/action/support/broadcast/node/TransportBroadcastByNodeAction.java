@@ -36,13 +36,11 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.FailedNodeException;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.NoShardAvailableActionException;
-import org.opensearch.action.support.ActionFilters;
-import org.opensearch.action.support.HandledTransportAction;
-import org.opensearch.action.support.IndicesOptions;
-import org.opensearch.action.support.TransportActions;
+import org.opensearch.action.support.*;
 import org.opensearch.action.support.broadcast.BroadcastRequest;
 import org.opensearch.action.support.broadcast.BroadcastResponse;
 import org.opensearch.action.support.broadcast.BroadcastShardOperationFailedException;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
@@ -57,6 +55,7 @@ import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.core.transport.TransportResponse;
+import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.NodeShouldNotConnectException;
@@ -270,6 +269,8 @@ public abstract class TransportBroadcastByNodeAction<
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+
+        logger.info("Under doExecute 34 " + task.getId());
         new AsyncAction(task, request, listener).start();
     }
 

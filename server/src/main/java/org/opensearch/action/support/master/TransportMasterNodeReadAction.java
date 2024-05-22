@@ -34,10 +34,12 @@ package org.opensearch.action.support.master;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.node.Node;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
@@ -53,6 +55,7 @@ public abstract class TransportMasterNodeReadAction<Request extends MasterNodeRe
     TransportClusterManagerNodeReadAction<Request, Response> {
 
     protected TransportMasterNodeReadAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -61,10 +64,11 @@ public abstract class TransportMasterNodeReadAction<Request extends MasterNodeRe
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        super(actionName, true, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
+        super(client, actionName, true, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
     protected TransportMasterNodeReadAction(
+        NodeClient client,
         String actionName,
         boolean checkSizeLimit,
         TransportService transportService,
@@ -75,6 +79,7 @@ public abstract class TransportMasterNodeReadAction<Request extends MasterNodeRe
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             actionName,
             checkSizeLimit,
             transportService,

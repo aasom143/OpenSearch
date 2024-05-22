@@ -35,6 +35,7 @@ package org.opensearch.action.admin.cluster.snapshots.clone;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -60,6 +61,7 @@ public final class TransportCloneSnapshotAction extends TransportClusterManagerN
 
     @Inject
     public TransportCloneSnapshotAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -68,6 +70,7 @@ public final class TransportCloneSnapshotAction extends TransportClusterManagerN
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             CloneSnapshotAction.NAME,
             transportService,
             clusterService,

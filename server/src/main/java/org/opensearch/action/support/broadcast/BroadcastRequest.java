@@ -36,9 +36,11 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.support.IndicesOptions;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.node.Node;
 
 import java.io.IOException;
 
@@ -52,10 +54,13 @@ public class BroadcastRequest<Request extends BroadcastRequest<Request>> extends
     protected String[] indices;
     private IndicesOptions indicesOptions = IndicesOptions.strictExpandOpenAndForbidClosed();
 
+    private NodeClient nodeClient;
+
     public BroadcastRequest(StreamInput in) throws IOException {
         super(in);
         indices = in.readStringArray();
         indicesOptions = IndicesOptions.readIndicesOptions(in);
+//        nodeClient = nodeClient();
     }
 
     protected BroadcastRequest(String... indices) {
@@ -107,6 +112,11 @@ public class BroadcastRequest<Request extends BroadcastRequest<Request>> extends
     public IndicesOptions indicesOptions() {
         return indicesOptions;
     }
+
+//    @Override
+//    public NodeClient nodeClient() {
+//        return nodeClient;
+//    }
 
     @SuppressWarnings("unchecked")
     public final Request indicesOptions(IndicesOptions indicesOptions) {

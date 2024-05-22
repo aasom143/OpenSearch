@@ -34,6 +34,7 @@ package org.opensearch.action.admin.cluster.shards;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -71,6 +72,7 @@ public class TransportClusterSearchShardsAction extends TransportClusterManagerN
 
     @Inject
     public TransportClusterSearchShardsAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         IndicesService indicesService,
@@ -79,6 +81,7 @@ public class TransportClusterSearchShardsAction extends TransportClusterManagerN
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             ClusterSearchShardsAction.NAME,
             transportService,
             clusterService,

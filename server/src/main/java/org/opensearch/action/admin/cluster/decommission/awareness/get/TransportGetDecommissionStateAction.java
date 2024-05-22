@@ -10,6 +10,7 @@ package org.opensearch.action.admin.cluster.decommission.awareness.get;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -35,6 +36,7 @@ public class TransportGetDecommissionStateAction extends TransportClusterManager
 
     @Inject
     public TransportGetDecommissionStateAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -42,6 +44,7 @@ public class TransportGetDecommissionStateAction extends TransportClusterManager
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             GetDecommissionStateAction.NAME,
             transportService,
             clusterService,

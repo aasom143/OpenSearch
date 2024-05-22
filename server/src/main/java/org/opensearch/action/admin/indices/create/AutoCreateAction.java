@@ -36,6 +36,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.action.support.ActiveShardsObserver;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.AckedClusterStateUpdateTask;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ack.ClusterStateUpdateResponse;
@@ -90,6 +91,7 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
 
         @Inject
         public TransportAction(
+            NodeClient client,
             TransportService transportService,
             ClusterService clusterService,
             ThreadPool threadPool,
@@ -98,7 +100,7 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
             MetadataCreateIndexService createIndexService,
             MetadataCreateDataStreamService metadataCreateDataStreamService
         ) {
-            super(NAME, transportService, clusterService, threadPool, actionFilters, CreateIndexRequest::new, indexNameExpressionResolver);
+            super(client, NAME, transportService, clusterService, threadPool, actionFilters, CreateIndexRequest::new, indexNameExpressionResolver);
             this.activeShardsObserver = new ActiveShardsObserver(clusterService, threadPool);
             this.createIndexService = createIndexService;
             this.metadataCreateDataStreamService = metadataCreateDataStreamService;

@@ -34,6 +34,7 @@ package org.opensearch.action.admin.indices.get;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.info.TransportClusterInfoAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.AliasMetadata;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -71,6 +72,7 @@ public class TransportGetIndexAction extends TransportClusterInfoAction<GetIndex
 
     @Inject
     public TransportGetIndexAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -81,6 +83,7 @@ public class TransportGetIndexAction extends TransportClusterInfoAction<GetIndex
         IndexScopedSettings indexScopedSettings
     ) {
         super(
+            client,
             GetIndexAction.NAME,
             transportService,
             clusterService,

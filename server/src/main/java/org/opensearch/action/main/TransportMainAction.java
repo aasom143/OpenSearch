@@ -69,6 +69,7 @@ public class TransportMainAction extends HandledTransportAction<MainRequest, Mai
 
     @Override
     protected void doExecute(Task task, MainRequest request, ActionListener<MainResponse> listener) {
+        logger.info("Under doExecute 25");
         ClusterState clusterState = clusterService.state();
         listener.onResponse(
             new MainResponse(nodeName, Version.CURRENT, clusterState.getClusterName(), clusterState.metadata().clusterUUID(), Build.CURRENT)

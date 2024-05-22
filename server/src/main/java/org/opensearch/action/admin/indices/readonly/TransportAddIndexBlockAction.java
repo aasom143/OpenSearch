@@ -38,6 +38,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.DestructiveOperations;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -74,6 +75,7 @@ public class TransportAddIndexBlockAction extends TransportClusterManagerNodeAct
 
     @Inject
     public TransportAddIndexBlockAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -83,6 +85,7 @@ public class TransportAddIndexBlockAction extends TransportClusterManagerNodeAct
         DestructiveOperations destructiveOperations
     ) {
         super(
+            client,
             AddIndexBlockAction.NAME,
             transportService,
             clusterService,
@@ -108,6 +111,7 @@ public class TransportAddIndexBlockAction extends TransportClusterManagerNodeAct
 
     @Override
     protected void doExecute(Task task, AddIndexBlockRequest request, ActionListener<AddIndexBlockResponse> listener) {
+        logger.info("Under doExecute 12");
         destructiveOperations.failDestructive(request.indices());
         super.doExecute(task, request, listener);
     }

@@ -39,6 +39,7 @@ import org.apache.lucene.util.CollectionUtil;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.SnapshotsInProgress;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -87,6 +88,7 @@ public class TransportGetSnapshotsAction extends TransportClusterManagerNodeActi
 
     @Inject
     public TransportGetSnapshotsAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -95,6 +97,7 @@ public class TransportGetSnapshotsAction extends TransportClusterManagerNodeActi
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             GetSnapshotsAction.NAME,
             transportService,
             clusterService,

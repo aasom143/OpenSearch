@@ -38,6 +38,7 @@ import org.opensearch.action.support.clustermanager.ClusterManagerNodeOperationR
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.client.OpenSearchClient;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -47,6 +48,7 @@ import org.opensearch.common.inject.Inject;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.node.Node;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
@@ -157,6 +159,7 @@ public class CompletionPersistentTaskAction extends ActionType<PersistentTaskRes
 
         @Inject
         public TransportAction(
+            NodeClient client,
             TransportService transportService,
             ClusterService clusterService,
             ThreadPool threadPool,
@@ -165,6 +168,7 @@ public class CompletionPersistentTaskAction extends ActionType<PersistentTaskRes
             IndexNameExpressionResolver indexNameExpressionResolver
         ) {
             super(
+                client,
                 CompletionPersistentTaskAction.NAME,
                 transportService,
                 clusterService,

@@ -177,13 +177,19 @@ public class PeerRecoverySourceService extends AbstractLifecycleComponent implem
         }
 
         RecoverySourceHandler handler = ongoingRecoveries.addNewRecovery(request, shard);
-        logger.trace(
+        logger.info(
             "[{}][{}] starting recovery to {}",
             request.shardId().getIndex().getName(),
             request.shardId().id(),
             request.targetNode()
         );
         handler.recoverToTarget(ActionListener.runAfter(listener, () -> ongoingRecoveries.remove(shard, handler)));
+        logger.info(
+            "[{}][{}] completed recovery to {}",
+            request.shardId().getIndex().getName(),
+            request.shardId().id(),
+            request.targetNode()
+        );
     }
 
     private void reestablish(ReestablishRecoveryRequest request, ActionListener<RecoveryResponse> listener) {
@@ -202,7 +208,9 @@ public class PeerRecoverySourceService extends AbstractLifecycleComponent implem
     class StartRecoveryTransportRequestHandler implements TransportRequestHandler<StartRecoveryRequest> {
         @Override
         public void messageReceived(final StartRecoveryRequest request, final TransportChannel channel, Task task) throws Exception {
+            logger.info("Before recover");
             recover(request, new ChannelActionListener<>(channel, Actions.START_RECOVERY, request));
+            logger.info("After recover");
         }
     }
 

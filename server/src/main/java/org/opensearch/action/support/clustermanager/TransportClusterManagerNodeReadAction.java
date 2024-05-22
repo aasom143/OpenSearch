@@ -33,11 +33,11 @@
 package org.opensearch.action.support.clustermanager;
 
 import org.opensearch.action.support.ActionFilters;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.common.io.stream.Writeable;
-import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
@@ -52,6 +52,7 @@ public abstract class TransportClusterManagerNodeReadAction<
     Response extends ActionResponse> extends TransportClusterManagerNodeAction<Request, Response> {
 
     protected TransportClusterManagerNodeReadAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -60,20 +61,11 @@ public abstract class TransportClusterManagerNodeReadAction<
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        this(
-            actionName,
-            true,
-            AdmissionControlActionType.CLUSTER_ADMIN,
-            transportService,
-            clusterService,
-            threadPool,
-            actionFilters,
-            request,
-            indexNameExpressionResolver
-        );
+        this(client, actionName, true, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
     protected TransportClusterManagerNodeReadAction(
+        NodeClient client,
         String actionName,
         boolean checkSizeLimit,
         TransportService transportService,
@@ -84,33 +76,9 @@ public abstract class TransportClusterManagerNodeReadAction<
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             actionName,
             checkSizeLimit,
-            null,
-            transportService,
-            clusterService,
-            threadPool,
-            actionFilters,
-            request,
-            indexNameExpressionResolver
-        );
-    }
-
-    protected TransportClusterManagerNodeReadAction(
-        String actionName,
-        boolean checkSizeLimit,
-        AdmissionControlActionType admissionControlActionType,
-        TransportService transportService,
-        ClusterService clusterService,
-        ThreadPool threadPool,
-        ActionFilters actionFilters,
-        Writeable.Reader<Request> request,
-        IndexNameExpressionResolver indexNameExpressionResolver
-    ) {
-        super(
-            actionName,
-            checkSizeLimit,
-            admissionControlActionType,
             transportService,
             clusterService,
             threadPool,

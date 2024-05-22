@@ -219,6 +219,7 @@ public class TransportUpgradeAction extends TransportBroadcastByNodeAction<Upgra
 
     @Override
     protected void doExecute(Task task, UpgradeRequest request, final ActionListener<UpgradeResponse> listener) {
+        logger.info("Under doExecute 16");
         super.doExecute(task, request, ActionListener.wrap(upgradeResponse -> {
             if (upgradeResponse.versions().isEmpty()) {
                 listener.onResponse(upgradeResponse);

@@ -108,6 +108,7 @@ public class TransportGetTaskAction extends HandledTransportAction<GetTaskReques
 
     @Override
     protected void doExecute(Task thisTask, GetTaskRequest request, ActionListener<GetTaskResponse> listener) {
+        logger.info("Under doExecute 2");
         if (clusterService.localNode().getId().equals(request.getTaskId().getNodeId())) {
             getRunningTaskFromNode(thisTask, request, listener);
         } else {

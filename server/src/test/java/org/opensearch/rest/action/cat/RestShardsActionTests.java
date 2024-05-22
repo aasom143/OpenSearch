@@ -65,6 +65,7 @@ import static org.mockito.Mockito.when;
 public class RestShardsActionTests extends OpenSearchTestCase {
 
     public void testBuildTable() {
+        System.out.println("Hello World!");
         final int numShards = randomIntBetween(1, 5);
         long numDocs = randomLongBetween(0, 10000);
         long numDeletedDocs = randomLongBetween(0, 100);

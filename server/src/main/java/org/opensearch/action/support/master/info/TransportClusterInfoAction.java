@@ -32,6 +32,7 @@
 package org.opensearch.action.support.master.info;
 
 import org.opensearch.action.support.ActionFilters;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionResponse;
@@ -48,6 +49,7 @@ public abstract class TransportClusterInfoAction<Request extends ClusterInfoRequ
     org.opensearch.action.support.clustermanager.info.TransportClusterInfoAction<Request, Response> {
 
     public TransportClusterInfoAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -56,7 +58,7 @@ public abstract class TransportClusterInfoAction<Request extends ClusterInfoRequ
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        super(actionName, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
+        super(client, actionName, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
 }

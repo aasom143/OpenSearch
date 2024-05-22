@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
 import org.opensearch.cluster.NotClusterManagerException;
@@ -76,6 +77,7 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
 
     @Inject
     public TransportClusterStateAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -83,6 +85,7 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             ClusterStateAction.NAME,
             false,
             transportService,
@@ -125,12 +128,9 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
             ? clusterState -> true
             : clusterState -> clusterState.metadata().version() >= request.waitForMetadataVersion();
 
-        // action will be executed on local node, if either the request is local only (or) the local node has the same cluster-state as
-        // ClusterManager
         final Predicate<ClusterState> acceptableClusterStateOrNotMasterPredicate = request.local()
-            || !state.nodes().isLocalNodeElectedClusterManager()
-                ? acceptableClusterStatePredicate
-                : acceptableClusterStatePredicate.or(clusterState -> clusterState.nodes().isLocalNodeElectedClusterManager() == false);
+            ? acceptableClusterStatePredicate
+            : acceptableClusterStatePredicate.or(clusterState -> clusterState.nodes().isLocalNodeElectedClusterManager() == false);
 
         if (acceptableClusterStatePredicate.test(state)) {
             ActionListener.completeWith(listener, () -> buildResponse(request, state));
@@ -234,8 +234,4 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
         return new ClusterStateResponse(currentState.getClusterName(), builder.build(), false);
     }
 
-    @Override
-    protected boolean localExecuteSupportedByAction() {
-        return true;
-    }
 }

@@ -136,6 +136,7 @@ public class TransportFieldCapabilitiesIndexAction extends HandledTransportActio
 
     @Override
     protected void doExecute(Task task, FieldCapabilitiesIndexRequest request, ActionListener<FieldCapabilitiesIndexResponse> listener) {
+        logger.info("Under doExecute 22");
         new AsyncShardsAction(request, listener).start();
     }
 

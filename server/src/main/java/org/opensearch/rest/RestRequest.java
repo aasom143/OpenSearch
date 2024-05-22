@@ -33,6 +33,7 @@
 package org.opensearch.rest;
 
 import org.opensearch.OpenSearchParseException;
+import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.common.Booleans;
 import org.opensearch.common.CheckedConsumer;
 import org.opensearch.common.Nullable;
@@ -67,6 +68,7 @@ import java.util.stream.Collectors;
 
 import static org.opensearch.common.unit.TimeValue.parseTimeValue;
 import static org.opensearch.core.common.unit.ByteSizeValue.parseBytesSizeValue;
+import org.opensearch.action.ActionRequest;
 
 /**
  * REST Request

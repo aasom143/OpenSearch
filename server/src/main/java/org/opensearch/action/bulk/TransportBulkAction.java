@@ -228,6 +228,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
     @Override
     protected void doExecute(Task task, BulkRequest bulkRequest, ActionListener<BulkResponse> listener) {
+        logger.info("Under doExecute 19");
         final boolean isOnlySystem = isOnlySystem(bulkRequest, clusterService.state().metadata().getIndicesLookup(), systemIndices);
         final Releasable releasable = indexingPressureService.markCoordinatingOperationStarted(bulkRequest::ramBytesUsed, isOnlySystem);
         final ActionListener<BulkResponse> releasingListener = ActionListener.runBefore(listener, releasable::close);
@@ -242,7 +243,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
     protected void doInternalExecute(Task task, BulkRequest bulkRequest, String executorName, ActionListener<BulkResponse> listener) {
         final long startTime = relativeTime();
         final AtomicArray<BulkItemResponse> responses = new AtomicArray<>(bulkRequest.requests.size());
-
+        logger.info("Master node ID: {}, {}", clusterService.state().nodes().getClusterManagerNodeId(), clusterService.state().nodes().getClusterManagerNode().getName());
         boolean hasIndexRequestsWithPipelines = false;
         final Metadata metadata = clusterService.state().getMetadata();
         final Version minNodeVersion = clusterService.state().getNodes().getMinNodeVersion();
@@ -326,6 +327,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
             } else {
                 final AtomicInteger counter = new AtomicInteger(autoCreateIndices.size());
                 for (String index : autoCreateIndices) {
+                    logger.info("Recreated Index: {}", index);
                     createIndex(index, bulkRequest.timeout(), minNodeVersion, new ActionListener<CreateIndexResponse>() {
                         @Override
                         public void onResponse(CreateIndexResponse result) {
@@ -655,11 +657,13 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
                 final Span span = tracer.startSpan(SpanBuilder.from("bulkShardAction", nodeId, bulkShardRequest));
                 try (SpanScope spanScope = tracer.withSpanInScope(span)) {
+                    logger.info("started bulkShardRequest with timeout: {} with request: {}", bulkShardRequest.timeout(), bulkShardRequest.items()[0].request());
                     shardBulkAction.execute(
                         bulkShardRequest,
                         TraceableActionListener.create(ActionListener.runBefore(new ActionListener<BulkShardResponse>() {
                             @Override
                             public void onResponse(BulkShardResponse bulkShardResponse) {
+                                logger.info("onResponse bulkShardRequest with timeout: {} with request: {}", bulkShardRequest.timeout(), bulkShardRequest.items()[0].request());
                                 for (BulkItemResponse bulkItemResponse : bulkShardResponse.getResponses()) {
                                     // we may have no response if item failed
                                     if (bulkItemResponse.getResponse() != null) {
@@ -677,6 +681,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
 
                             @Override
                             public void onFailure(Exception e) {
+                                logger.info("onFailure bulkShardRequest with timeout: {} with request: {}", bulkShardRequest.timeout(), bulkShardRequest.items()[0].request());
                                 // create failures for all relevant requests
                                 for (BulkItemRequest request : requests) {
                                     final String indexName = concreteIndices.getConcreteIndex(request.index()).getName();
@@ -697,6 +702,7 @@ public class TransportBulkAction extends HandledTransportAction<BulkRequest, Bul
                             }
 
                             private void finishHim() {
+                                logger.info("finishHim bulkShardRequest with timeout: {} with request: {}", bulkShardRequest.timeout(), bulkShardRequest.items()[0].request());
                                 indicesService.addDocStatusStats(docStatusStats);
                                 listener.onResponse(
                                     new BulkResponse(

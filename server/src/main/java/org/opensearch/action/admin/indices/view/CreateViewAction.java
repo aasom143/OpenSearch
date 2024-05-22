@@ -14,6 +14,7 @@ import org.opensearch.action.ValidateActions;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -241,6 +242,7 @@ public class CreateViewAction extends ActionType<GetViewAction.Response> {
 
         @Inject
         public TransportAction(
+            NodeClient client,
             final TransportService transportService,
             final ClusterService clusterService,
             final ThreadPool threadPool,
@@ -248,7 +250,7 @@ public class CreateViewAction extends ActionType<GetViewAction.Response> {
             final IndexNameExpressionResolver indexNameExpressionResolver,
             final ViewService viewService
         ) {
-            super(NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
+            super(client, NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
             this.viewService = viewService;
         }
 

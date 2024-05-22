@@ -41,9 +41,11 @@ import org.opensearch.action.bulk.BackoffPolicy;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.action.support.RetryableAction;
+import org.opensearch.action.support.TimeoutTaskCancellationUtility;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionAction;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionRequest;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterManagerNodeChangePredicate;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
@@ -65,6 +67,7 @@ import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.discovery.ClusterManagerNotDiscoveredException;
 import org.opensearch.node.NodeClosedException;
 import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
+import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.ConnectTransportException;
@@ -94,10 +97,11 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
     protected final TransportService transportService;
     protected final ClusterService clusterService;
     protected final IndexNameExpressionResolver indexNameExpressionResolver;
-
+    private final NodeClient client;
     private final String executor;
 
     protected TransportClusterManagerNodeAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -106,10 +110,11 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        this(actionName, true, null, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
+        this(client, actionName, true, null, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
     protected TransportClusterManagerNodeAction(
+        NodeClient client,
         String actionName,
         boolean canTripCircuitBreaker,
         TransportService transportService,
@@ -120,6 +125,7 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         this(
+            client,
             actionName,
             canTripCircuitBreaker,
             null,
@@ -133,6 +139,7 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
     }
 
     protected TransportClusterManagerNodeAction(
+        NodeClient client,
         String actionName,
         boolean canTripCircuitBreaker,
         AdmissionControlActionType admissionControlActionType,
@@ -149,6 +156,7 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
         this.threadPool = threadPool;
         this.indexNameExpressionResolver = indexNameExpressionResolver;
         this.executor = executor();
+        this.client = client;
     }
 
     protected abstract String executor();
@@ -196,6 +204,15 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
     protected void doExecute(Task task, final Request request, ActionListener<Response> listener) {
         if (task != null) {
             request.setParentTask(clusterService.localNode().getId(), task.getId());
+        }
+        if (task instanceof CancellableTask) {
+            logger.info("Executing action: "+ task.getAction()+ " getLocalNodeId: " + client.getLocalNodeId() + " task id :" + task.getId());
+            listener = TimeoutTaskCancellationUtility.wrapWithCancellationListener(
+                client,
+                (CancellableTask) task,
+                clusterService.getClusterSettings(),
+                listener
+            );
         }
         new AsyncSingleAction(task, request, listener).run();
     }

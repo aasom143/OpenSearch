@@ -34,6 +34,7 @@ package org.opensearch.action.admin.cluster.storedscripts;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -59,6 +60,7 @@ public class TransportGetStoredScriptAction extends TransportClusterManagerNodeR
 
     @Inject
     public TransportGetStoredScriptAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -67,6 +69,7 @@ public class TransportGetStoredScriptAction extends TransportClusterManagerNodeR
         ScriptService scriptService
     ) {
         super(
+            client,
             GetStoredScriptAction.NAME,
             transportService,
             clusterService,

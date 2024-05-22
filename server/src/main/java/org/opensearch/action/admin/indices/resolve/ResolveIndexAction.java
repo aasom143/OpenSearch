@@ -523,6 +523,7 @@ public class ResolveIndexAction extends ActionType<ResolveIndexAction.Response> 
 
         @Override
         protected void doExecute(Task task, Request request, final ActionListener<Response> listener) {
+            logger.info("Under doExecute 13");
             final ClusterState clusterState = clusterService.state();
             final Map<String, OriginalIndices> remoteClusterIndices = remoteClusterService.groupIndices(
                 request.indicesOptions(),

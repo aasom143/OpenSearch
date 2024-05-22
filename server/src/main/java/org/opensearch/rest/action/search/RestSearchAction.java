@@ -128,6 +128,7 @@ public class RestSearchAction extends BaseRestHandler {
          * be null later. If that is confusing to you then you are in good
          * company.
          */
+        logger.info("First line" + searchRequest.getParentTask());
         IntConsumer setSize = size -> searchRequest.source().size(size);
         request.withContentOrSourceParamParserOrNull(
             parser -> parseSearchRequest(searchRequest, request, parser, client.getNamedWriteableRegistry(), setSize)

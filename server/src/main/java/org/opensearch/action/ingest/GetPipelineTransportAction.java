@@ -34,6 +34,7 @@ package org.opensearch.action.ingest;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -57,6 +58,7 @@ public class GetPipelineTransportAction extends TransportClusterManagerNodeReadA
 
     @Inject
     public GetPipelineTransportAction(
+        NodeClient client,
         ThreadPool threadPool,
         ClusterService clusterService,
         TransportService transportService,
@@ -64,6 +66,7 @@ public class GetPipelineTransportAction extends TransportClusterManagerNodeReadA
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             GetPipelineAction.NAME,
             transportService,
             clusterService,

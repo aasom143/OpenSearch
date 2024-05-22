@@ -108,6 +108,7 @@ public class TransportValidateQueryAction extends TransportBroadcastAction<
 
     @Override
     protected void doExecute(Task task, ValidateQueryRequest request, ActionListener<ValidateQueryResponse> listener) {
+        logger.info("Under doExecute 17");
         request.nowInMillis = System.currentTimeMillis();
         LongSupplier timeProvider = () -> request.nowInMillis;
         ActionListener<org.opensearch.index.query.QueryBuilder> rewriteListener = ActionListener.wrap(rewrittenQuery -> {

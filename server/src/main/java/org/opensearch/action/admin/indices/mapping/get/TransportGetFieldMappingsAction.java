@@ -77,6 +77,7 @@ public class TransportGetFieldMappingsAction extends HandledTransportAction<GetF
 
     @Override
     protected void doExecute(Task task, GetFieldMappingsRequest request, final ActionListener<GetFieldMappingsResponse> listener) {
+        logger.info("Under doExecute 9");
         ClusterState clusterState = clusterService.state();
         String[] concreteIndices = indexNameExpressionResolver.concreteIndexNames(clusterState, request);
         final AtomicInteger indexCounter = new AtomicInteger();

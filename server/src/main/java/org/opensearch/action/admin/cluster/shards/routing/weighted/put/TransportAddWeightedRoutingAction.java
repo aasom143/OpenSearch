@@ -11,6 +11,7 @@ package org.opensearch.action.admin.cluster.shards.routing.weighted.put;
 import org.opensearch.action.ActionRequestValidationException;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -38,6 +39,7 @@ public class TransportAddWeightedRoutingAction extends TransportClusterManagerNo
 
     @Inject
     public TransportAddWeightedRoutingAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         WeightedRoutingService weightedRoutingService,
@@ -46,6 +48,7 @@ public class TransportAddWeightedRoutingAction extends TransportClusterManagerNo
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             ClusterAddWeightedRoutingAction.NAME,
             transportService,
             clusterService,

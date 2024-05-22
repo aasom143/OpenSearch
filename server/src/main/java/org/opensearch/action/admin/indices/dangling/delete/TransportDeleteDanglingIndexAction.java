@@ -85,6 +85,7 @@ public class TransportDeleteDanglingIndexAction extends TransportClusterManagerN
 
     @Inject
     public TransportDeleteDanglingIndexAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -94,6 +95,7 @@ public class TransportDeleteDanglingIndexAction extends TransportClusterManagerN
         NodeClient nodeClient
     ) {
         super(
+            client,
             DeleteDanglingIndexAction.NAME,
             transportService,
             clusterService,

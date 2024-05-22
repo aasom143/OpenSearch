@@ -32,6 +32,12 @@
 
 package org.opensearch.common.util.concurrent;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.opensearch.action.ActionRequestBuilder;
+import org.opensearch.action.support.AdapterActionFuture;
+import org.opensearch.client.FilterClient;
+import org.opensearch.client.support.AbstractClient;
 import org.opensearch.cluster.service.ClusterApplierService;
 import org.opensearch.cluster.service.ClusterManagerService;
 import org.opensearch.common.Nullable;

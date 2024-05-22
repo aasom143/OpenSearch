@@ -34,6 +34,7 @@ package org.opensearch.action.admin.indices.mapping.put;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -61,6 +62,7 @@ public class TransportAutoPutMappingAction extends TransportClusterManagerNodeAc
 
     @Inject
     public TransportAutoPutMappingAction(
+        final NodeClient client,
         final TransportService transportService,
         final ClusterService clusterService,
         final ThreadPool threadPool,
@@ -69,6 +71,7 @@ public class TransportAutoPutMappingAction extends TransportClusterManagerNodeAc
         final IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             AutoPutMappingAction.NAME,
             transportService,
             clusterService,

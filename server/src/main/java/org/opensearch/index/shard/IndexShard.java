@@ -3507,6 +3507,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     public void updateGlobalCheckpointOnReplica(final long globalCheckpoint, final String reason) {
         assert assertReplicationTarget();
         final long localCheckpoint = getLocalCheckpoint();
+        logger.info("localCheckpoint: {}, getLocalCheckpoint: {}", localCheckpoint, globalCheckpoint);
         if (globalCheckpoint > localCheckpoint) {
             /*
              * This can happen during recovery when the shard has started its engine but recovery is not finalized and is receiving global

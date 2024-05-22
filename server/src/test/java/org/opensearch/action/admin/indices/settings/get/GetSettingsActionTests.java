@@ -35,6 +35,7 @@ package org.opensearch.action.admin.indices.settings.get;
 import org.opensearch.action.IndicesRequest;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.replication.ClusterStateCreationUtils;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
@@ -69,11 +70,14 @@ public class GetSettingsActionTests extends OpenSearchTestCase {
     private SettingsFilter settingsFilter;
     private final String indexName = "test_index";
 
+    NodeClient client;
+
     private TestTransportGetSettingsAction getSettingsAction;
 
     class TestTransportGetSettingsAction extends TransportGetSettingsAction {
         TestTransportGetSettingsAction() {
             super(
+                client,
                 GetSettingsActionTests.this.transportService,
                 GetSettingsActionTests.this.clusterService,
                 GetSettingsActionTests.this.threadPool,
@@ -102,6 +106,7 @@ public class GetSettingsActionTests extends OpenSearchTestCase {
         settingsFilter = new SettingsModule(Settings.EMPTY, emptyList(), emptyList(), emptySet()).getSettingsFilter();
         threadPool = new TestThreadPool("GetSettingsActionTests");
         clusterService = createClusterService(threadPool);
+        client = new NodeClient(Settings.EMPTY, threadPool);
         CapturingTransport capturingTransport = new CapturingTransport();
         transportService = capturingTransport.createTransportService(
             clusterService.getSettings(),

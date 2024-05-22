@@ -12,6 +12,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.coordination.ClusterStateTermVersion;
@@ -36,6 +37,7 @@ public class TransportGetTermVersionAction extends TransportClusterManagerNodeRe
 
     @Inject
     public TransportGetTermVersionAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -43,6 +45,7 @@ public class TransportGetTermVersionAction extends TransportClusterManagerNodeRe
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             GetTermVersionAction.NAME,
             false,
             transportService,

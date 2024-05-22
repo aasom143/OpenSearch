@@ -31,8 +31,11 @@
 
 package org.opensearch.client;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.ActionType;
+import org.opensearch.action.index.IndexRequestBuilder;
 import org.opensearch.client.support.AbstractClient;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.action.ActionListener;

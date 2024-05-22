@@ -32,6 +32,7 @@
 
 package org.opensearch.action.support.tasks;
 
+import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.ResourceNotFoundException;
 import org.opensearch.action.FailedNodeException;
@@ -70,6 +71,7 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.Consumer;
 
 import static java.util.Collections.emptyList;
+import org.apache.logging.log4j.Logger;
 
 /**
  * The base class for transport actions that are interacting with currently running tasks.
@@ -251,8 +253,10 @@ public abstract class TransportTasksAction<
         private final AtomicReferenceArray<Object> responses;
         private final AtomicInteger counter = new AtomicInteger();
         private final Task task;
+        final Logger logger = LogManager.getLogger(AsyncAction.class);
 
         private AsyncAction(Task task, TasksRequest request, ActionListener<TasksResponse> listener) {
+            logger.info("reached under here");
             this.task = task;
             this.request = request;
             this.listener = listener;
@@ -268,7 +272,9 @@ public abstract class TransportTasksAction<
         }
 
         private void start() {
+            logger.info("reached under start");
             if (nodesIds.length == 0) {
+                logger.info("reached under start1");
                 // nothing to do
                 try {
                     listener.onResponse(newResponse(request, responses));
@@ -277,15 +283,18 @@ public abstract class TransportTasksAction<
                     listener.onFailure(e);
                 }
             } else {
+                logger.info("reached under start2");
                 TransportRequestOptions.Builder builder = TransportRequestOptions.builder();
                 if (request.getTimeout() != null) {
                     builder.withTimeout(request.getTimeout());
                 }
                 for (int i = 0; i < nodesIds.length; i++) {
+                    logger.info("reached under start3 " + i);
                     final String nodeId = nodesIds[i];
                     final int idx = i;
                     final DiscoveryNode node = nodes[i];
                     try {
+                        logger.info("reached under start3 " + node);
                         if (node == null) {
                             onFailure(idx, nodeId, new NoSuchNodeException(nodeId));
                         } else {
@@ -320,10 +329,12 @@ public abstract class TransportTasksAction<
                             );
                         }
                     } catch (Exception e) {
+                        logger.info("reached under start3 Exception");
                         onFailure(idx, nodeId, e);
                     }
                 }
             }
+            logger.info("reached after for loop");
         }
 
         private void onOperation(int idx, NodeTasksResponse nodeResponse) {

@@ -33,6 +33,8 @@
 package org.opensearch.action.admin.indices.create;
 
 import org.opensearch.action.UnavailableShardsException;
+import org.opensearch.action.admin.cluster.health.ClusterHealthRequest;
+import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.admin.cluster.state.ClusterStateResponse;
 import org.opensearch.action.admin.indices.alias.Alias;
 import org.opensearch.action.admin.indices.mapping.get.GetMappingsResponse;
@@ -40,6 +42,8 @@ import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.support.ActiveShardCount;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.RequestOptions;
+import org.opensearch.client.Requests;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
@@ -60,7 +64,11 @@ import org.opensearch.test.OpenSearchIntegTestCase.ClusterScope;
 import org.opensearch.test.OpenSearchIntegTestCase.Scope;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
@@ -239,24 +247,63 @@ public class CreateIndexIT extends OpenSearchIntegTestCase {
     }
 
     public void testCreateAndDeleteIndexConcurrently() throws InterruptedException {
+//         = client.cluster().health(request, RequestOptions.DEFAULT);
+//        ClusterHealthResponse response = (ClusterHealthResponse) client().admin().cluster().health(new ClusterHealthRequest().waitForNodes("1").waitForYellowStatus());
+
+        final String uuid = UUID.randomUUID().toString().replace("-", "");
+        ScheduledExecutorService executorService2 = new ScheduledThreadPoolExecutor(1);
+
+
+
         createIndex("test");
+//        ClusterHealthResponse health = client().admin()
+//            .cluster()
+//            .health(
+//                Requests.clusterHealthRequest("test")
+//                    .waitForGreenStatus()
+//                    .timeout("5m") // sometimes due to cluster rebalacing and random settings default timeout is just not enough.
+//                    .waitForNoRelocatingShards(true)
+//            )
+//            .actionGet();
+//        , health.getNumberOfPendingTasks()
+        logger.info("{} start test:", uuid);
         final AtomicInteger indexVersion = new AtomicInteger(0);
         final Object indexVersionLock = new Object();
         final CountDownLatch latch = new CountDownLatch(1);
+        Thread thread2 = Thread.currentThread();
+        executorService2.scheduleAtFixedRate(() -> {
+            logger.info("{}  schedule main thread: {}, {}, {}", uuid, 4, thread2.getState(), latch.getCount());
+//            indexVersionLock.notifyAll();
+        }, 0, 500, TimeUnit.MILLISECONDS);
         int numDocs = randomIntBetween(1, 10);
         for (int i = 0; i < numDocs; i++) {
+            logger.info("{} numDocs test: {}, index_version: {}, {}", uuid, 1, indexVersion.get(), i);
             client().prepareIndex("test").setSource("index_version", indexVersion.get()).get();
+            logger.info("{} numDocs test: {}, index_version: {}, {}", uuid, 2, indexVersion.get(), i);
         }
         synchronized (indexVersionLock) { // not necessarily needed here but for completeness we lock here too
             indexVersion.incrementAndGet();
+            logger.info("{}  test: {} indexVersion: {}", uuid, 3, indexVersion.get());
         }
         client().admin().indices().prepareDelete("test").execute(new ActionListener<AcknowledgedResponse>() { // this happens async!!!
             @Override
             public void onResponse(AcknowledgedResponse deleteIndexResponse) {
+//                indexVersion.incrementAndGet();
+//                latch.countDown();
+//                return;
                 Thread thread = new Thread() {
                     @Override
                     public void run() {
+                        Thread thread1 = Thread.currentThread();
+                        ScheduledExecutorService executorService = new ScheduledThreadPoolExecutor(1);
                         try {
+                            executorService.scheduleAtFixedRate(() -> {
+                                logger.info("{}  schedule : {}, {}", uuid, 4, Thread.currentThread().getState());
+                            }, 0, 1000, TimeUnit.MILLISECONDS);
+                            logger.info("{}  test: {}, {}", uuid, 4, thread1.getState());
+                            logger.info("{}  test: {}, {}, {}", uuid, 4.5, thread1.getState(), indexVersion.get());
+                            logger.info("inside thread {}  test: {}, {}, {}", uuid, 5, thread1.getState(), indexVersion.get());
+
                             // recreate that index
                             client().prepareIndex("test").setSource("index_version", indexVersion.get()).get();
                             synchronized (indexVersionLock) {
@@ -264,39 +311,71 @@ public class CreateIndexIT extends OpenSearchIntegTestCase {
                                 // we increment the index version otherwise a doc that is in-flight could make it into an index that it
                                 // was supposed to be deleted for and our assertion fail...
                                 indexVersion.incrementAndGet();
+                                logger.info("{}  test: {}, {}, {}", uuid, 6, thread1.getState(), indexVersion.get());
                             }
                             // from here on all docs with index_version == 0|1 must be gone!!!! only 2 are ok;
                             assertAcked(client().admin().indices().prepareDelete("test").get());
+                            logger.info("{}  test: {}, {}", uuid, 6.5, thread1.getState());
+
+
+                            logger.info("{}  test: {}, {}", uuid, 7, thread1.getState());
+//
                         } finally {
+                            logger.info("{}  test: {}, {}, {}", uuid, 8, thread1.getState(), indexVersion.get());
                             latch.countDown();
+                            executorService.shutdown();
+                            logger.info("After latch {}  test: {}, {}, {}", uuid, 8, thread1.getState(), indexVersion.get());
+//                            logger.info("After executorService{}  test: {}, {}, {}", uuid, 8, thread1.getState(), latch.getCount());
                         }
                     }
                 };
                 thread.start();
+                logger.info("{}  start new : {}, {}", uuid, 20, Thread.currentThread().getState());
             }
 
             @Override
             public void onFailure(Exception e) {
+                logger.error("{} RuntimeException test: {}", uuid, 9, e);
                 throw new RuntimeException(e);
             }
         });
         numDocs = randomIntBetween(100, 200);
         for (int i = 0; i < numDocs; i++) {
-            try {
+            try
+            {
+                logger.info("{}  test: {}, {}, {}, {}", uuid, 10, thread2.getState(), indexVersion.get(), i);
                 synchronized (indexVersionLock) {
+                    logger.info("{}  test: {}, {}, {}, {}", uuid, 10.5, thread2.getState(), indexVersion.get(), i);
                     client().prepareIndex("test")
                         .setSource("index_version", indexVersion.get())
                         .setTimeout(TimeValue.timeValueSeconds(10))
                         .get();
+                    logger.info("{}  test: {}, {}, {}, {}", uuid, 11, thread2.getState(), indexVersion.get(), i);
                 }
-            } catch (IndexNotFoundException inf) {
+
+            } catch(
+                IndexNotFoundException inf)
+
+            {
                 // fine
-            } catch (UnavailableShardsException ex) {
+                logger.info("{}  test: {}", uuid, 12);
+//                        try {
+//                            latch.await();
+//                        } catch (InterruptedException e) {
+//                            throw new RuntimeException(e);
+//                        }
+            } catch(
+                UnavailableShardsException ex)
+            {
+                logger.info("{}  test: {}", uuid, 22);
                 assertEquals(ex.getCause().getClass(), IndexNotFoundException.class);
                 // fine we run into a delete index while retrying
             }
         }
+
+        logger.info("{}  test: {}", uuid, 15);
         latch.await();
+        logger.info("{}  test: {}", uuid, 16);
         refresh();
 
         // we only really assert that we never reuse segments of old indices or anything like this here and that nothing fails with
@@ -305,9 +384,14 @@ public class CreateIndexIT extends OpenSearchIntegTestCase {
             .setIndicesOptions(IndicesOptions.lenientExpandOpen())
             .setQuery(new RangeQueryBuilder("index_version").from(indexVersion.get(), true))
             .get();
+        logger.info("{}  test: {}", uuid, 18);
         SearchResponse all = client().prepareSearch("test").setIndicesOptions(IndicesOptions.lenientExpandOpen()).get();
+        logger.info("{}  test: {}", uuid, 19);
         assertEquals(expected + " vs. " + all, expected.getHits().getTotalHits().value, all.getHits().getTotalHits().value);
         logger.info("total: {}", expected.getHits().getTotalHits().value);
+
+//        client().admin().indices().prepareDelete("test");
+        executorService2.shutdown();
     }
 
     public void testRestartIndexCreationAfterFullClusterRestart() throws Exception {

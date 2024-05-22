@@ -59,6 +59,7 @@ public class TransportGetScriptContextAction extends HandledTransportAction<GetS
 
     @Override
     protected void doExecute(Task task, GetScriptContextRequest request, ActionListener<GetScriptContextResponse> listener) {
+        logger.info("Under doExecute 4");
         Set<ScriptContextInfo> contexts = scriptService.getContextInfos();
         listener.onResponse(new GetScriptContextResponse(contexts));
     }

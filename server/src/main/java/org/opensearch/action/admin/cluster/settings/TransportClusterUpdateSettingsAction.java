@@ -38,6 +38,7 @@ import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.AckedClusterStateUpdateTask;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -86,6 +87,7 @@ public class TransportClusterUpdateSettingsAction extends TransportClusterManage
 
     @Inject
     public TransportClusterUpdateSettingsAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -95,6 +97,7 @@ public class TransportClusterUpdateSettingsAction extends TransportClusterManage
         ClusterSettings clusterSettings
     ) {
         super(
+            client,
             ClusterUpdateSettingsAction.NAME,
             false,
             transportService,

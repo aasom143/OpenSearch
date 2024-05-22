@@ -11,6 +11,7 @@ package org.opensearch.action.admin.indices.view;
 import org.opensearch.action.ActionType;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -74,6 +75,7 @@ public class UpdateViewAction extends ActionType<GetViewAction.Response> {
 
         @Inject
         public TransportAction(
+            NodeClient client,
             final TransportService transportService,
             final ClusterService clusterService,
             final ThreadPool threadPool,
@@ -82,6 +84,7 @@ public class UpdateViewAction extends ActionType<GetViewAction.Response> {
             final ViewService viewService
         ) {
             super(
+                client,
                 NAME,
                 transportService,
                 clusterService,

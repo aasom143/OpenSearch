@@ -11,6 +11,7 @@ package org.opensearch.action.search;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -36,6 +37,7 @@ public class DeleteSearchPipelineTransportAction extends TransportClusterManager
 
     @Inject
     public DeleteSearchPipelineTransportAction(
+        NodeClient client,
         ThreadPool threadPool,
         SearchPipelineService searchPipelineService,
         TransportService transportService,
@@ -43,6 +45,7 @@ public class DeleteSearchPipelineTransportAction extends TransportClusterManager
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             DeleteSearchPipelineAction.NAME,
             transportService,
             searchPipelineService.getClusterService(),

@@ -99,6 +99,7 @@ public class RemoteStorePeerRecoverySourceHandler extends RecoverySourceHandler 
             final long endingSeqNo = shard.seqNoStats().getMaxSeqNo();
             sendSnapshotStep.onResponse(new SendSnapshotResult(endingSeqNo, 0, TimeValue.ZERO));
         }, onFailure);
+        logger.info("Remote Before finalizeStepAndCompleteFuture");
 
         finalizeStepAndCompleteFuture(startingSeqNo, sendSnapshotStep, sendFileStep, prepareEngineStep, onFailure);
     }

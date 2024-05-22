@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
@@ -44,6 +45,7 @@ import org.opensearch.cluster.service.PendingClusterTask;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.node.Node;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.TransportService;
 
@@ -65,6 +67,7 @@ public class TransportPendingClusterTasksAction extends TransportClusterManagerN
 
     @Inject
     public TransportPendingClusterTasksAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -72,6 +75,7 @@ public class TransportPendingClusterTasksAction extends TransportClusterManagerN
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             PendingClusterTasksAction.NAME,
             transportService,
             clusterService,

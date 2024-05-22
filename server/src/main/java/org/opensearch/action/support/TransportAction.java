@@ -48,6 +48,7 @@ import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskListener;
 import org.opensearch.tasks.TaskManager;
 
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -98,6 +99,7 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         final Task task;
 
         try {
+            logger.info("came here + " + actionName + " " + request.getParentTask());
             task = taskManager.register("transport", actionName, request);
         } catch (TaskCancelledException e) {
             unregisterChildNode.close();
@@ -222,7 +224,7 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
                     listener.onFailure(new IllegalStateException("proceed was called too many times"));
                 }
             } catch (Exception e) {
-                logger.trace("Error during transport action execution.", e);
+                logger.info("Error during transport action execution.");
                 listener.onFailure(e);
             }
         }

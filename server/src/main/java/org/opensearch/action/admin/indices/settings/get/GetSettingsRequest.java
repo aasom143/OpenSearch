@@ -38,12 +38,16 @@ import org.opensearch.action.ValidateActions;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
 import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.tasks.TaskId;
+import org.opensearch.rest.action.cat.AdminTask;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -59,6 +63,7 @@ public class GetSettingsRequest extends ClusterManagerNodeReadRequest<GetSetting
     private String[] names = Strings.EMPTY_ARRAY;
     private boolean humanReadable = false;
     private boolean includeDefaults = false;
+    private TimeValue cancelAfterTimeInterval;
 
     @Override
     public GetSettingsRequest indices(String... indices) {
@@ -80,6 +85,11 @@ public class GetSettingsRequest extends ClusterManagerNodeReadRequest<GetSetting
         return this;
     }
 
+    @Override
+    public AdminTask createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
+        return new AdminTask(id, type, action, parentTaskId, headers, cancelAfterTimeInterval);
+    }
+
     public GetSettingsRequest() {}
 
     public GetSettingsRequest(StreamInput in) throws IOException {
@@ -89,6 +99,7 @@ public class GetSettingsRequest extends ClusterManagerNodeReadRequest<GetSetting
         names = in.readStringArray();
         humanReadable = in.readBoolean();
         includeDefaults = in.readBoolean();
+        cancelAfterTimeInterval = in.readOptionalTimeValue();
     }
 
     @Override
@@ -99,6 +110,15 @@ public class GetSettingsRequest extends ClusterManagerNodeReadRequest<GetSetting
         out.writeStringArray(names);
         out.writeBoolean(humanReadable);
         out.writeBoolean(includeDefaults);
+        out.writeOptionalTimeValue(cancelAfterTimeInterval);
+    }
+
+    public void setCancelAfterTimeInterval(TimeValue cancelAfterTimeInterval) {
+        this.cancelAfterTimeInterval = cancelAfterTimeInterval;
+    }
+
+    public TimeValue getCancelAfterTimeInterval() {
+        return cancelAfterTimeInterval;
     }
 
     @Override
@@ -156,12 +176,13 @@ public class GetSettingsRequest extends ClusterManagerNodeReadRequest<GetSetting
             && includeDefaults == that.includeDefaults
             && Arrays.equals(indices, that.indices)
             && Objects.equals(indicesOptions, that.indicesOptions)
+            && Objects.equals(cancelAfterTimeInterval, that.cancelAfterTimeInterval)
             && Arrays.equals(names, that.names);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(indicesOptions, humanReadable, includeDefaults);
+        int result = Objects.hash(indicesOptions, humanReadable, includeDefaults, cancelAfterTimeInterval);
         result = 31 * result + Arrays.hashCode(indices);
         result = 31 * result + Arrays.hashCode(names);
         return result;

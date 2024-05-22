@@ -39,6 +39,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.DestructiveOperations;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ack.ClusterStateUpdateResponse;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -72,6 +73,7 @@ public class TransportDeleteIndexAction extends TransportClusterManagerNodeActio
 
     @Inject
     public TransportDeleteIndexAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -81,6 +83,7 @@ public class TransportDeleteIndexAction extends TransportClusterManagerNodeActio
         DestructiveOperations destructiveOperations
     ) {
         super(
+            client,
             DeleteIndexAction.NAME,
             transportService,
             clusterService,

@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.info.TransportClusterInfoAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.MappingMetadata;
@@ -63,6 +64,7 @@ public class TransportGetMappingsAction extends TransportClusterInfoAction<GetMa
 
     @Inject
     public TransportGetMappingsAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -71,6 +73,7 @@ public class TransportGetMappingsAction extends TransportClusterInfoAction<GetMa
         IndicesService indicesService
     ) {
         super(
+            client,
             GetMappingsAction.NAME,
             transportService,
             clusterService,

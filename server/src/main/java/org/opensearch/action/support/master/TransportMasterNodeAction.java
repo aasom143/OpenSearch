@@ -34,6 +34,7 @@ package org.opensearch.action.support.master;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionResponse;
@@ -52,6 +53,7 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
     TransportClusterManagerNodeAction<Request, Response> {
 
     protected TransportMasterNodeAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -60,10 +62,11 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        super(actionName, true, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
+        super(client, actionName, true, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
     protected TransportMasterNodeAction(
+        NodeClient client,
         String actionName,
         boolean canTripCircuitBreaker,
         TransportService transportService,
@@ -74,6 +77,7 @@ public abstract class TransportMasterNodeAction<Request extends MasterNodeReques
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             actionName,
             canTripCircuitBreaker,
             transportService,

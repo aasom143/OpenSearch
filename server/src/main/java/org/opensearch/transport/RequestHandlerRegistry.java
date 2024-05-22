@@ -42,6 +42,8 @@ import org.opensearch.search.internal.ShardSearchRequest;
 import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.LogManager;
 
 import java.io.IOException;
 
@@ -105,6 +107,8 @@ public final class RequestHandlerRegistry<Request extends TransportRequest> {
                 unregisterTask = Releasables.wrap(unregisterTask, stopTracking);
             }
             final TaskTransportChannel taskTransportChannel = new TaskTransportChannel(channel, unregisterTask);
+            final Logger logger = LogManager.getLogger(RequestHandlerRegistry.class);
+            logger.info("Received message for task: {}", task.getAction());
             handler.messageReceived(request, taskTransportChannel, task);
             unregisterTask = null;
         } finally {

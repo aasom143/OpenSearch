@@ -11,6 +11,7 @@ package org.opensearch.action.admin.cluster.remotestore.restore;
 import org.opensearch.action.admin.cluster.snapshots.restore.RestoreClusterStateListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -37,6 +38,7 @@ public final class TransportRestoreRemoteStoreAction extends TransportClusterMan
 
     @Inject
     public TransportRestoreRemoteStoreAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -45,6 +47,7 @@ public final class TransportRestoreRemoteStoreAction extends TransportClusterMan
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             RestoreRemoteStoreAction.NAME,
             transportService,
             clusterService,

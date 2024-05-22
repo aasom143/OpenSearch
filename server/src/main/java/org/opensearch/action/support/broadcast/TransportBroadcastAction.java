@@ -104,6 +104,7 @@ public abstract class TransportBroadcastAction<
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+        logger.info("Under doExecute 33");
         new AsyncBroadcastAction(task, request, listener).start();
     }
 

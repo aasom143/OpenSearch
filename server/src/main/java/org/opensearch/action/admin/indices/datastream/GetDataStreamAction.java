@@ -40,6 +40,7 @@ import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.AbstractDiffable;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -298,13 +299,14 @@ public class GetDataStreamAction extends ActionType<GetDataStreamAction.Response
 
         @Inject
         public TransportAction(
+            NodeClient client,
             TransportService transportService,
             ClusterService clusterService,
             ThreadPool threadPool,
             ActionFilters actionFilters,
             IndexNameExpressionResolver indexNameExpressionResolver
         ) {
-            super(NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
+            super(client, NAME, transportService, clusterService, threadPool, actionFilters, Request::new, indexNameExpressionResolver);
         }
 
         @Override

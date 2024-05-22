@@ -33,6 +33,7 @@ package org.opensearch.action.admin.indices.alias.get;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -72,6 +73,7 @@ public class TransportGetAliasesAction extends TransportClusterManagerNodeReadAc
 
     @Inject
     public TransportGetAliasesAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -80,6 +82,7 @@ public class TransportGetAliasesAction extends TransportClusterManagerNodeReadAc
         SystemIndices systemIndices
     ) {
         super(
+            client,
             GetAliasesAction.NAME,
             transportService,
             clusterService,

@@ -32,7 +32,10 @@
 
 package org.opensearch.common.util.concurrent;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.OpenSearchTimeoutException;
+import org.opensearch.client.support.AbstractClient;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.SuppressForbidden;
 

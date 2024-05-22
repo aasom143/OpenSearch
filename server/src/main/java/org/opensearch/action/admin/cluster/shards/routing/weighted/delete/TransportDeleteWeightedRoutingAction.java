@@ -12,6 +12,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -41,6 +42,7 @@ public class TransportDeleteWeightedRoutingAction extends TransportClusterManage
 
     @Inject
     public TransportDeleteWeightedRoutingAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         WeightedRoutingService weightedRoutingService,
@@ -49,6 +51,7 @@ public class TransportDeleteWeightedRoutingAction extends TransportClusterManage
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             ClusterDeleteWeightedRoutingAction.NAME,
             transportService,
             clusterService,

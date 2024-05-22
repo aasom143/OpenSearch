@@ -100,6 +100,7 @@ import org.opensearch.transport.RemoteClusterService;
 import org.opensearch.transport.RemoteTransportException;
 import org.opensearch.transport.Transport;
 import org.opensearch.transport.TransportService;
+import java.lang.Thread;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -491,6 +492,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     );
                 }
             }, listener::onFailure);
+            logger.info("Reached under searchRequest.transformRequest");
             searchRequest.transformRequest(requestTransformListener);
         }
     }

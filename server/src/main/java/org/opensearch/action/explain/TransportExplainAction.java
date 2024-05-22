@@ -100,6 +100,7 @@ public class TransportExplainAction extends TransportSingleShardAction<ExplainRe
 
     @Override
     protected void doExecute(Task task, ExplainRequest request, ActionListener<ExplainResponse> listener) {
+        logger.info("Under doExecute 20");
         request.nowInMillis = System.currentTimeMillis();
         super.doExecute(task, request, listener);
     }

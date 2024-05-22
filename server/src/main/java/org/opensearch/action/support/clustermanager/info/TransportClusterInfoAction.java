@@ -33,6 +33,7 @@ package org.opensearch.action.support.clustermanager.info;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -53,6 +54,7 @@ public abstract class TransportClusterInfoAction<Request extends ClusterInfoRequ
     TransportClusterManagerNodeReadAction<Request, Response> {
 
     public TransportClusterInfoAction(
+        NodeClient client,
         String actionName,
         TransportService transportService,
         ClusterService clusterService,
@@ -61,7 +63,7 @@ public abstract class TransportClusterInfoAction<Request extends ClusterInfoRequ
         Writeable.Reader<Request> request,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
-        super(actionName, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
+        super(client, actionName, transportService, clusterService, threadPool, actionFilters, request, indexNameExpressionResolver);
     }
 
     @Override

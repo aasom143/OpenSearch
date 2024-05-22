@@ -32,7 +32,10 @@
 
 package org.opensearch.action;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.client.OpenSearchClient;
+import org.opensearch.client.support.AbstractClient;
 import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;

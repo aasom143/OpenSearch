@@ -38,6 +38,7 @@ import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.StepListener;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateUpdateTask;
 import org.opensearch.cluster.RepositoryCleanupInProgress;
@@ -103,6 +104,7 @@ public final class TransportCleanupRepositoryAction extends TransportClusterMana
 
     @Inject
     public TransportCleanupRepositoryAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         RepositoriesService repositoriesService,
@@ -112,6 +114,7 @@ public final class TransportCleanupRepositoryAction extends TransportClusterMana
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
         super(
+            client,
             CleanupRepositoryAction.NAME,
             transportService,
             clusterService,

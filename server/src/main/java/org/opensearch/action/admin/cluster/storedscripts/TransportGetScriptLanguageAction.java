@@ -56,6 +56,7 @@ public class TransportGetScriptLanguageAction extends HandledTransportAction<Get
 
     @Override
     protected void doExecute(Task task, GetScriptLanguageRequest request, ActionListener<GetScriptLanguageResponse> listener) {
+        logger.info("Under doExecute 5");
         listener.onResponse(new GetScriptLanguageResponse(scriptService.getScriptLanguages()));
     }
 }

@@ -90,6 +90,7 @@ public abstract class TransportBroadcastReplicationAction<
 
     @Override
     protected void doExecute(Task task, Request request, ActionListener<Response> listener) {
+        logger.info("Under doExecute 35");
         final ClusterState clusterState = clusterService.state();
         List<ShardId> shards = shards(request, clusterState);
         final CopyOnWriteArrayList<ShardResponse> shardsResponses = new CopyOnWriteArrayList<>();

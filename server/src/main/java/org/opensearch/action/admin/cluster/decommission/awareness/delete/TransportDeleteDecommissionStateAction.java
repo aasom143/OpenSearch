@@ -12,6 +12,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -40,6 +41,7 @@ public class TransportDeleteDecommissionStateAction extends TransportClusterMana
 
     @Inject
     public TransportDeleteDecommissionStateAction(
+        NodeClient client,
         TransportService transportService,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -48,6 +50,7 @@ public class TransportDeleteDecommissionStateAction extends TransportClusterMana
         DecommissionService decommissionService
     ) {
         super(
+            client,
             DeleteDecommissionStateAction.NAME,
             transportService,
             clusterService,

@@ -63,6 +63,7 @@ public class TransportCreatePitAction extends HandledTransportAction<CreatePitRe
 
     @Override
     protected void doExecute(Task task, CreatePitRequest request, ActionListener<CreatePitResponse> listener) {
+        logger.info("Under doExecute 28");
         final StepListener<SearchResponse> createPitListener = new StepListener<>();
         final ActionListener<CreatePitResponse> updatePitIdListener = ActionListener.wrap(r -> listener.onResponse(r), e -> {
             logger.error(

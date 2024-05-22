@@ -391,6 +391,7 @@ import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchScrollAction;
 import org.opensearch.action.search.SearchScrollRequest;
 import org.opensearch.action.search.SearchScrollRequestBuilder;
+import org.opensearch.action.support.AdapterActionFuture;
 import org.opensearch.action.support.PlainActionFuture;
 import org.opensearch.action.support.master.AcknowledgedResponse;
 import org.opensearch.action.termvectors.MultiTermVectorsAction;
@@ -411,6 +412,7 @@ import org.opensearch.client.ClusterAdminClient;
 import org.opensearch.client.FilterClient;
 import org.opensearch.client.IndicesAdminClient;
 import org.opensearch.client.OpenSearchClient;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.metadata.IndexMetadata.APIBlock;
 import org.opensearch.common.Nullable;
 import org.opensearch.common.action.ActionFuture;
@@ -421,6 +423,7 @@ import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.tasks.TaskId;
 import org.opensearch.core.xcontent.MediaType;
+import org.opensearch.rest.action.RestCancellableNodeClient;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.util.Map;
@@ -2054,6 +2057,9 @@ public abstract class AbstractClient implements Client {
 
         @Override
         public void getSettings(GetSettingsRequest request, ActionListener<GetSettingsResponse> listener) {
+//            RestCancellableNodeClient cancelClient = new RestCancellableNodeClient((NodeClient) client, request.getHttpChannel());
+//            Logger logger = LogManager.getLogger(getClass());
+//            logger.info("getSettings client class: {}", client.getClass());
             execute(GetSettingsAction.INSTANCE, request, listener);
         }
 

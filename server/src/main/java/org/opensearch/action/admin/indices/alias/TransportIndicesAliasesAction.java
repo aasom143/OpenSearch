@@ -38,6 +38,7 @@ import org.opensearch.action.RequestValidators;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeAction;
 import org.opensearch.action.support.master.AcknowledgedResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ack.ClusterStateUpdateResponse;
 import org.opensearch.cluster.block.ClusterBlockException;
@@ -85,6 +86,7 @@ public class TransportIndicesAliasesAction extends TransportClusterManagerNodeAc
 
     @Inject
     public TransportIndicesAliasesAction(
+        final NodeClient client,
         final TransportService transportService,
         final ClusterService clusterService,
         final ThreadPool threadPool,
@@ -94,6 +96,7 @@ public class TransportIndicesAliasesAction extends TransportClusterManagerNodeAc
         final RequestValidators<IndicesAliasesRequest> requestValidators
     ) {
         super(
+            client,
             IndicesAliasesAction.NAME,
             transportService,
             clusterService,

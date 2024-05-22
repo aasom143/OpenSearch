@@ -32,8 +32,11 @@
 
 package org.opensearch.common.util.concurrent;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.action.ActionRunnable;
 import org.opensearch.action.support.ContextPreservingActionListener;
+import org.opensearch.client.FilterClient;
 import org.opensearch.common.collect.Tuple;
 import org.opensearch.core.action.ActionListener;
 
