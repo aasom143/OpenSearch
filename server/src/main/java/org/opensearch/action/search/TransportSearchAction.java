@@ -481,6 +481,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     listener,
                     searchRequestContext
                 );
+                logger.info("guptasom-search After buildRewriteListener");
                 if (sr.source() == null) {
                     rewriteListener.onResponse(sr.source());
                 } else {
@@ -525,6 +526,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
             }
             OriginalIndices localIndices = remoteClusterIndices.remove(RemoteClusterAware.LOCAL_CLUSTER_GROUP_KEY);
             if (remoteClusterIndices.isEmpty()) {
+                logger.info("guptasom-search executeLocalSearch");
                 executeLocalSearch(
                     task,
                     timeProvider,
@@ -537,6 +539,7 @@ public class TransportSearchAction extends HandledTransportAction<SearchRequest,
                     searchRequestContext
                 );
             } else {
+                logger.info("guptasom-search else executeLocalSearch");
                 if (shouldMinimizeRoundtrips(searchRequest)) {
                     ccsRemoteReduce(
                         searchRequest,

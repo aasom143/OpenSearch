@@ -12,11 +12,14 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.action.admin.cluster.node.tasks.cancel.CancelTasksRequest;
+import org.opensearch.action.admin.cluster.node.tasks.cancel.CancelTasksResponse;
 import org.opensearch.client.OriginSettingClient;
 import org.opensearch.client.node.NodeClient;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.action.ActionListener;
+import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
+import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.core.tasks.TaskId;
 import org.opensearch.search.SearchService;
 import org.opensearch.tasks.CancellableTask;
@@ -59,6 +62,7 @@ public class TimeoutTaskCancellationUtility {
             : taskToCancel.getCancellationTimeout();
         // Note: -1 (or no timeout) will help to turn off cancellation. The combinations will be request level set at -1 or request level
         // set to null and cluster level set to -1.
+        logger.info("Timeout for cancellation: {}", timeoutInterval);
         ActionListener<Response> listenerToReturn = listener;
         if (timeoutInterval.equals(SearchService.NO_TIMEOUT)) {
             return listenerToReturn;
@@ -66,6 +70,7 @@ public class TimeoutTaskCancellationUtility {
 
         try {
             final TimeoutRunnableListener<Response> wrappedListener = new TimeoutRunnableListener<>(timeoutInterval, listener, () -> {
+                logger.info("Under Cancellation Here timeout: "+ timeoutInterval + " "+ client.getLocalNodeId() + " " + taskToCancel.getId());
                 final CancelTasksRequest cancelTasksRequest = new CancelTasksRequest();
                 cancelTasksRequest.setTaskId(new TaskId(client.getLocalNodeId(), taskToCancel.getId()));
                 cancelTasksRequest.setReason("Cancellation timeout of " + timeoutInterval + " is expired");
@@ -74,21 +79,28 @@ public class TimeoutTaskCancellationUtility {
                     .cluster()
                     .cancelTasks(
                         cancelTasksRequest,
-                        ActionListener.wrap(
-                            r -> logger.debug(
-                                "Scheduled cancel task with timeout: {} for original task: {} is successfully completed",
-                                timeoutInterval,
-                                cancelTasksRequest.getTaskId()
-                            ),
-                            e -> logger.error(
-                                new ParameterizedMessage(
-                                    "Scheduled cancel task with timeout: {} for original task: {} is failed",
+                        new ActionListener<CancelTasksResponse>(){
+                            @Override
+                            public void onResponse(CancelTasksResponse response) {
+                                logger.debug(
+                                    "Scheduled cancel task with timeout: {} for original task: {} is successfully completed",
                                     timeoutInterval,
                                     cancelTasksRequest.getTaskId()
-                                ),
-                                e
-                            )
-                        )
+                                );
+//                                listener.onResponse((Response) response);
+                            }
+                            @Override
+                            public void onFailure(Exception e) {
+                                logger.error(
+                                    new ParameterizedMessage(
+                                        "Scheduled cancel task with timeout: {} for original task: {} is failed",
+                                        timeoutInterval,
+                                        cancelTasksRequest.getTaskId()
+                                    ),
+                                    e
+                                );
+                            }
+                        }
                     );
             });
             wrappedListener.cancellable = client.threadPool().schedule(wrappedListener, timeoutInterval, ThreadPool.Names.GENERIC);
@@ -96,6 +108,7 @@ public class TimeoutTaskCancellationUtility {
         } catch (Exception ex) {
             // if there is any exception in scheduling the cancellation task then continue without it
             logger.warn("Failed to schedule the cancellation task for original task: {}, will continue without it", taskToCancel.getId());
+            throw ex;
         }
         return listenerToReturn;
     }

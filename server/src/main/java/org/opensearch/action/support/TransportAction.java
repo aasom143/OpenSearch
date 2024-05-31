@@ -44,6 +44,7 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.core.tasks.TaskId;
+import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 import org.opensearch.tasks.TaskListener;
 import org.opensearch.tasks.TaskManager;
@@ -98,6 +99,7 @@ public abstract class TransportAction<Request extends ActionRequest, Response ex
         final Task task;
 
         try {
+            logger.info("came here + " + actionName + " " + request.getParentTask());
             task = taskManager.register("transport", actionName, request);
         } catch (TaskCancelledException e) {
             unregisterChildNode.close();

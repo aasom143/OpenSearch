@@ -41,8 +41,11 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.tasks.TaskId;
+import org.opensearch.rest.action.cat.AdminTask;
 
 import java.io.IOException;
+import java.util.Map;
 
 /**
  * Transport request for obtaining cluster state
@@ -64,6 +67,8 @@ public class ClusterStateRequest extends ClusterManagerNodeReadRequest<ClusterSt
     private String[] indices = Strings.EMPTY_ARRAY;
     private IndicesOptions indicesOptions = IndicesOptions.lenientExpandOpen();
 
+    private TimeValue cancelAfterTimeInterval;
+
     public ClusterStateRequest() {}
 
     public ClusterStateRequest(StreamInput in) throws IOException {
@@ -77,6 +82,19 @@ public class ClusterStateRequest extends ClusterManagerNodeReadRequest<ClusterSt
         indicesOptions = IndicesOptions.readIndicesOptions(in);
         waitForTimeout = in.readTimeValue();
         waitForMetadataVersion = in.readOptionalLong();
+    }
+
+    @Override
+    public AdminTask createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
+        return new AdminTask(id, type, action, parentTaskId, headers, cancelAfterTimeInterval);
+    }
+
+    public void setCancelAfterTimeInterval(TimeValue cancelAfterTimeInterval) {
+        this.cancelAfterTimeInterval = cancelAfterTimeInterval;
+    }
+
+    public TimeValue getCancelAfterTimeInterval() {
+        return cancelAfterTimeInterval;
     }
 
     @Override

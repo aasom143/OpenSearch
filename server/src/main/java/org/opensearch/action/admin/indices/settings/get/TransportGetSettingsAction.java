@@ -34,6 +34,7 @@ package org.opensearch.action.admin.indices.settings.get;
 
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockException;
 import org.opensearch.cluster.block.ClusterBlockLevel;
@@ -67,6 +68,30 @@ public class TransportGetSettingsAction extends TransportClusterManagerNodeReadA
     private final IndexScopedSettings indexScopedSettings;
 
     @Inject
+    public TransportGetSettingsAction(
+        NodeClient client,
+        TransportService transportService,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        SettingsFilter settingsFilter,
+        ActionFilters actionFilters,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        IndexScopedSettings indexedScopedSettings
+    ) {
+        super(
+            client,
+            GetSettingsAction.NAME,
+            transportService,
+            clusterService,
+            threadPool,
+            actionFilters,
+            GetSettingsRequest::new,
+            indexNameExpressionResolver
+        );
+        this.settingsFilter = settingsFilter;
+        this.indexScopedSettings = indexedScopedSettings;
+    }
+
     public TransportGetSettingsAction(
         TransportService transportService,
         ClusterService clusterService,

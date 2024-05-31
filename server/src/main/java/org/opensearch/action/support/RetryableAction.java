@@ -180,6 +180,7 @@ public abstract class RetryableAction<Response> {
         public void onResponse(Response response) {
             if (isDone.compareAndSet(false, true)) {
                 onFinished();
+                logger.info("finalListener listener called");
                 finalListener.onResponse(response);
             }
         }

@@ -32,6 +32,8 @@
 
 package org.opensearch.rest.action.cat;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.OpenSearchParseException;
 import org.opensearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
@@ -82,12 +84,17 @@ import static java.util.Collections.unmodifiableList;
 import static org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest.DEFAULT_CLUSTER_MANAGER_NODE_TIMEOUT;
 import static org.opensearch.rest.RestRequest.Method.GET;
 
+import java.time.format.DateTimeFormatter;
+import java.time.LocalDateTime;
+
 /**
  * _cat API action to list indices
  *
  * @opensearch.api
  */
 public class RestIndicesAction extends AbstractCatAction {
+
+    private static final Logger logger = LogManager.getLogger(RestIndicesAction.class);
 
     private static final DateFormatter STRICT_DATE_TIME_FORMATTER = DateFormatter.forPattern("strict_date_time");
     private static final DeprecationLogger deprecationLogger = DeprecationLogger.getLogger(RestIndicesAction.class);
@@ -134,6 +141,10 @@ public class RestIndicesAction extends AbstractCatAction {
         final TimeValue clusterManagerNodeTimeout = clusterManagerTimeout;
         final boolean includeUnloadedSegments = request.paramAsBoolean("include_unloaded_segments", false);
 
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss:ms");
+        LocalDateTime now1 = LocalDateTime.now();
+        logger.info("Cat Indices API: clusterManagerTimeout - {}. Curren time - {}", clusterManagerNodeTimeout, dtf.format(now1));
+
         return channel -> {
             final ActionListener<Table> listener = ActionListener.notifyOnce(new RestResponseListener<Table>(channel) {
                 @Override
@@ -141,6 +152,8 @@ public class RestIndicesAction extends AbstractCatAction {
                     return RestTable.buildResponse(table, channel);
                 }
             });
+            LocalDateTime now2 = LocalDateTime.now();
+            logger.info("Cat Indices API: clusterManagerTimeout - {}. Before sendGetSettingsRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
 
             sendGetSettingsRequest(
                 indices,
@@ -148,6 +161,7 @@ public class RestIndicesAction extends AbstractCatAction {
                 local,
                 clusterManagerNodeTimeout,
                 client,
+                clusterManagerNodeTimeout,
                 new ActionListener<GetSettingsResponse>() {
                     @Override
                     public void onResponse(final GetSettingsResponse getSettingsResponse) {
@@ -171,6 +185,8 @@ public class RestIndicesAction extends AbstractCatAction {
                         // This behavior can be ensured by letting the cluster state, cluster health and indices stats requests re-resolve
                         // the
                         // index names with the same indices options that we used for the initial cluster state request (strictExpand).
+                        LocalDateTime now2 = LocalDateTime.now();
+                        logger.info("Cat Indices API: clusterManagerTimeout - {}. Before sendIndicesStatsRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
                         sendIndicesStatsRequest(
                             indices,
                             subRequestIndicesOptions,
@@ -178,6 +194,8 @@ public class RestIndicesAction extends AbstractCatAction {
                             client,
                             ActionListener.wrap(groupedListener::onResponse, groupedListener::onFailure)
                         );
+                        now2 = LocalDateTime.now();
+                        logger.info("Cat Indices API: clusterManagerTimeout - {}. Before sendClusterStateRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
                         sendClusterStateRequest(
                             indices,
                             subRequestIndicesOptions,
@@ -186,6 +204,8 @@ public class RestIndicesAction extends AbstractCatAction {
                             client,
                             ActionListener.wrap(groupedListener::onResponse, groupedListener::onFailure)
                         );
+                        now2 = LocalDateTime.now();
+                        logger.info("Cat Indices API: clusterManagerTimeout - {}. Before sendClusterHealthRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
                         sendClusterHealthRequest(
                             indices,
                             subRequestIndicesOptions,
@@ -194,14 +214,19 @@ public class RestIndicesAction extends AbstractCatAction {
                             client,
                             ActionListener.wrap(groupedListener::onResponse, groupedListener::onFailure)
                         );
+                        now2 = LocalDateTime.now();
+                        logger.info("Cat Indices API: clusterManagerTimeout - {}. After sendClusterHealthRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
                     }
 
                     @Override
                     public void onFailure(final Exception e) {
+                        logger.info("Reached on failure");
                         listener.onFailure(e);
                     }
                 }
             );
+            now2 = LocalDateTime.now();
+            logger.info("Cat Indices API: clusterManagerTimeout - {}. After sendGetSettingsRequest Current time - {}", clusterManagerNodeTimeout, dtf.format(now2));
         };
     }
 
@@ -219,10 +244,13 @@ public class RestIndicesAction extends AbstractCatAction {
         final boolean local,
         final TimeValue clusterManagerNodeTimeout,
         final NodeClient client,
+        final TimeValue timeout,
         final ActionListener<GetSettingsResponse> listener
     ) {
+        logger.info("LocalID: {}", client.getLocalNodeId());
         final GetSettingsRequest request = new GetSettingsRequest();
         request.indices(indices);
+        request.setCancelAfterTimeInterval(timeout);
         request.indicesOptions(indicesOptions);
         request.local(local);
         request.clusterManagerNodeTimeout(clusterManagerNodeTimeout);
@@ -245,7 +273,7 @@ public class RestIndicesAction extends AbstractCatAction {
         request.indicesOptions(indicesOptions);
         request.local(local);
         request.clusterManagerNodeTimeout(clusterManagerNodeTimeout);
-
+        request.setCancelAfterTimeInterval(clusterManagerNodeTimeout);
         client.admin().cluster().state(request, listener);
     }
 

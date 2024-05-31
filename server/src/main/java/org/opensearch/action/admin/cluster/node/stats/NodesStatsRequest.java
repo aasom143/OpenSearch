@@ -35,15 +35,14 @@ package org.opensearch.action.admin.cluster.node.stats;
 import org.opensearch.action.admin.indices.stats.CommonStatsFlags;
 import org.opensearch.action.support.nodes.BaseNodesRequest;
 import org.opensearch.common.annotation.PublicApi;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.tasks.TaskId;
+import org.opensearch.rest.action.cat.AdminTask;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.SortedSet;
-import java.util.TreeSet;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +56,8 @@ public class NodesStatsRequest extends BaseNodesRequest<NodesStatsRequest> {
     private CommonStatsFlags indices = new CommonStatsFlags();
     private final Set<String> requestedMetrics = new HashSet<>();
 
+    private TimeValue cancelAfterTimeInterval;
+
     public NodesStatsRequest() {
         super((String[]) null);
     }
@@ -67,6 +68,7 @@ public class NodesStatsRequest extends BaseNodesRequest<NodesStatsRequest> {
         indices = new CommonStatsFlags(in);
         requestedMetrics.clear();
         requestedMetrics.addAll(in.readStringList());
+        cancelAfterTimeInterval = in.readOptionalTimeValue();
     }
 
     /**
@@ -93,6 +95,19 @@ public class NodesStatsRequest extends BaseNodesRequest<NodesStatsRequest> {
         this.indices.clear();
         this.requestedMetrics.clear();
         return this;
+    }
+
+    @Override
+    public AdminTask createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
+        return new AdminTask(id, type, action, parentTaskId, headers, cancelAfterTimeInterval);
+    }
+
+    public void setCancelAfterTimeInterval(TimeValue cancelAfterTimeInterval) {
+        this.cancelAfterTimeInterval = cancelAfterTimeInterval;
+    }
+
+    public TimeValue getCancelAfterTimeInterval() {
+        return cancelAfterTimeInterval;
     }
 
     /**

@@ -41,9 +41,11 @@ import org.opensearch.action.bulk.BackoffPolicy;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.action.support.RetryableAction;
+import org.opensearch.action.support.TimeoutTaskCancellationUtility;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionAction;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionRequest;
 import org.opensearch.action.support.clustermanager.term.GetTermVersionResponse;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterManagerNodeChangePredicate;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
@@ -62,9 +64,12 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.Writeable;
+import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.discovery.ClusterManagerNotDiscoveredException;
+import org.opensearch.node.Node;
 import org.opensearch.node.NodeClosedException;
 import org.opensearch.ratelimitting.admissioncontrol.enums.AdmissionControlActionType;
+import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.ConnectTransportException;
@@ -94,6 +99,7 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
     protected final TransportService transportService;
     protected final ClusterService clusterService;
     protected final IndexNameExpressionResolver indexNameExpressionResolver;
+    private final NodeClient client;
 
     private final String executor;
 
@@ -149,6 +155,28 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
         this.threadPool = threadPool;
         this.indexNameExpressionResolver = indexNameExpressionResolver;
         this.executor = executor();
+        this.client = null;
+    }
+
+    protected TransportClusterManagerNodeAction(
+        NodeClient client,
+        String actionName,
+        boolean canTripCircuitBreaker,
+        AdmissionControlActionType admissionControlActionType,
+        TransportService transportService,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        ActionFilters actionFilters,
+        Writeable.Reader<Request> request,
+        IndexNameExpressionResolver indexNameExpressionResolver
+    ) {
+        super(actionName, canTripCircuitBreaker, admissionControlActionType, transportService, actionFilters, request);
+        this.transportService = transportService;
+        this.clusterService = clusterService;
+        this.threadPool = threadPool;
+        this.indexNameExpressionResolver = indexNameExpressionResolver;
+        this.executor = executor();
+        this.client = client;
     }
 
     protected abstract String executor();
@@ -197,6 +225,37 @@ public abstract class TransportClusterManagerNodeAction<Request extends ClusterM
         if (task != null) {
             request.setParentTask(clusterService.localNode().getId(), task.getId());
         }
+        if (task instanceof CancellableTask) {
+            logger.info("Executing action: "+ task.getAction()+ " getLocalNodeId: " + client.getLocalNodeId() + " task id :" + task.getId());
+            TimeoutTaskCancellationUtility.wrapWithCancellationListener(
+                client,
+                (CancellableTask) task,
+                clusterService.getClusterSettings(),
+                new ActionListener<Response>() {
+                    @Override
+                    public void onResponse(Response response) {
+                        logger.info("Came under cancellation response {}", ((CancellableTask) task).isCancelled());
+                        if(((CancellableTask) task).isCancelled()){
+                            listener.onFailure(new TaskCancelledException("cancelled task with reason: " + ((CancellableTask) task).getReasonCancelled()));
+//                            throw new TaskCancelledException("cancelled task with reason: " + ((CancellableTask) task).getReasonCancelled());
+                        }
+                    }
+                    @Override
+                    public void onFailure(Exception e) {}
+                }
+            );
+        }
+        try {
+            if (task instanceof CancellableTask)
+                Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        logger.info("Reached here.");
+//        if(task instanceof CancellableTask && ((CancellableTask) task).isCancelled()){
+//            logger.info("Reached under CancellableTask.");
+//            throw new TaskCancelledException("cancelled task with reason: " + ((CancellableTask) task).getReasonCancelled());
+//        }
         new AsyncSingleAction(task, request, listener).run();
     }
 

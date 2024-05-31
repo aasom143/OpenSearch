@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.clustermanager.TransportClusterManagerNodeReadAction;
+import org.opensearch.client.node.NodeClient;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateObserver;
 import org.opensearch.cluster.NotClusterManagerException;
@@ -75,6 +76,27 @@ public class TransportClusterStateAction extends TransportClusterManagerNodeRead
     }
 
     @Inject
+    public TransportClusterStateAction(
+        NodeClient client,
+        TransportService transportService,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        ActionFilters actionFilters,
+        IndexNameExpressionResolver indexNameExpressionResolver
+    ) {
+        super(
+            client,
+            ClusterStateAction.NAME,
+            false,
+            transportService,
+            clusterService,
+            threadPool,
+            actionFilters,
+            ClusterStateRequest::new,
+            indexNameExpressionResolver
+        );
+    }
+
     public TransportClusterStateAction(
         TransportService transportService,
         ClusterService clusterService,

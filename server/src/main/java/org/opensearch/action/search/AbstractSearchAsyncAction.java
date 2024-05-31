@@ -468,6 +468,7 @@ abstract class AbstractSearchAsyncAction<Result extends SearchPhaseResult> exten
     }
 
     private void executePhase(SearchPhase phase) {
+        logger.info("guptasom-search. Under phase: "+ "[phase/" + phase.getName() + "]");
         Span phaseSpan = tracer.startSpan(SpanCreationContext.server().name("[phase/" + phase.getName() + "]"));
         try (final SpanScope scope = tracer.withSpanInScope(phaseSpan)) {
             onPhaseStart(phase);
