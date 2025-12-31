@@ -1,5 +1,6 @@
 package com.parquet.parquetdataformat.writer;
 
+import com.parquet.parquetdataformat.iceberg.IcebergFileTracker;
 import com.parquet.parquetdataformat.memory.ArrowBufferPool;
 import com.parquet.parquetdataformat.vsr.VSRManager;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -29,6 +30,7 @@ import static com.parquet.parquetdataformat.engine.ParquetDataFormat.PARQUET_DAT
  *   <li>Batch-oriented writing with memory management</li>
  *   <li>Integration with OpenSearch indexing pipeline</li>
  *   <li>Native Rust backend for high-performance Parquet operations</li>
+ *   <li>Iceberg metadata tracking for table management</li>
  * </ul>
  *
  * <p>The writer manages the complete lifecycle from document addition through
@@ -43,12 +45,14 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
     private final Schema schema;
     private final VSRManager vsrManager;
     private final long writerGeneration;
+    private final IcebergFileTracker icebergTracker;
 
     public ParquetWriter(String file, Schema schema, long writerGeneration, ArrowBufferPool arrowBufferPool) {
         this.file = file;
         this.schema = schema;
         this.vsrManager = new VSRManager(file, schema, arrowBufferPool);
         this.writerGeneration = writerGeneration;
+        this.icebergTracker = new IcebergFileTracker();
     }
 
     @Override
@@ -69,6 +73,12 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
             .writerGeneration(writerGeneration)
             .addFile(file.getFileName().toString())
             .build();
+
+       // Track file for Iceberg (will be committed on refresh)
+       icebergTracker.trackFile(fileName);
+
+       // Commit immediately since file is ready
+       icebergTracker.commitPending();
         return FileInfos.builder().putWriterFileSet(PARQUET_DATA_FORMAT, writerFileSet).build();
     }
 
@@ -92,5 +102,13 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
 
         // Get a new ManagedVSR from VSRManager for this document input
         return new ParquetDocumentInput(vsrManager.getActiveManagedVSR());
+    }
+
+    /**
+     * Get the Iceberg file tracker for this writer.
+     * Used by refresh operations to commit pending files.
+     */
+    public IcebergFileTracker getIcebergTracker() {
+        return icebergTracker;
     }
 }

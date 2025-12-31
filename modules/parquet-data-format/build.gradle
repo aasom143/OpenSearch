@@ -47,6 +47,13 @@ opensearchplugin {
   noticeFile = rootProject.file('NOTICE.txt')
 }
 
+// Include plugin security policy in bundle
+tasks.named('bundlePlugin').configure {
+  from('src/main/resources') {
+    include 'plugin-security.policy'
+  }
+}
+
 // This requires an additional Jar not published as part of build-tools
 loggerUsageCheck.enabled = false
 
@@ -67,6 +74,7 @@ buildscript {
 
   dependencies {
     classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+    // Shadow plugin already included in build-tools
   }
 }
 
@@ -77,11 +85,30 @@ repositories {
   maven { url = "https://plugins.gradle.org/m2/" }
 }
 
+// Define configurations for JarJar shading
+configurations {
+  jarjar {
+    resolutionStrategy {
+      force 'org.codehaus.plexus:plexus-utils:3.0.22'
+    }
+  }
+  icebergBundle
+}
+
 configurations.all {
   resolutionStrategy {
     force 'commons-codec:commons-codec:1.18.0'
     force 'org.slf4j:slf4j-api:2.0.17'
   }
+
+  // Exclude conflicting dependencies to prevent jar hell
+  exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+  exclude group: 'log4j', module: 'log4j'
+  exclude group: 'commons-logging', module: 'commons-logging'
+  exclude group: 'javax.servlet', module: 'servlet-api'
+  exclude group: 'org.eclipse.jetty'
+  exclude group: 'org.mortbay.jetty'
+  exclude group: 'it.unimi.dsi', module: 'fastutil'
 }
 
 dependencies {
@@ -115,7 +142,104 @@ dependencies {
 
   // Bridge for slf4j<-->log4j compatibility
   implementation "org.apache.logging.log4j:log4j-slf4j2-impl:2.23.1"
+
+  // Apache Iceberg dependencies for metadata management (with exclusions)
+  implementation('org.apache.iceberg:iceberg-core:1.6.1') {
+    exclude group: 'org.apache.hadoop'
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.iceberg:iceberg-api:1.6.1') {
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.iceberg:iceberg-common:1.6.1') {
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.iceberg:iceberg-data:1.6.1') {
+    exclude group: 'org.apache.hadoop'
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.iceberg:iceberg-parquet:1.6.1') {
+    exclude group: 'org.apache.hadoop'
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.iceberg:iceberg-bundled-guava:1.6.1') {
+    exclude group: 'org.slf4j'
+  }
+
+  // Hadoop dependencies for Iceberg catalog (with exclusions to prevent jar hell)
+  // Only include hadoop-common as it contains the necessary classes
+  implementation('org.apache.hadoop:hadoop-common:3.4.1') {
+    exclude group: 'org.slf4j'
+    exclude group: 'log4j'
+    exclude group: 'commons-logging'
+    exclude group: 'javax.servlet'
+    exclude group: 'org.eclipse.jetty'
+  }
+
+  // Parquet dependencies for file operations - using only parquet-hadoop to avoid shaded class conflicts
+  implementation 'org.apache.parquet:parquet-hadoop:1.15.0'
+  // implementation 'org.apache.parquet:parquet-column:1.15.0'  // Excluded to avoid jar hell
+  implementation 'org.apache.parquet:parquet-common:1.15.0'
+  implementation 'org.apache.parquet:parquet-encoding:1.15.0'
+  implementation 'org.apache.parquet:parquet-format-structures:1.15.0'
+
+  // AWS Glue catalog dependencies
+  // Use regular iceberg-aws for compile-time API access
+  implementation('org.apache.iceberg:iceberg-aws:1.6.1') {
+    exclude group: 'org.apache.hadoop'
+    exclude group: 'org.slf4j'
+  }
+  
+  // JarJar for shading
+  jarjar 'org.pantsbuild:jarjar:1.7.2'
+  
+  // Iceberg bundle to be shaded
+  icebergBundle('org.apache.iceberg:iceberg-aws-bundle:1.6.1')
+  
+  // Shaded bundle as runtime dependency
+  runtimeOnly files("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar") {
+    builtBy 'shadeIcebergBundle'
+  }
 }
+
+// Shade iceberg-aws-bundle using Ant JarJar to relocate reactive-streams
+tasks.register('shadeIcebergBundle') {
+  description = 'Shade iceberg-aws-bundle to relocate reactive-streams and avoid jar hell'
+  
+  def outputJar = file("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar")
+  
+  inputs.files(configurations.icebergBundle)
+  outputs.file(outputJar)
+  
+  doLast {
+    def inputJar = configurations.icebergBundle.singleFile
+    
+    // Define jarjar Ant task
+    ant.taskdef(
+      name: 'jarjar',
+      classname: 'org.pantsbuild.jarjar.JarJarTask',
+      classpath: configurations.jarjar.asPath
+    )
+    
+    // Create shaded JAR with relocated reactive-streams
+    ant.jarjar(jarfile: outputJar.absolutePath) {
+      zipfileset(src: inputJar.absolutePath)
+      rule(pattern: 'org.reactivestreams.**', result: 'com.parquet.shaded.org.reactivestreams.@1')
+    }
+    
+    logger.lifecycle("Created shaded bundle: ${outputJar}")
+  }
+}
+
+// Add shaded JAR as runtime dependency
+dependencies {
+  runtimeOnly files("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar") {
+    builtBy shadeIcebergBundle
+  }
+}
+
+// Ensure shaded JAR is built before packaging
+processResources.dependsOn shadeIcebergBundle
 
 test {
   include '**/*Tests.class'
@@ -123,7 +247,13 @@ test {
   if (JavaVersion.current().isJava9Compatible()) {
     jvmArgs '--add-opens=java.base/java.nio=ALL-UNNAMED'
     jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED'
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
+
+  // System properties for Iceberg with Glue
+  systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
+  systemProperty 'aws.region', System.getProperty('aws.region', 'us-west-2')
 }
 
 task integTest(type: RestIntegTestTask) {
@@ -138,7 +268,13 @@ integTest {
   if (JavaVersion.current().isJava9Compatible()) {
     jvmArgs '--add-opens=java.base/java.nio=ALL-UNNAMED'
     jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED'
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
+
+  // System properties for Iceberg with Glue
+  systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
+  systemProperty 'aws.region', System.getProperty('aws.region', 'us-west-2')
 
   // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable
   if (System.getProperty("test.debug") != null) {
@@ -151,6 +287,15 @@ testClusters.integTest {
 
   // This installs our plugin into the testClusters
   plugin(project.tasks.bundlePlugin.archiveFile)
+  
+  // JVM args for reflection access needed by Iceberg's DynMethods
+  if (JavaVersion.current().isJava9Compatible()) {
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    jvmArgs '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED'
+  }
+  
+  // Enable reflection setAccessible for Iceberg
+  systemProperty 'io.netty.tryReflectionSetAccessible', 'true'
 }
 
 run {
@@ -296,3 +441,4 @@ task updateVersion {
 
 // Disable specific license tasks
 licenseHeaders.enabled = false
+dependencyLicenses.enabled = false

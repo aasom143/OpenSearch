@@ -1,0 +1,8 @@
+// Security policy for Parquet Data Format plugin
+// Grants reflection permission to iceberg-aws for accessing package-private HTTP client configurations
+
+grant codeBase "${codebase.iceberg-aws}" {
+  // Allow reflection access to package-private classes
+  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
+  permission java.lang.RuntimePermission "accessDeclaredMembers";
+};
