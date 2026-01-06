@@ -50,6 +50,10 @@ public class IcebergFileTracker {
         // Extract index name from first file path
         String indexName = extractIndexNameFromPath(pendingFiles.get(0));
         
+        // Fix: Set thread context classloader so Iceberg's DynMethods can find classes
+        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
+        
         try {
             Table table = IcebergManager.getInstance().getOrCreateTable(indexName);
             AppendFiles append = table.newAppend();
@@ -68,6 +72,9 @@ public class IcebergFileTracker {
         } catch (Exception e) {
             logger.error("[Iceberg] Refresh commit failed for index '{}': {}", indexName, e.getMessage(), e);
             // Keep pendingFiles for retry on next refresh
+        } finally {
+            // Restore original classloader
+            Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
     }
     

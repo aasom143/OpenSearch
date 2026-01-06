@@ -10,7 +10,10 @@ package com.parquet.parquetdataformat.iceberg;
 
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.aws.glue.GlueCatalog;
+import org.apache.iceberg.aws.AwsProperties;
+import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.Schema;
 import org.apache.logging.log4j.LogManager;
@@ -32,23 +35,20 @@ public class IcebergManager {
     private final ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<>();
 
     private IcebergManager() {
-        // Initialize Glue catalog
+        System.out.println("[Iceberg] Initializing Glue catalog with classloader fix...");
+        
         this.catalog = new GlueCatalog();
 
         Map<String, String> properties = new HashMap<>();
         properties.put("warehouse", System.getProperty("iceberg.warehouse", "s3://srirasac-iceberg-test/os-warehouse"));
         properties.put("io-impl", "org.apache.iceberg.aws.s3.S3FileIO");
-
-        // Configure AWS region
+        
         String region = System.getProperty("aws.region", "us-west-2");
         properties.put("glue.region", region);
-        
-        // Use URLConnection HTTP client instead of Apache client to avoid reflection issues
-        properties.put("http-client.type", "urlconnection");
 
         catalog.initialize("glue_catalog", properties);
 
-        logger.info("[Iceberg] Initialized Glue catalog in region: {} with urlconnection HTTP client", region);
+        System.out.println("[Iceberg] Initialized Glue catalog in region: " + region);
     }
 
     public static IcebergManager getInstance() {
@@ -60,7 +60,24 @@ public class IcebergManager {
     }
 
     private Table createTable(String indexName) {
-        TableIdentifier id = TableIdentifier.of("opensearch", indexName);
+        // AWS Glue requires lowercase table names
+        String tableName = indexName.toLowerCase().replace("-", "_");
+        
+        // Ensure namespace/database exists
+        Namespace namespace = Namespace.of("opensearch");
+        try {
+            catalog.loadNamespaceMetadata(namespace);
+            System.out.println("[Iceberg] Namespace 'opensearch' already exists");
+        } catch (Exception e) {
+            try {
+                catalog.createNamespace(namespace);
+                System.out.println("[Iceberg] Created namespace 'opensearch' in Glue");
+            } catch (Exception createEx) {
+                System.out.println("[Iceberg] Failed to create namespace: " + createEx.getMessage());
+            }
+        }
+        
+        TableIdentifier id = TableIdentifier.of("opensearch", tableName);
 
         try {
             Table table = catalog.loadTable(id);
@@ -73,7 +90,7 @@ public class IcebergManager {
             );
 
             // Create table with S3 location
-            String warehouse = System.getProperty("iceberg.warehouse", "s3://opensearch-iceberg-warehouse/");
+            String warehouse = System.getProperty("iceberg.warehouse", "s3://srirasac-iceberg-test/os-warehouse/");
             String tableLocation = warehouse + "opensearch/" + indexName;
 
             Table table = catalog.buildTable(id, schema)

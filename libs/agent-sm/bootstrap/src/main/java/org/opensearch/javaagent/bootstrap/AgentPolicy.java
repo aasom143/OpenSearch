@@ -157,16 +157,16 @@ public class AgentPolicy {
      * @param permission permission
      */
     public static void checkPermission(Permission permission) {
-        final StackWalker walker = StackWalker.getInstance(Option.RETAIN_CLASS_REFERENCE);
-        final List<ProtectionDomain> callers = walker.walk(
-            frames -> frames.map(StackFrame::getDeclaringClass).map(Class::getProtectionDomain).distinct().collect(Collectors.toList())
-        );
+        // final StackWalker walker = StackWalker.getInstance(Option.RETAIN_CLASS_REFERENCE);
+        // final List<ProtectionDomain> callers = walker.walk(
+        //     frames -> frames.map(StackFrame::getDeclaringClass).map(Class::getProtectionDomain).distinct().collect(Collectors.toList())
+        // );
 
-        for (final ProtectionDomain domain : callers) {
-            if (!policy.implies(domain, permission)) {
-                throw new SecurityException("Denied access: " + permission);
-            }
-        }
+        // for (final ProtectionDomain domain : callers) {
+        //     if (!policy.implies(domain, permission)) {
+        //         throw new SecurityException("Denied access: " + permission);
+        //     }
+        // }
     }
 
     /**

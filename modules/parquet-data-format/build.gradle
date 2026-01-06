@@ -143,6 +143,12 @@ dependencies {
   // Bridge for slf4j<-->log4j compatibility
   implementation "org.apache.logging.log4j:log4j-slf4j2-impl:2.23.1"
 
+  // Caffeine cache (required by Iceberg GlueCatalog)
+  implementation 'com.github.ben-manes.caffeine:caffeine:2.9.3'
+  
+  // Apache Avro (required by Iceberg)
+  implementation 'org.apache.avro:avro:1.11.3'
+  
   // Apache Iceberg dependencies for metadata management (with exclusions)
   implementation('org.apache.iceberg:iceberg-core:1.6.1') {
     exclude group: 'org.apache.hadoop'

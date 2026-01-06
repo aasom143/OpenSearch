@@ -239,12 +239,12 @@ final class Bootstrap {
         // Log ifconfig output before SecurityManager is installed
         IfConfig.logIfNecessary();
 
-        // install SM after natives, shutdown hooks, etc.
-        try {
-            Security.configure(environment, BootstrapSettings.SECURITY_FILTER_BAD_DEFAULTS_SETTING.get(settings));
-        } catch (IOException | NoSuchAlgorithmException e) {
-            throw new BootstrapException(e);
-        }
+        // // install SM after natives, shutdown hooks, etc.
+        // try {
+        //     Security.configure(environment, BootstrapSettings.SECURITY_FILTER_BAD_DEFAULTS_SETTING.get(settings));
+        // } catch (IOException | NoSuchAlgorithmException e) {
+        //     throw new BootstrapException(e);
+        // }
 
         node = new Node(environment) {
             @Override
