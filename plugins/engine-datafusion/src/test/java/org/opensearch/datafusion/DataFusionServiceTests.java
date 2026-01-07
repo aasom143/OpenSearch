@@ -40,6 +40,7 @@ import org.opensearch.index.shard.ShardPath;
 import org.opensearch.index.store.Store;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.plugins.Plugin;
+import org.opensearch.plugins.spi.vectorized.DataFormat;
 import org.opensearch.search.SearchShardTarget;
 import org.opensearch.search.aggregations.SearchResultsCollector;
 import org.opensearch.search.builder.SearchSourceBuilder;
@@ -53,7 +54,6 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.opensearch.threadpool.TestThreadPool;
 import org.opensearch.threadpool.ThreadPool;
-import org.opensearch.vectorized.execution.search.DataFormat;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -325,7 +325,7 @@ public class DataFusionServiceTests extends OpenSearchSingleNodeTestCase {
         ReaderContext readerContext = createAndPutReaderContext(shardSearchRequest, indexService, indexShard, reader);
         SearchShardTarget searchShardTarget = new SearchShardTarget("node_1", new ShardId("index-7", "index-7", 0), null, OriginalIndices.NONE);
         SearchShardTask searchShardTask = new SearchShardTask(0, "n/a", "n/a", "test", null, Collections.singletonMap(Task.X_OPAQUE_ID, "my_id"));
-        DatafusionContext datafusionContext = new DatafusionContext(readerContext, shardSearchRequest, searchShardTarget, searchShardTask, engine, null, null);
+        DatafusionContext datafusionContext = new DatafusionContext(readerContext, shardSearchRequest, searchShardTarget, searchShardTask, engine, null, null, null);
 
         byte[] protoContent;
         try (InputStream is = getClass().getResourceAsStream("/substrait_plan_test.pb")) {

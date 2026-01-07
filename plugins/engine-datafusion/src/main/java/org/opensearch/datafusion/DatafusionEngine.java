@@ -22,6 +22,7 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.OpenSearchException;
 import org.opensearch.action.search.SearchShardTask;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.util.BigArrays;
@@ -30,14 +31,33 @@ import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.xcontent.XContentBuilder;
-import org.opensearch.datafusion.search.*;
 import org.opensearch.datafusion.search.AsyncRecordBatchIterator;
+import org.opensearch.datafusion.search.DatafusionContext;
+import org.opensearch.datafusion.search.DatafusionQuery;
+import org.opensearch.datafusion.search.DatafusionReader;
+import org.opensearch.datafusion.search.DatafusionReaderManager;
+import org.opensearch.datafusion.search.DatafusionSearcher;
+import org.opensearch.datafusion.search.DatafusionSearcherSupplier;
+import org.opensearch.datafusion.search.RecordBatchIterator;
 import org.opensearch.datafusion.search.cache.CacheManager;
-import org.opensearch.index.engine.*;
+import org.opensearch.index.engine.CatalogSnapshotAwareRefreshListener;
+import org.opensearch.index.engine.Engine;
+import org.opensearch.index.engine.EngineException;
+import org.opensearch.index.engine.EngineSearcherSupplier;
+import org.opensearch.index.engine.FileDeletionListener;
+import org.opensearch.index.engine.SearchExecEngine;
 import org.opensearch.index.engine.exec.FileMetadata;
+import org.opensearch.index.engine.exec.FileStats;
 import org.opensearch.index.engine.exec.composite.CompositeDataFormatWriter;
-import org.opensearch.index.mapper.*;
+import org.opensearch.index.mapper.DerivedFieldGenerator;
+import org.opensearch.index.mapper.IdFieldMapper;
+import org.opensearch.index.mapper.Mapper;
+import org.opensearch.index.mapper.MapperService;
+import org.opensearch.index.mapper.MappingLookup;
+import org.opensearch.index.mapper.SeqNoFieldMapper;
+import org.opensearch.index.mapper.Uid;
 import org.opensearch.index.shard.ShardPath;
+import org.opensearch.plugins.spi.vectorized.DataFormat;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.SearchHit;
 import org.opensearch.search.SearchHits;
@@ -50,16 +70,17 @@ import org.opensearch.search.internal.ReaderContext;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.internal.ShardSearchRequest;
 import org.opensearch.search.lookup.SourceLookup;
-import org.opensearch.vectorized.execution.search.DataFormat;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.*;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 
@@ -78,8 +99,9 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 
     public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath) throws IOException {
         this.dataFormat = dataFormat;
-
-        this.datafusionReaderManager = new DatafusionReaderManager(shardPath.getDataPath().toString(), formatCatalogSnapshot, dataFormat.getName());
+        this.datafusionReaderManager = new DatafusionReaderManager(
+            shardPath.getDataPath().resolve(dataFormat.getName()).toString(), formatCatalogSnapshot, dataFormat.getName()
+        );
         this.datafusionService = dataFusionService;
         this.cacheManager = datafusionService.getCacheManager();
         this.rootAllocator = new RootAllocator(Long.MAX_VALUE);
@@ -92,8 +114,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     }
 
     @Override
-    public DatafusionContext createContext(ReaderContext readerContext, ShardSearchRequest request, SearchShardTarget searchShardTarget, SearchShardTask task, BigArrays bigArrays, SearchContext originalContext) throws IOException {
-        DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays, originalContext);
+    public DatafusionContext createContext(ReaderContext readerContext, ShardSearchRequest request, SearchShardTarget searchShardTarget, SearchShardTask task, BigArrays bigArrays, SearchContext originalContext, ClusterService clusterService) throws IOException {
+        DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays, originalContext, clusterService);
         // Parse source
         datafusionContext.datafusionQuery(new DatafusionQuery(request.shardId().getIndexName(), request.source().queryPlanIR(), new ArrayList<>()));
         return datafusionContext;
@@ -129,8 +151,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                 }
             };
         } catch (Exception ex) {
-            logger.error("Failed to acquire searcher {}", ex.toString(), ex);
-            // TODO
+            logger.error("Failed to acquire searcher", ex);
+            throw new RuntimeException(ex);
         }
         return searcher;
     }
@@ -264,6 +286,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     public void executeQueryPhaseAsync(DatafusionContext context, Executor executor, ActionListener<Map<String, Object[]>> listener) {
         try {
             DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
+            context.getDatafusionQuery().setQueryPlanExplainEnabled(context.evaluateSearchQueryExplainMode());
+
             datafusionSearcher.searchAsync(context.getDatafusionQuery(), datafusionService.getRuntimePointer()).whenCompleteAsync((streamPointer, error)-> {
                 Map<String, Object[]> finalRes = new HashMap<>();
                 List<Long> rowIdResult = new ArrayList<>();
@@ -395,7 +419,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             includeFields.add(CompositeDataFormatWriter.ROW_ID);
         }
         excludeFields.addAll(context.mapperService().documentMapper().mapping().getMetadataStringNames());
-        excludeFields.add(SeqNoFieldMapper.PRIMARY_TERM_NAME); // TODO: check why _primary_term is not part of metadata mapper fields
+        excludeFields.add(SeqNoFieldMapper.PRIMARY_TERM_NAME);
 
         context.getDatafusionQuery().setSource(includeFields, excludeFields);
         DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
@@ -484,6 +508,13 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                 logger.error("Failed to close stream", e);
                 throw new RuntimeException(e);
             }
+        }
+    }
+
+    @Override
+    public Map<String, FileStats> fetchSegmentStats() throws IOException {
+        try (DatafusionReader datafusionReader = datafusionReaderManager.acquire()) {
+            return datafusionReader.fetchSegmentStats();
         }
     }
 }

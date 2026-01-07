@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use datafusion::common::stats::Precision;
 use jni::sys::jlong;
 use datafusion::{
     common::DataFusionError,
@@ -51,7 +52,7 @@ use crate::listing_table::{ListingOptions, ListingTable, ListingTableConfig};
 use crate::partial_agg_optimizer::PartialAggregationOptimizer;
 use crate::executor::DedicatedExecutor;
 use crate::cross_rt_stream::CrossRtStream;
-use crate::CustomFileMeta;
+use crate::{CustomFileMeta, FileStats};
 use crate::DataFusionRuntime;
 use crate::project_row_id_analyzer::ProjectRowIdAnalyzer;
 use crate::absolute_row_id_optimizer::{AbsoluteRowIdOptimizer, ROW_BASE_FIELD_NAME, ROW_ID_FIELD_NAME};
@@ -107,6 +108,7 @@ pub async fn execute_query_with_cross_rt_stream(
     files_meta: Arc<Vec<CustomFileMeta>>,
     table_name: String,
     plan_bytes_vec: Vec<u8>,
+    is_query_plan_explain_enabled: bool,
     runtime: &DataFusionRuntime,
     cpu_executor: DedicatedExecutor,
 ) -> Result<jlong, DataFusionError> {
@@ -141,7 +143,7 @@ pub async fn execute_query_with_cross_rt_stream(
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = false;
     config.options_mut().execution.target_partitions = 1;
-    config.options_mut().execution.batch_size = 1024;
+    config.options_mut().execution.batch_size = 8192;
 
     let state = datafusion::execution::SessionStateBuilder::new()
         .with_config(config.clone())
@@ -271,9 +273,11 @@ pub async fn execute_query_with_cross_rt_stream(
     }
 
 
-    // println!("Explain show");
-    // let clone_df = dataframe.clone().explain(false, true);
-    // clone_df?.show().await?;
+    if is_query_plan_explain_enabled {
+        println!("---- Explain plan ----");
+        let clone_df = dataframe.clone().explain(false, true).expect("Failed to explain plan");
+        clone_df.show().await?;
+    }
 
     let df_stream = match execute_stream(physical_plan, ctx.task_ctx()) {
         Ok(stream) => stream,

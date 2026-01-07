@@ -98,6 +98,7 @@ import org.opensearch.core.index.AppendOnlyIndexOperationRetryException;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.VersionType;
+import org.opensearch.index.engine.exec.coord.LastRefreshedCheckpointListener;
 import org.opensearch.index.fieldvisitor.IdOnlyFieldVisitor;
 import org.opensearch.index.mapper.IdFieldMapper;
 import org.opensearch.index.mapper.ParseContext;
@@ -112,12 +113,14 @@ import org.opensearch.index.seqno.SeqNoStats;
 import org.opensearch.index.seqno.SequenceNumbers;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.shard.OpenSearchMergePolicy;
+import org.opensearch.index.translog.InternalTranslogManager;
 import org.opensearch.index.translog.NoOpTranslogManager;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.index.translog.TranslogCorruptedException;
 import org.opensearch.index.translog.TranslogDeletionPolicy;
 import org.opensearch.index.translog.TranslogException;
 import org.opensearch.index.translog.TranslogManager;
+import org.opensearch.index.translog.TranslogOperationHelper;
 import org.opensearch.index.translog.TranslogStats;
 import org.opensearch.index.translog.listener.CompositeTranslogEventListener;
 import org.opensearch.index.translog.listener.TranslogEventListener;
@@ -180,7 +183,7 @@ public class InternalEngine extends Engine {
     protected final LiveVersionMap versionMap = new LiveVersionMap();
 
     @Nullable
-    protected final String historyUUID;
+    protected String historyUUID;
 
     private final OpenSearchConcurrentMergeScheduler mergeScheduler;
     private final ExternalReaderManager externalReaderManager;
@@ -269,8 +272,10 @@ public class InternalEngine extends Engine {
             mergeScheduler = scheduler = new EngineMergeScheduler(engineConfig.getShardId(), engineConfig.getIndexSettings());
             throttle = new IndexThrottle();
             try {
-                // Interim solution: Skipping trimming of unsafe commits until IndexShard integration of CompositeEngine is completed.
-                // store.trimUnsafeCommits(engineConfig.getTranslogConfig().getTranslogPath());
+                // Interim solution: IndexShard should bypass initialization of the InternalEngine based on this setting; until that is implemented, we are using the setting here.
+                if (!engineConfig.getIndexSettings().isOptimizedIndex()) {
+                    store.trimUnsafeCommits(engineConfig.getTranslogConfig().getTranslogPath());
+                }
                 final Map<String, String> userData = store.readLastCommittedSegmentsInfo().getUserData();
                 String translogUUID = Objects.requireNonNull(userData.get(Translog.TRANSLOG_UUID_KEY));
                 TranslogEventListener internalTranslogEventListener = new TranslogEventListener() {
@@ -310,10 +315,17 @@ public class InternalEngine extends Engine {
                 this.localCheckpointTracker = createLocalCheckpointTracker(localCheckpointTrackerSupplier);
                 writer = createWriter();
                 bootstrapAppendOnlyInfoFromWriter(writer);
-                // Interim solution: Skipping loading historyUUID and forceMergeUUID until IndexShard integration of CompositeEngine is completed.
                 final Map<String, String> commitData = commitDataAsMap(writer);
                 historyUUID = null;
+                // Interim solution: IndexShard should bypass initialization of the InternalEngine based on this setting; until that is implemented, we are using the setting here.
+                if (!engineConfig.getIndexSettings().isOptimizedIndex()) {
+                    historyUUID = loadHistoryUUID(commitData);
+                }
+                // Interim solution: IndexShard should bypass initialization of the InternalEngine based on this setting; until that is implemented, we are using the setting here.
                 forceMergeUUID = null;
+                if (!engineConfig.getIndexSettings().isOptimizedIndex()) {
+                    forceMergeUUID = commitData.get(FORCE_MERGE_UUID_KEY);
+                }
                 indexWriter = writer;
             } catch (IOException | TranslogCorruptedException e) {
                 throw new EngineCreationFailureException(shardId, "failed to create engine", e);
@@ -337,7 +349,7 @@ public class InternalEngine extends Engine {
             for (ReferenceManager.RefreshListener listener : engineConfig.getInternalRefreshListener()) {
                 this.internalReaderManager.addListener(listener);
             }
-            this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker.getProcessedCheckpoint());
+            this.lastRefreshedCheckpointListener = new LastRefreshedCheckpointListener(localCheckpointTracker);
             this.internalReaderManager.addListener(lastRefreshedCheckpointListener);
             maxSeqNoOfUpdatesOrDeletes = new AtomicLong(
                 SequenceNumbers.max(localCheckpointTracker.getMaxSeqNo(), translogManager.getMaxSeqNo())
@@ -394,15 +406,33 @@ public class InternalEngine extends Engine {
         TranslogDeletionPolicy translogDeletionPolicy,
         CompositeTranslogEventListener translogEventListener
     ) throws IOException {
-        return new NoOpTranslogManager(
-            shardId,
-            readLock,
-            this::ensureOpen,
-            new TranslogStats(),
-            EMPTY_TRANSLOG_SNAPSHOT,
-            translogUUID,
-            true
-        );
+        if (engineConfig.getIndexSettings().isOptimizedIndex()) {
+            return new NoOpTranslogManager(
+                shardId,
+                readLock,
+                this::ensureOpen,
+                new TranslogStats(),
+                EMPTY_TRANSLOG_SNAPSHOT,
+                translogUUID,
+                true
+            );
+        } else {
+            return new InternalTranslogManager(
+                engineConfig.getTranslogConfig(),
+                engineConfig.getPrimaryTermSupplier(),
+                engineConfig.getGlobalCheckpointSupplier(),
+                translogDeletionPolicy,
+                shardId,
+                readLock,
+                this::getLocalCheckpointTracker,
+                translogUUID,
+                translogEventListener,
+                this::ensureOpen,
+                engineConfig.getTranslogFactory(),
+                engineConfig.getStartedPrimarySupplier(),
+                TranslogOperationHelper.create(engineConfig)
+            );
+        }
     }
 
     private LocalCheckpointTracker createLocalCheckpointTracker(
@@ -1892,14 +1922,21 @@ public class InternalEngine extends Engine {
         }
     }
 
-    // Interim solution: Configure InternalEngine to use a temporary directory to prevent IndexWriter conflicts with LuceneCommitEngine.
     private IndexWriter createWriter() throws IOException {
         try {
-            IndexWriterConfig iwc = new IndexWriterConfig(null).setSoftDeletesField(Lucene.SOFT_DELETES_FIELD)
-                .setCommitOnClose(false)
-                .setMergePolicy(NoMergePolicy.INSTANCE)
-                .setOpenMode(IndexWriterConfig.OpenMode.CREATE);
-            Directory directory = new NIOFSDirectory(Files.createTempDirectory("tmp-internal-engine-"));
+            IndexWriterConfig iwc;
+            Directory directory;
+            // Interim solution: IndexShard should bypass initialization of the InternalEngine based on this setting; until that is implemented, we are using the setting here.
+            if (engineConfig.getIndexSettings().isOptimizedIndex()) {
+                iwc = new IndexWriterConfig(null).setSoftDeletesField(Lucene.SOFT_DELETES_FIELD)
+                    .setCommitOnClose(false)
+                    .setMergePolicy(NoMergePolicy.INSTANCE)
+                    .setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+                directory = new NIOFSDirectory(Files.createTempDirectory("tmp-internal-engine-"));
+            } else {
+                iwc = getIndexWriterConfig();
+                directory = store.directory();
+            }
             return createWriter(directory, iwc);
         } catch (LockObtainFailedException ex) {
             logger.warn("could not lock IndexWriter", ex);
@@ -2168,8 +2205,10 @@ public class InternalEngine extends Engine {
                 return commitData.entrySet().iterator();
             });
             shouldPeriodicallyFlushAfterBigMerge.set(false);
-            // Interim solution: Skipping commit until IndexShard integration of CompositeEngine is completed.
-            // writer.commit();
+            // Interim solution: IndexShard should bypass initialization of the InternalEngine based on this setting; until that is implemented, we are using the setting here.
+            if (!engineConfig.getIndexSettings().isOptimizedIndex()) {
+                writer.commit();
+            }
         } catch (final Exception ex) {
             try {
                 failEngine("lucene commit failed", ex);
@@ -2448,14 +2487,14 @@ public class InternalEngine extends Engine {
      * Returned the last local checkpoint value has been refreshed internally.
      */
     public final long lastRefreshedCheckpoint() {
-        return lastRefreshedCheckpointListener.refreshedCheckpoint.get();
+        return lastRefreshedCheckpointListener.getRefreshedCheckpoint();
     }
 
     /**
      * Returns the current local checkpoint getting refreshed internally.
      */
     public final long currentOngoingRefreshCheckpoint() {
-        return lastRefreshedCheckpointListener.pendingCheckpoint.get();
+        return lastRefreshedCheckpointListener.getPendingCheckpoint();
     }
 
     private final Object refreshIfNeededMutex = new Object();
@@ -2470,38 +2509,6 @@ public class InternalEngine extends Engine {
                     refresh(source, SearcherScope.INTERNAL, true);
                 }
             }
-        }
-    }
-
-    private final class LastRefreshedCheckpointListener implements ReferenceManager.RefreshListener {
-        final AtomicLong refreshedCheckpoint;
-        volatile AtomicLong pendingCheckpoint;
-
-        LastRefreshedCheckpointListener(long initialLocalCheckpoint) {
-            this.refreshedCheckpoint = new AtomicLong(initialLocalCheckpoint);
-            this.pendingCheckpoint = new AtomicLong(initialLocalCheckpoint);
-        }
-
-        @Override
-        public void beforeRefresh() {
-            // all changes until this point should be visible after refresh
-            pendingCheckpoint.updateAndGet(curr -> Math.max(curr, localCheckpointTracker.getProcessedCheckpoint()));
-        }
-
-        @Override
-        public void afterRefresh(boolean didRefresh) {
-            if (didRefresh) {
-                updateRefreshedCheckpoint(pendingCheckpoint.get());
-            }
-        }
-
-        void updateRefreshedCheckpoint(long checkpoint) {
-            refreshedCheckpoint.updateAndGet(curr -> Math.max(curr, checkpoint));
-            assert refreshedCheckpoint.get() >= checkpoint : refreshedCheckpoint.get() + " < " + checkpoint;
-            // This shouldn't be required ideally, but we're also invoking this method from refresh as of now.
-            // This change is added as safety check to ensure that our checkpoint values are consistent at all times.
-            pendingCheckpoint.updateAndGet(curr -> Math.max(curr, checkpoint));
-
         }
     }
 

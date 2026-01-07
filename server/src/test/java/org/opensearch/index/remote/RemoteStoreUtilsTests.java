@@ -31,6 +31,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.shard.IndexShardTestUtils;
+import org.opensearch.index.store.MetadataFilenameUtils;
 import org.opensearch.index.store.RemoteSegmentStoreDirectory;
 import org.opensearch.index.translog.transfer.TranslogTransferMetadata;
 import org.opensearch.indices.RemoteStoreSettings;
@@ -63,8 +64,8 @@ import static org.opensearch.index.remote.RemoteStoreUtils.urlBase64ToLong;
 import static org.opensearch.index.remote.RemoteStoreUtils.verifyNoMultipleWriters;
 import static org.opensearch.index.shard.IndexShardTestUtils.MOCK_SEGMENT_REPO_NAME;
 import static org.opensearch.index.shard.IndexShardTestUtils.MOCK_TLOG_REPO_NAME;
-import static org.opensearch.index.store.RemoteSegmentStoreDirectory.MetadataFilenameUtils.METADATA_PREFIX;
-import static org.opensearch.index.store.RemoteSegmentStoreDirectory.MetadataFilenameUtils.SEPARATOR;
+import static org.opensearch.index.store.MetadataFilenameUtils.METADATA_PREFIX;
+import static org.opensearch.index.store.MetadataFilenameUtils.SEPARATOR;
 import static org.opensearch.index.translog.transfer.TranslogTransferMetadata.METADATA_SEPARATOR;
 import static org.opensearch.indices.RemoteStoreSettings.CLUSTER_REMOTE_STORE_PINNED_TIMESTAMP_ENABLED;
 import static org.opensearch.node.remotestore.RemoteStoreNodeAttribute.REMOTE_STORE_CLUSTER_STATE_REPOSITORY_NAME_ATTRIBUTE_KEY;
@@ -85,7 +86,7 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
         BASE64_CHARSET_IDX_MAP = Collections.unmodifiableMap(charToIndexMap);
     }
 
-    private final String metadataFilename = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+    private final String metadataFilename = MetadataFilenameUtils.getMetadataFilename(
         12,
         23,
         34,
@@ -94,7 +95,7 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
         "node-1"
     );
 
-    private final String metadataFilenameDup = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+    private final String metadataFilenameDup = MetadataFilenameUtils.getMetadataFilename(
         12,
         23,
         34,
@@ -102,7 +103,7 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
         1,
         "node-2"
     );
-    private final String metadataFilename2 = RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename(
+    private final String metadataFilename2 = MetadataFilenameUtils.getMetadataFilename(
         12,
         13,
         34,
@@ -200,12 +201,12 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
         mdFiles.add(metadataFilename);
         mdFiles.add(metadataFilename2);
         mdFiles.add(oldMetadataFilename);
-        verifyNoMultipleWriters(mdFiles, RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen);
+        verifyNoMultipleWriters(mdFiles, MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen);
 
         mdFiles.add(metadataFilenameDup);
         assertThrows(
             IllegalStateException.class,
-            () -> verifyNoMultipleWriters(mdFiles, RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen)
+            () -> verifyNoMultipleWriters(mdFiles, MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen)
         );
     }
 
@@ -581,8 +582,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
             metadataFiles,
             pinnedTimestampSet,
             new HashMap<>(),
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+            MetadataFilenameUtils::getTimestamp,
+            MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
         );
         assertTrue(implicitLockedFiles.isEmpty());
     }
@@ -595,8 +596,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
             metadataFiles,
             pinnedTimestampSet,
             new HashMap<>(),
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+            MetadataFilenameUtils::getTimestamp,
+            MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
         );
         assertTrue(implicitLockedFiles.isEmpty());
     }
@@ -609,8 +610,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
             metadataFiles,
             pinnedTimestampSet,
             new HashMap<>(),
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+            MetadataFilenameUtils::getTimestamp,
+            MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
         );
         assertTrue(implicitLockedFiles.isEmpty());
     }
@@ -623,8 +624,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
             metadataFiles,
             pinnedTimestampSet,
             new HashMap<>(),
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-            RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+            MetadataFilenameUtils::getTimestamp,
+            MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
         );
         assertTrue(implicitLockedFiles.isEmpty());
     }
@@ -645,8 +646,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
                 new ArrayList<>(metadataFiles.values()),
                 pinnedTimetamps,
                 metadataFilePinnedTimestampCache,
-                RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-                RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+                MetadataFilenameUtils::getTimestamp,
+                MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
             )
         );
     }
@@ -670,8 +671,8 @@ public class RemoteStoreUtilsTests extends OpenSearchTestCase {
                 new ArrayList<>(metadataFiles.values()),
                 pinnedTimetamps,
                 metadataFilePinnedTimestampCache,
-                RemoteSegmentStoreDirectory.MetadataFilenameUtils::getTimestamp,
-                RemoteSegmentStoreDirectory.MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
+                MetadataFilenameUtils::getTimestamp,
+                MetadataFilenameUtils::getNodeIdByPrimaryTermAndGen
             )
         );
     }

@@ -18,6 +18,7 @@ import org.opensearch.index.engine.Engine;
 import org.opensearch.index.engine.EngineException;
 import org.opensearch.index.engine.SafeCommitInfo;
 import org.opensearch.index.engine.Segment;
+import org.opensearch.index.engine.exec.composite.CompositeDataFormatWriter;
 import org.opensearch.index.seqno.SequenceNumbers;
 import org.opensearch.index.translog.Translog;
 import org.opensearch.index.translog.TranslogManager;
@@ -155,6 +156,14 @@ public interface Indexer {
      */
     int fillSeqNoGaps(long primaryTerm) throws IOException;
 
+    default long lastRefreshedCheckpoint() {
+        throw new UnsupportedOperationException();
+    }
+
+    default long currentOngoingRefreshCheckpoint() {
+        throw new UnsupportedOperationException();
+    }
+
     /**
      * Performs a force merge operation on this engine.
      */
@@ -231,6 +240,14 @@ public interface Indexer {
                 throw error;
             }
         });
+    }
+
+    default CompositeDataFormatWriter.CompositeDocumentInput documentInput() {
+        return null;
+    }
+
+    default long getNativeBytesUsed() {
+        return 0;
     }
 
     /**

@@ -803,11 +803,30 @@ public final class IndexSettings {
         Property.Final
     );
 
+    public static final Setting<Boolean> INDEX_SEARCH_QUERY_PLAN_EXPLAIN_SETTING = Setting.boolSetting(
+        "index.search.query_plan.explain",
+        false,
+        Property.IndexScope,
+        Property.Dynamic
+    );
+
+    private void setSearchQueryPlanExplainEnabled(Boolean searchQueryPlaneExplainEnabled) {
+        this.searchQueryPlaneExplainEnabled = searchQueryPlaneExplainEnabled;
+    }
+
+
     public static final Setting<Boolean> INDEX_DERIVED_SOURCE_TRANSLOG_ENABLED_SETTING = Setting.boolSetting(
         "index.derived_source.translog.enabled",
         INDEX_DERIVED_SOURCE_SETTING,
         Property.IndexScope,
         Property.Dynamic
+    );
+
+    public static final Setting<Boolean> OPTIMIZED_INDEX_ENABLED_SETTING = Setting.boolSetting(
+        "index.optimized.enabled",
+        false,
+        Property.IndexScope,
+        Property.Final
     );
 
     private final Index index;
@@ -863,6 +882,7 @@ public final class IndexSettings {
     private volatile boolean allowDerivedField;
     private final boolean derivedSourceEnabled;
     private volatile boolean derivedSourceEnabledForTranslog;
+    private boolean searchQueryPlaneExplainEnabled;
 
     /**
      * The maximum age of a retention lease before it is considered expired.
@@ -954,6 +974,8 @@ public final class IndexSettings {
      * Denotes whether search via star tree index is enabled for this index
      */
     private volatile boolean isStarTreeIndexEnabled;
+
+    private final boolean isOptimizedIndex;
 
     /**
      * Returns the default search fields for this index.
@@ -1102,6 +1124,8 @@ public final class IndexSettings {
         defaultSearchPipeline = scopedSettings.get(DEFAULT_SEARCH_PIPELINE);
         derivedSourceEnabled = scopedSettings.get(INDEX_DERIVED_SOURCE_SETTING);
         derivedSourceEnabledForTranslog = scopedSettings.get(INDEX_DERIVED_SOURCE_TRANSLOG_ENABLED_SETTING);
+        searchQueryPlaneExplainEnabled = scopedSettings.get(INDEX_SEARCH_QUERY_PLAN_EXPLAIN_SETTING);
+        scopedSettings.addSettingsUpdateConsumer(INDEX_SEARCH_QUERY_PLAN_EXPLAIN_SETTING, this::setSearchQueryPlanExplainEnabled);
         scopedSettings.addSettingsUpdateConsumer(INDEX_DERIVED_SOURCE_TRANSLOG_ENABLED_SETTING, this::setDerivedSourceEnabledForTranslog);
         /* There was unintentional breaking change got introduced with [OpenSearch-6424](https://github.com/opensearch-project/OpenSearch/pull/6424) (version 2.7).
          * For indices created prior version (prior to 2.7) which has IndexSort type, they used to type cast the SortField.Type
@@ -1119,6 +1143,8 @@ public final class IndexSettings {
         setDocIdFuzzySetFalsePositiveProbability(scopedSettings.get(INDEX_DOC_ID_FUZZY_SET_FALSE_POSITIVE_PROBABILITY_SETTING));
         isCompositeIndex = scopedSettings.get(StarTreeIndexSettings.IS_COMPOSITE_INDEX_SETTING);
         isStarTreeIndexEnabled = scopedSettings.get(StarTreeIndexSettings.STAR_TREE_SEARCH_ENABLED_SETTING);
+        isOptimizedIndex = scopedSettings.get(OPTIMIZED_INDEX_ENABLED_SETTING);
+
         scopedSettings.addSettingsUpdateConsumer(
             TieredMergePolicyProvider.INDEX_COMPOUND_FORMAT_SETTING,
             tieredMergePolicyProvider::setNoCFSRatio
@@ -2166,4 +2192,10 @@ public final class IndexSettings {
     public boolean isDerivedSourceEnabled() {
         return derivedSourceEnabled;
     }
+
+    public boolean isSearchQueryPlaneExplainEnabled() {
+        return searchQueryPlaneExplainEnabled;
+    }
+
+    public boolean isOptimizedIndex() { return isOptimizedIndex; }
 }

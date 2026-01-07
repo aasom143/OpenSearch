@@ -225,7 +225,6 @@ final class DefaultSearchContext extends SearchContext {
 
     private boolean isStreamSearch;
     private StreamSearchChannelListener listener;
-    private Map<String, Object[]> dfResults;
     private final SetOnce<FlushMode> cachedFlushMode = new SetOnce<>();
 
     DefaultSearchContext(
@@ -773,6 +772,7 @@ final class DefaultSearchContext extends SearchContext {
         return collapse;
     }
 
+    @Override
     public SearchContext sliceBuilder(SliceBuilder sliceBuilder) {
         this.sliceBuilder = sliceBuilder;
         return this;
@@ -1052,6 +1052,7 @@ final class DefaultSearchContext extends SearchContext {
     /**
      * Evaluate if request should use concurrent search based on request and concurrent search deciders
      */
+    @Override
     public void evaluateRequestShouldUseConcurrentSearch() {
         if (sort != null && sort.isSortOnTimeSeriesField()) {
             requestShouldUseConcurrentSearch.set(false);
@@ -1068,6 +1069,7 @@ final class DefaultSearchContext extends SearchContext {
             }
     }
 
+    @Override
     public void setProfilers(Profilers profilers) {
         this.profilers = profilers;
     }
@@ -1313,11 +1315,4 @@ final class DefaultSearchContext extends SearchContext {
         return clusterService.getClusterSettings().get(STREAMING_MIN_ESTIMATED_BUCKET_COUNT);
     }
 
-    public void setDFResults(Map<String, Object[]> dfResults) {
-        this.dfResults = dfResults;
-    }
-
-    public Map<String, Object[]> getDFResults() {
-        return dfResults;
-    }
 }
