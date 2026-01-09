@@ -11,6 +11,7 @@ package com.parquet.parquetdataformat.iceberg;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Table;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -41,14 +42,43 @@ public class IcebergFileTracker {
     
     /**
      * Commit all pending files to Iceberg (called during refresh).
+     * @deprecated Use commitFiles(List) instead to commit specific files after remote upload.
      */
+    @Deprecated
     public synchronized void commitPending() {
         if (pendingFiles.isEmpty()) {
             return;
         }
+        commitFiles(new ArrayList<>(pendingFiles));
+        pendingFiles.clear();
+    }
+
+    /**
+     * Commit specific files to Iceberg after successful remote upload.
+     * This method should be called with S3 paths, not local paths.
+     * 
+     * @param filePaths List of file paths (S3 paths) that were successfully uploaded to remote store
+     */
+    public synchronized void commitFiles(List<String> filePaths) {
+        if (filePaths.isEmpty()) {
+            return;
+        }
         
         // Extract index name from first file path
-        String indexName = extractIndexNameFromPath(pendingFiles.get(0));
+        String indexName = extractIndexNameFromPath(filePaths.get(0));
+        commitFilesForIndex(indexName, filePaths);
+    }
+    
+    /**
+     * Commit specific S3 files to Iceberg for a given index.
+     * 
+     * @param indexName The index name to use for Iceberg table identification
+     * @param s3Paths List of S3 paths that were successfully uploaded to remote store
+     */
+    public synchronized void commitFilesForIndex(String indexName, List<String> s3Paths) {
+        if (s3Paths.isEmpty()) {
+            return;
+        }
         
         // Fix: Set thread context classloader so Iceberg's DynMethods can find classes
         ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
@@ -58,34 +88,44 @@ public class IcebergFileTracker {
             Table table = IcebergManager.getInstance().getOrCreateTable(indexName);
             AppendFiles append = table.newAppend();
             
-            for (String filePath : pendingFiles) {
-                DataFile dataFile = createDataFile(filePath, table);
+            for (String s3Path : s3Paths) {
+                DataFile dataFile = createDataFile(s3Path, table);
                 append.appendFile(dataFile);
+                logger.debug("[Iceberg] Added file to commit: {}", s3Path);
             }
             
             append.commit();
             
-            logger.info("[Iceberg] Refresh committed {} files for index '{}', snapshot={}", 
-                       pendingFiles.size(), indexName, table.currentSnapshot().snapshotId());
+            logger.info("[Iceberg] Committed {} files for index '{}', snapshot={}", 
+                       s3Paths.size(), indexName, table.currentSnapshot().snapshotId());
             
-            pendingFiles.clear();
         } catch (Exception e) {
-            logger.error("[Iceberg] Refresh commit failed for index '{}': {}", indexName, e.getMessage(), e);
-            // Keep pendingFiles for retry on next refresh
+            logger.error("[Iceberg] Commit failed for index '{}': {}", indexName, e.getMessage(), e);
+            throw new RuntimeException("Iceberg commit failed", e);
         } finally {
             // Restore original classloader
             Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
     }
+
+    /**
+     * Clear all pending files without committing.
+     * Used when files need to be re-tracked after remote upload.
+     */
+    public synchronized void clearPending() {
+        pendingFiles.clear();
+    }
     
-    private DataFile createDataFile(String filePath, Table table) throws Exception {
-        Path path = Path.of(filePath);
-        long fileSize = Files.size(path);
+    private DataFile createDataFile(String s3Path, Table table) throws Exception {
+        // For S3 paths, we cannot use Files.size() as it expects local files
+        // Using 0 as placeholder - Iceberg requires size >= 0
+        // TODO: Pass actual file size from RemoteStoreRefreshListener where it's already available
         
         return DataFiles.builder(table.spec())
-            .withPath(filePath)
-            .withFileSizeInBytes(fileSize)
-            .withRecordCount(0) // TODO: Extract from Parquet footer
+            .withPath(s3Path)
+            .withFormat(FileFormat.PARQUET)  // Required: file format
+            .withFileSizeInBytes(0L)  // Required: size >= 0 (using placeholder, should pass actual size)
+            .withRecordCount(0L)  // Required: count >= 0 (TODO: extract from Parquet footer)
             .build();
     }
     

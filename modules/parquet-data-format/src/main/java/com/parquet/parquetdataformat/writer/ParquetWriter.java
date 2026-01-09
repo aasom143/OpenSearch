@@ -7,13 +7,18 @@ import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.engine.exec.FileInfos;
+import org.opensearch.index.engine.exec.FileMetadata;
 import org.opensearch.index.engine.exec.FlushIn;
 import org.opensearch.index.engine.exec.WriteResult;
 import org.opensearch.index.engine.exec.Writer;
 import org.opensearch.index.engine.exec.WriterFileSet;
+import org.opensearch.index.shard.RemoteUploadCallback;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static com.parquet.parquetdataformat.engine.ParquetDataFormat.PARQUET_DATA_FORMAT;
 
@@ -46,6 +51,7 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
     private final VSRManager vsrManager;
     private final long writerGeneration;
     private final IcebergFileTracker icebergTracker;
+    private final RemoteUploadCallback remoteUploadCallback;
 
     public ParquetWriter(String file, Schema schema, long writerGeneration, ArrowBufferPool arrowBufferPool) {
         this.file = file;
@@ -53,6 +59,42 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
         this.vsrManager = new VSRManager(file, schema, arrowBufferPool);
         this.writerGeneration = writerGeneration;
         this.icebergTracker = new IcebergFileTracker();
+        
+        // Create callback for remote upload success notifications
+        this.remoteUploadCallback = new RemoteUploadCallback() {
+            @Override
+            public void onRemoteUploadSuccess(Collection<FileMetadata> uploadedFiles) {
+                try {
+                    if (uploadedFiles.isEmpty()) {
+                        return;
+                    }
+                    
+                    // FileMetadata from RemoteStoreRefreshListener contains:
+                    // - dataFormat: index name (for Iceberg table identification)  
+                    // - file: full S3 path
+                    
+                    // Extract index name from first file (all files belong to same index)
+                    String indexName = uploadedFiles.iterator().next().dataFormat();
+                    
+                    // Extract S3 paths
+                    List<String> s3Paths = uploadedFiles.stream()
+                        .map(FileMetadata::file)
+                        .collect(Collectors.toList());
+                    
+                    logger.info("[Iceberg] Received {} S3 paths for index '{}', committing to Iceberg", 
+                               s3Paths.size(), indexName);
+                    
+                    // Commit these S3 paths to Iceberg (with index name for table identification)
+                    icebergTracker.commitFilesForIndex(indexName, s3Paths);
+                    
+                    logger.info("[Iceberg] Successfully committed {} files to Iceberg catalog for index '{}'", 
+                                s3Paths.size(), indexName);
+                } catch (Exception e) {
+                    logger.error("[Iceberg] Failed to commit files to Iceberg catalog after remote upload", e);
+                    // Don't throw - we don't want to fail the upload if Iceberg commit fails
+                }
+            }
+        };
     }
 
     @Override
@@ -74,11 +116,12 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
             .addFile(file.getFileName().toString())
             .build();
 
-       // Track file for Iceberg (will be committed on refresh)
+       // Track file for Iceberg (will be committed after successful remote upload)
        icebergTracker.trackFile(fileName);
 
-       // Commit immediately since file is ready
-       icebergTracker.commitPending();
+       // NOTE: Iceberg commit removed from here - will happen after successful remote upload
+       // via the remoteUploadCallback.onRemoteUploadSuccess() callback
+       
         return FileInfos.builder().putWriterFileSet(PARQUET_DATA_FORMAT, writerFileSet).build();
     }
 
@@ -110,5 +153,16 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
      */
     public IcebergFileTracker getIcebergTracker() {
         return icebergTracker;
+    }
+
+    /**
+     * Get the remote upload callback for this writer.
+     * Called by RemoteStoreRefreshListener after successful S3 upload to update Iceberg metadata.
+     * 
+     * @return the callback that commits files to Iceberg catalog
+     */
+    @Override
+    public RemoteUploadCallback getRemoteUploadCallback() {
+        return remoteUploadCallback;
     }
 }

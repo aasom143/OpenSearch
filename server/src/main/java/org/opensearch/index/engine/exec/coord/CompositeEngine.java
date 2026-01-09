@@ -50,6 +50,7 @@ import org.opensearch.index.engine.VersionValue;
 import org.opensearch.index.engine.exec.FileStats;
 import org.opensearch.index.engine.exec.RefreshInput;
 import org.opensearch.index.engine.exec.RefreshResult;
+import org.opensearch.index.engine.exec.Writer;
 import org.opensearch.index.engine.exec.WriteResult;
 import org.opensearch.index.engine.exec.bridge.CheckpointState;
 import org.opensearch.index.engine.exec.bridge.Indexer;
@@ -433,6 +434,17 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    /**
+     * Get the writer for a specific data format.
+     * Used by remote store listeners to notify writers of upload events.
+     * 
+     * @param formatName the data format name (e.g., "parquet", "lucene")
+     * @return the writer for that format, or null if not found
+     */
+    public Writer<?> getWriterForFormat(String formatName) {
+        return engine.getWriterForFormat(formatName);
     }
 
     /**

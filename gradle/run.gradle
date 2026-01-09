@@ -40,6 +40,59 @@ testClusters {
     testDistribution = 'archive'
     if (numZones > 1) numberOfZones = numZones
     if (numNodes > 1) numberOfNodes = numNodes
+    
+    // AWS credentials for S3 remote store - read from ~/.aws/credentials
+    def awsCredentialsFile = new File(System.getProperty("user.home"), ".aws/credentials")
+    if (awsCredentialsFile.exists()) {
+      def credentials = awsCredentialsFile.text
+      def accessKey = (credentials =~ /aws_access_key_id\s*=\s*(.+)/)[0][1].trim()
+      def secretKey = (credentials =~ /aws_secret_access_key\s*=\s*(.+)/)[0][1].trim()
+      keystore 's3.client.default.access_key', accessKey
+      keystore 's3.client.default.secret_key', secretKey
+      
+      // Session token (optional for temporary credentials)
+      def sessionTokenMatch = (credentials =~ /aws_session_token\s*=\s*(.+)/)
+      if (sessionTokenMatch) {
+        def sessionToken = sessionTokenMatch[0][1].trim()
+        keystore 's3.client.default.session_token', sessionToken
+        println "Loaded AWS credentials with session token from ~/.aws/credentials"
+      } else {
+        println "Loaded AWS credentials from ~/.aws/credentials (no session token)"
+      }
+    } else {
+      println "WARNING: ~/.aws/credentials not found"
+    }
+    
+    // AWS credentials as environment variables for Iceberg AWS SDK
+    if (awsCredentialsFile.exists()) {
+      def credentials = awsCredentialsFile.text
+      def accessKey = (credentials =~ /aws_access_key_id\s*=\s*(.+)/)[0][1].trim()
+      def secretKey = (credentials =~ /aws_secret_access_key\s*=\s*(.+)/)[0][1].trim()
+      environment 'AWS_ACCESS_KEY_ID', accessKey
+      environment 'AWS_SECRET_ACCESS_KEY', secretKey
+      
+      def sessionTokenMatch = (credentials =~ /aws_session_token\s*=\s*(.+)/)
+      if (sessionTokenMatch) {
+        def sessionToken = sessionTokenMatch[0][1].trim()
+        environment 'AWS_SESSION_TOKEN', sessionToken
+      }
+    }
+    
+    // AWS region
+    environment 'AWS_REGION', 'us-west-2'
+    
+    // S3 remote store configuration (OpenSearch 3.x)
+    // Note: Remote store for segments/translog is enabled via node attributes, not cluster settings
+    setting 'cluster.remote_store.index.path.type', 'fixed'
+    setting 'node.attr.remote_store.repository.test-rs-repo.type', 's3'
+    setting 'node.attr.remote_store.repository.test-rs-repo.settings.bucket', 'srirasac-iceberg-test'
+    setting 'node.attr.remote_store.repository.test-rs-repo.settings.base_path', 'repository'
+    setting 'node.attr.remote_store.repository.test-rs-repo.settings.region', 'us-west-2'
+    setting 'node.attr.remote_store.segment.repository', 'test-rs-repo'
+    setting 'node.attr.remote_store.translog.repository', 'test-rs-repo'
+    setting 'node.attr.remote_store.state.repository', 'test-rs-repo'
+    
+    println "Added AWS credentials to keystore and set AWS_REGION"
     if (findProperty("installedPlugins")) {
       installedPlugins = Eval.me(installedPlugins)
 

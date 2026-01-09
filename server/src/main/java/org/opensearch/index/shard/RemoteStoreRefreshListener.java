@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -275,12 +276,16 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                         @Override
                         public void onResponse(Void unused) {
                             try {
-                                logger.debug("New segments upload successful");
-                                // Start metadata file upload
-                                uploadMetadata(localFilesPostRefresh, catalogSnapshot, checkpoint);
-                                logger.debug("Metadata upload successful");
-                                clearStaleFilesFromLocalSegmentChecksumMap(localFilesPostRefresh);
-                                onSuccessfulSegmentsSync(
+                logger.debug("New segments upload successful");
+                // Start metadata file upload
+                uploadMetadata(localFilesPostRefresh, catalogSnapshot, checkpoint);
+                logger.debug("Metadata upload successful");
+                clearStaleFilesFromLocalSegmentChecksumMap(localFilesPostRefresh);
+                
+                // Notify writers about successful upload (e.g., for Iceberg metadata updates)
+                notifyWritersOfSuccessfulUpload(localFilesPostRefresh);
+                
+                onSuccessfulSegmentsSync(
                                     refreshTimeMs,
                                     refreshClockTimeMs,
                                     refreshSeqNo,
@@ -699,5 +704,87 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
     @Override
     protected boolean isRetryEnabled() {
         return true;
+    }
+
+    /**
+     * Notifies format-specific writers about successful remote upload.
+     * Constructs actual S3 paths from uploaded files and passes to format-specific callbacks.
+     *
+     * @param allFilesPostRefresh all files from the catalog snapshot post-refresh
+     */
+    private void notifyWritersOfSuccessfulUpload(Collection<FileMetadata> allFilesPostRefresh) {
+        try {
+            // Filter to only files that were actually uploaded (same logic as uploadNewSegments)
+            Collection<FileMetadata> uploadedFiles = allFilesPostRefresh.stream()
+                .filter(fileMetadata -> !skipUpload(fileMetadata))
+                .collect(Collectors.toList());
+
+            if (uploadedFiles.isEmpty()) {
+                return;
+            }
+
+            // Get the composite engine from index shard
+            if (indexShard.getIndexer() instanceof CompositeEngine) {
+                CompositeEngine compositeEngine = (CompositeEngine) indexShard.getIndexer();
+
+                // Group files by data format
+                Map<String, List<FileMetadata>> filesByFormat = uploadedFiles.stream()
+                    .collect(Collectors.groupingBy(FileMetadata::dataFormat));
+
+                // Get index name for S3 path construction
+                String indexName = indexShard.shardId().getIndexName();
+                String indexUUID = indexShard.shardId().getIndex().getUUID();
+                int shardId = indexShard.shardId().id();
+
+                // For each format, notify the corresponding writer
+                for (Map.Entry<String, List<FileMetadata>> entry : filesByFormat.entrySet()) {
+                    String format = entry.getKey();
+                    List<FileMetadata> formatFiles = entry.getValue();
+
+                    try {
+                        // Construct S3 paths: s3://bucket/base_path/index_uuid/shard_id/segments/data/format/filename_with_suffix
+                        // Example: s3://srirasac-iceberg-test/repository/pFr-gxnXRamPKzUL4Ib0Kg/0/segments/data/parquet/_parquet_file_generation_0.parquet__UP9cnZsBeR99Vhj34JOx
+                        List<FileMetadata> s3PathMetadata = formatFiles.stream()
+                            .map(fm -> {
+                                // Get the uploaded filename (may have suffix like __UP9cnZsBeR99Vhj34JOx)
+                                String uploadedFilename = remoteDirectory.getSegmentsUploadedToRemoteStore()
+                                    .getOrDefault(fm.serialize(), 
+                                        new org.opensearch.index.store.UploadedSegmentMetadata(fm.file(), fm.file(), fm.file(), 0L))
+                                    .getUploadedFilename();
+                                
+                                // Construct full S3 path
+                                String s3Path = String.format("s3://srirasac-iceberg-test/repository/%s/%d/segments/data/%s/%s",
+                                    indexUUID,
+                                    shardId,
+                                    format,
+                                    uploadedFilename
+                                );
+                                
+                                // Return FileMetadata with format name and index name (for Iceberg table identification)
+                                // Store index name in the file field temporarily for extraction
+                                return new FileMetadata(indexName, s3Path);
+                            })
+                            .collect(Collectors.toList());
+
+                        // Get writer for this format and call its callback with S3 paths
+                        org.opensearch.index.engine.exec.Writer<?> writer = compositeEngine.getWriterForFormat(format);
+                        if (writer != null) {
+                            RemoteUploadCallback callback = writer.getRemoteUploadCallback();
+                            if (callback != null) {
+                                callback.onRemoteUploadSuccess(s3PathMetadata);
+                                logger.debug("Notified {} writer about {} uploaded files with S3 paths for index {}", 
+                                           format, s3PathMetadata.size(), indexName);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Don't fail the upload if individual callback fails
+                        logger.warn("Exception while notifying {} writer of successful upload: {}", format, e.getMessage(), e);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Don't fail the upload if notification fails
+            logger.warn("Exception while notifying writers of successful upload", e);
+        }
     }
 }

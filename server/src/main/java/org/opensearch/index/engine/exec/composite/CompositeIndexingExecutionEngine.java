@@ -168,6 +168,22 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
         return delegates.stream().mapToLong(IndexingExecutionEngine::getNativeBytesUsed).sum();
     }
 
+    /**
+     * Get the writer for a specific data format from the current composite writer.
+     * Used by remote store listeners to notify writers of upload events.
+     * 
+     * @param formatName the data format name (e.g., "parquet", "lucene")
+     * @return the writer for that format, or null if not found
+     */
+    public Writer<?> getWriterForFormat(String formatName) {
+        CompositeDataFormatWriter writer = (CompositeDataFormatWriter) dataFormatWriterPool.getAndLock();
+        try {
+            return writer.getWriterForFormat(formatName);
+        } finally {
+            writer.unlock();
+        }
+    }
+
     @Override
     public void close() throws IOException {
         IOUtils.close(delegates);

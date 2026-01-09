@@ -156,6 +156,22 @@ public class CompositeDataFormatWriter implements Writer<CompositeDataFormatWrit
         return writerGeneration;
     }
 
+    /**
+     * Get the writer for a specific data format.
+     * Used by remote store listeners to notify writers of upload events.
+     * 
+     * @param formatName the data format name (e.g., "parquet", "lucene")
+     * @return the writer for that format, or null if not found
+     */
+    public Writer<?> getWriterForFormat(String formatName) {
+        for (Map.Entry<DataFormat, Writer<? extends DocumentInput<?>>> entry : writers) {
+            if (entry.getKey().name().equals(formatName)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
     public static class CompositeDocumentInput implements DocumentInput<List<? extends DocumentInput<?>>> {
 
         List<? extends DocumentInput<?>> inputs;
