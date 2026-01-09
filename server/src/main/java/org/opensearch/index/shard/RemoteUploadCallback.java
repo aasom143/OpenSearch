@@ -11,6 +11,7 @@ package org.opensearch.index.shard;
 import org.opensearch.index.engine.exec.FileMetadata;
 
 import java.util.Collection;
+import java.util.Map;
 
 /**
  * Callback interface for writers to be notified after successful remote upload.
@@ -27,6 +28,7 @@ public interface RemoteUploadCallback {
      * Called after a batch of files has been successfully uploaded to remote store.
      * 
      * @param uploadedFiles the files that were successfully uploaded to remote storage
+     * @param fileSizes map of local filename to file size in bytes
      */
-    void onRemoteUploadSuccess(Collection<FileMetadata> uploadedFiles);
+    void onRemoteUploadSuccess(Collection<FileMetadata> uploadedFiles, Map<String, Long> fileSizes);
 }

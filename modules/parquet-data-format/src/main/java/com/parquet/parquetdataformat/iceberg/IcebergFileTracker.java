@@ -16,67 +16,28 @@ import org.apache.iceberg.Table;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * Tracks Parquet files written during flush operations and commits them
  * to Iceberg during refresh operations.
  */
 public class IcebergFileTracker {
     private static final Logger logger = LogManager.getLogger(IcebergFileTracker.class);
-    private final List<String> pendingFiles = new ArrayList<>();
+    private final org.apache.iceberg.Schema icebergSchema;
     
-    public IcebergFileTracker() {
-        // No longer needs indexName parameter - extracts from file paths
+    public IcebergFileTracker(org.apache.iceberg.Schema icebergSchema) {
+        this.icebergSchema = icebergSchema;
+        logger.info("[Iceberg] FileTracker initialized with schema containing {} fields", 
+                   icebergSchema.columns().size());
     }
     
     /**
-     * Track a file that was flushed but not yet committed to Iceberg.
-     */
-    public synchronized void trackFile(String filePath) {
-        pendingFiles.add(filePath);
-    }
-    
-    /**
-     * Commit all pending files to Iceberg (called during refresh).
-     * @deprecated Use commitFiles(List) instead to commit specific files after remote upload.
-     */
-    @Deprecated
-    public synchronized void commitPending() {
-        if (pendingFiles.isEmpty()) {
-            return;
-        }
-        commitFiles(new ArrayList<>(pendingFiles));
-        pendingFiles.clear();
-    }
-
-    /**
-     * Commit specific files to Iceberg after successful remote upload.
-     * This method should be called with S3 paths, not local paths.
-     * 
-     * @param filePaths List of file paths (S3 paths) that were successfully uploaded to remote store
-     */
-    public synchronized void commitFiles(List<String> filePaths) {
-        if (filePaths.isEmpty()) {
-            return;
-        }
-        
-        // Extract index name from first file path
-        String indexName = extractIndexNameFromPath(filePaths.get(0));
-        commitFilesForIndex(indexName, filePaths);
-    }
-    
-    /**
-     * Commit specific S3 files to Iceberg for a given index.
+     * Commit specific S3 files with actual sizes to Iceberg for a given index.
      * 
      * @param indexName The index name to use for Iceberg table identification
-     * @param s3Paths List of S3 paths that were successfully uploaded to remote store
+     * @param s3PathsWithSizes Map of S3 paths to their actual file sizes in bytes
      */
-    public synchronized void commitFilesForIndex(String indexName, List<String> s3Paths) {
-        if (s3Paths.isEmpty()) {
+    public synchronized void commitFilesWithSizes(String indexName, java.util.Map<String, Long> s3PathsWithSizes) {
+        if (s3PathsWithSizes.isEmpty()) {
             return;
         }
         
@@ -85,19 +46,21 @@ public class IcebergFileTracker {
         Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
         
         try {
-            Table table = IcebergManager.getInstance().getOrCreateTable(indexName);
+            Table table = IcebergManager.getInstance().getOrCreateTable(indexName, icebergSchema);
             AppendFiles append = table.newAppend();
             
-            for (String s3Path : s3Paths) {
-                DataFile dataFile = createDataFile(s3Path, table);
+            for (java.util.Map.Entry<String, Long> entry : s3PathsWithSizes.entrySet()) {
+                String s3Path = entry.getKey();
+                long fileSize = entry.getValue();
+                DataFile dataFile = createDataFileWithSize(s3Path, fileSize, table);
                 append.appendFile(dataFile);
-                logger.debug("[Iceberg] Added file to commit: {}", s3Path);
+                logger.debug("[Iceberg] Added file to commit: {} (size: {} bytes)", s3Path, fileSize);
             }
             
             append.commit();
             
             logger.info("[Iceberg] Committed {} files for index '{}', snapshot={}", 
-                       s3Paths.size(), indexName, table.currentSnapshot().snapshotId());
+                       s3PathsWithSizes.size(), indexName, table.currentSnapshot().snapshotId());
             
         } catch (Exception e) {
             logger.error("[Iceberg] Commit failed for index '{}': {}", indexName, e.getMessage(), e);
@@ -107,45 +70,15 @@ public class IcebergFileTracker {
             Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
     }
-
-    /**
-     * Clear all pending files without committing.
-     * Used when files need to be re-tracked after remote upload.
-     */
-    public synchronized void clearPending() {
-        pendingFiles.clear();
-    }
     
-    private DataFile createDataFile(String s3Path, Table table) throws Exception {
-        // For S3 paths, we cannot use Files.size() as it expects local files
-        // Using 0 as placeholder - Iceberg requires size >= 0
-        // TODO: Pass actual file size from RemoteStoreRefreshListener where it's already available
-        
+    private DataFile createDataFileWithSize(String s3Path, long fileSize, Table table) throws Exception {
+        // Create DataFile with actual file size from S3 upload
+        // TODO: Extract actual record count from Parquet footer for better statistics
         return DataFiles.builder(table.spec())
             .withPath(s3Path)
-            .withFormat(FileFormat.PARQUET)  // Required: file format
-            .withFileSizeInBytes(0L)  // Required: size >= 0 (using placeholder, should pass actual size)
-            .withRecordCount(0L)  // Required: count >= 0 (TODO: extract from Parquet footer)
+            .withFormat(FileFormat.PARQUET)
+            .withFileSizeInBytes(fileSize)  // Actual file size from upload
+            .withRecordCount(1L)  // Placeholder - should extract from Parquet footer
             .build();
-    }
-    
-    /**
-     * Extract index name from file path.
-     */
-    private String extractIndexNameFromPath(String filePath) {
-        try {
-            Path path = Path.of(filePath).toAbsolutePath();
-            // Look for common OpenSearch path patterns
-            for (int i = 0; i < path.getNameCount() - 1; i++) {
-                String segment = path.getName(i).toString();
-                if ("indices".equals(segment)) {
-                    return path.getName(i + 1).toString();
-                }
-            }
-            // Fallback: use parent directory name
-            return path.getParent() != null ? path.getParent().getFileName().toString() : "unknown";
-        } catch (Exception e) {
-            return "unknown";
-        }
     }
 }

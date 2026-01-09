@@ -283,7 +283,7 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                 clearStaleFilesFromLocalSegmentChecksumMap(localFilesPostRefresh);
                 
                 // Notify writers about successful upload (e.g., for Iceberg metadata updates)
-                notifyWritersOfSuccessfulUpload(localFilesPostRefresh);
+                notifyWritersOfSuccessfulUpload(localFilesPostRefresh, fileMetadataToSizeMap);
                 
                 onSuccessfulSegmentsSync(
                                     refreshTimeMs,
@@ -711,8 +711,9 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
      * Constructs actual S3 paths from uploaded files and passes to format-specific callbacks.
      *
      * @param allFilesPostRefresh all files from the catalog snapshot post-refresh
+     * @param fileMetadataToSizeMap map of FileMetadata to actual file sizes
      */
-    private void notifyWritersOfSuccessfulUpload(Collection<FileMetadata> allFilesPostRefresh) {
+    private void notifyWritersOfSuccessfulUpload(Collection<FileMetadata> allFilesPostRefresh, Map<FileMetadata, Long> fileMetadataToSizeMap) {
         try {
             // Filter to only files that were actually uploaded (same logic as uploadNewSegments)
             Collection<FileMetadata> uploadedFiles = allFilesPostRefresh.stream()
@@ -766,13 +767,22 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                             })
                             .collect(Collectors.toList());
 
-                        // Get writer for this format and call its callback with S3 paths
+                        // Build file sizes map (local filename -> size)
+                        Map<String, Long> fileSizes = new java.util.HashMap<>();
+                        for (FileMetadata fm : formatFiles) {
+                            Long size = fileMetadataToSizeMap.get(fm);
+                            if (size != null) {
+                                fileSizes.put(fm.file(), size);
+                            }
+                        }
+
+                        // Get writer for this format and call its callback with S3 paths and file sizes
                         org.opensearch.index.engine.exec.Writer<?> writer = compositeEngine.getWriterForFormat(format);
                         if (writer != null) {
                             RemoteUploadCallback callback = writer.getRemoteUploadCallback();
                             if (callback != null) {
-                                callback.onRemoteUploadSuccess(s3PathMetadata);
-                                logger.debug("Notified {} writer about {} uploaded files with S3 paths for index {}", 
+                                callback.onRemoteUploadSuccess(s3PathMetadata, fileSizes);
+                                logger.debug("Notified {} writer about {} uploaded files with S3 paths and sizes for index {}", 
                                            format, s3PathMetadata.size(), indexName);
                             }
                         }

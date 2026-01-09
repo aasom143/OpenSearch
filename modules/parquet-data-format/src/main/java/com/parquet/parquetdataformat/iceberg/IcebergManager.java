@@ -55,11 +55,11 @@ public class IcebergManager {
         return INSTANCE;
     }
 
-    public Table getOrCreateTable(String indexName) {
-        return tables.computeIfAbsent(indexName, this::createTable);
+    public Table getOrCreateTable(String indexName, org.apache.iceberg.Schema schema) {
+        return tables.computeIfAbsent(indexName, name -> loadOrCreateTable(name, schema));
     }
 
-    private Table createTable(String indexName) {
+    private Table loadOrCreateTable(String indexName, org.apache.iceberg.Schema schema) {
         // AWS Glue requires lowercase table names
         String tableName = indexName.toLowerCase().replace("-", "_");
         
@@ -80,23 +80,33 @@ public class IcebergManager {
         TableIdentifier id = TableIdentifier.of("opensearch", tableName);
 
         try {
+            // Always try to load existing table first
             Table table = catalog.loadTable(id);
-            logger.info("[Iceberg] Loaded existing table: {}", indexName);
+            logger.info("[Iceberg] Loaded existing table: {} with {} fields", 
+                       indexName, table.schema().columns().size());
+            // TODO: Handle schema evolution if provided schema differs from existing
             return table;
         } catch (Exception e) {
-            Schema schema = new Schema(
-                Types.NestedField.required(1, "row_id", Types.LongType.get()),
-                Types.NestedField.optional(2, "data", Types.StringType.get())
-            );
-
-            // Create table with S3 location
+            // Table doesn't exist
+            if (schema == null) {
+                logger.warn("[Iceberg] Table '{}' not found and no schema provided to create it", indexName);
+                return null;
+            }
+            
+            // Create new table with provided schema
             String warehouse = System.getProperty("iceberg.warehouse", "s3://srirasac-iceberg-test/os-warehouse/");
             String tableLocation = warehouse + "opensearch/" + indexName;
+
+            logger.info("[Iceberg] Creating new table '{}' with {} fields", indexName, schema.columns().size());
+            schema.columns().forEach(col -> 
+                logger.debug("[Iceberg] Schema field: {} ({})", col.name(), col.type())
+            );
 
             Table table = catalog.buildTable(id, schema)
                 .withLocation(tableLocation)
                 .create();
-            logger.info("[Iceberg] Created new table: {} at {}", indexName, tableLocation);
+                
+            logger.info("[Iceberg] Successfully created table: {} at {}", indexName, tableLocation);
             return table;
         }
     }

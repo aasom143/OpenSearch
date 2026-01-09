@@ -139,7 +139,14 @@ public class RecordBatchMergeStrategy implements ParquetMergeStrategy {
      */
     private void updateIcebergOnMerge(List<WriterFileSet> oldFiles, String mergedFilePath, String indexName) {
         try {
-            Table table = IcebergManager.getInstance().getOrCreateTable(indexName);
+            // Load existing table - it should already exist with proper schema from initial file uploads
+            // If table doesn't exist, this will fail and we'll skip Iceberg update
+            Table table = IcebergManager.getInstance().getOrCreateTable(indexName, null);
+            if (table == null) {
+                logger.warn("[Iceberg] Table not found for index '{}', skipping merge metadata update", indexName);
+                return;
+            }
+            
             Transaction txn = table.newTransaction();
 
             // Delete old files from Iceberg
