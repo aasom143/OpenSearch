@@ -1,5 +1,6 @@
 package com.parquet.parquetdataformat.writer;
 
+import com.parquet.parquetdataformat.bridge.ParquetFileMetadata;
 import com.parquet.parquetdataformat.iceberg.ArrowToIcebergSchemaConverter;
 import com.parquet.parquetdataformat.iceberg.IcebergFileTracker;
 import com.parquet.parquetdataformat.memory.ArrowBufferPool;
@@ -122,16 +123,17 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
 
     @Override
     public FileInfos flush(FlushIn flushIn) throws IOException {
-        String fileName = vsrManager.flush(flushIn);
+        ParquetFileMetadata parquetFileMetadata = vsrManager.flush(flushIn);
         // no data flushed
-        if (fileName == null) {
+        if (file == null) {
             return FileInfos.empty();
         }
-        Path file = Path.of(fileName);
+        Path filePath = Path.of(file);
         WriterFileSet writerFileSet = WriterFileSet.builder()
-            .directory(file.getParent())
+            .directory(filePath.getParent())
             .writerGeneration(writerGeneration)
-            .addFile(file.getFileName().toString())
+            .addFile(filePath.getFileName().toString())
+            .addNumRows(parquetFileMetadata.numRows())
             .build();
 
        // NOTE: Iceberg commit happens after successful S3 upload
