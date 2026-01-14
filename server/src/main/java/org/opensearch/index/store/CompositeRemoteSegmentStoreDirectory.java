@@ -521,7 +521,7 @@ public final class CompositeRemoteSegmentStoreDirectory extends RemoteSegmentSto
         );
     }
 
-    private void uploadMetadataInternal(Collection<FileMetadata> fileMetadataCollection,
+    private Collection<FileMetadata> uploadMetadataInternal(Collection<FileMetadata> fileMetadataCollection,
                                CatalogSnapshot catalogSnapshot,
                                CompositeStoreDirectory storeDirectory,
                                long translogGeneration,
@@ -534,13 +534,13 @@ public final class CompositeRemoteSegmentStoreDirectory extends RemoteSegmentSto
                 RemoteSegmentMetadata.CURRENT_VERSION, nodeId);
 
             FileMetadata fileMetadata = new FileMetadata("TempMetadata", metadataFilename);
+            Map<FileMetadata, String> uploadedSegments = new HashMap<>();
 
             try {
                 try (IndexOutput indexOutput = storeDirectory.createOutput(fileMetadata, IOContext.DEFAULT)) {
                     // TODO: Implement getSegmentToLuceneVersion for CatalogSnapshot when needed
                     // For now, use empty map as placeholder
                     Map<String, Integer> segmentToLuceneVersion = new HashMap<>();
-                    Map<FileMetadata, String> uploadedSegments = new HashMap<>();
 
                     for (FileMetadata file : fileMetadataCollection) {
                         if (segmentsUploadedToRemoteStore.containsKey(file)) {
@@ -575,13 +575,17 @@ public final class CompositeRemoteSegmentStoreDirectory extends RemoteSegmentSto
             } finally {
                 tryAndDeleteLocalFile(fileMetadata, storeDirectory);
             }
+            
+            // Return the files that were written to the metadata file
+            return new java.util.ArrayList<>(uploadedSegments.keySet());
         }
     }
 
-    public void deleteStaleSegments(int lastNMetadataFilesToKeep) throws IOException {
+    @Override
+    public Set<String> deleteStaleSegments(int lastNMetadataFilesToKeep) throws IOException {
         if (lastNMetadataFilesToKeep == -1) {
             logger.info("Stale segment deletion is disabled if cluster.remote_store.index.segment_metadata.retention.max_count is set to -1");
-            return;
+            return Collections.emptySet();
         }
 
         List<String> sortedMetadataFileList = remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
@@ -590,7 +594,7 @@ public final class CompositeRemoteSegmentStoreDirectory extends RemoteSegmentSto
         if (sortedMetadataFileList.size() <= lastNMetadataFilesToKeep) {
             logger.debug("Number of commits in remote segment store={}, lastNMetadataFilesToKeep={}",
                 sortedMetadataFileList.size(), lastNMetadataFilesToKeep);
-            return;
+            return Collections.emptySet();
         }
 
         // Implementation continues... (keeping existing logic but using compositeRemoteDirectory directly)
@@ -598,19 +602,17 @@ public final class CompositeRemoteSegmentStoreDirectory extends RemoteSegmentSto
         // ... stale segment deletion logic using compositeRemoteDirectory.deleteFile() directly
 
         logger.debug("deletedSegmentFiles={}", deletedSegmentFiles);
+        return deletedSegmentFiles;
     }
 
-    public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep) {
-        deleteStaleSegmentsAsync(lastNMetadataFilesToKeep, ActionListener.wrap(r -> {}, e -> {}));
-    }
-
-    public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep, ActionListener<Void> listener) {
+    @Override
+    public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep, ActionListener<Set<String>> listener) {
         if (canDeleteStaleCommits.compareAndSet(true, false)) {
             try {
                 threadPool.executor(ThreadPool.Names.REMOTE_PURGE).execute(() -> {
                     try {
-                        deleteStaleSegments(lastNMetadataFilesToKeep);
-                        listener.onResponse(null);
+                        Set<String> deletedFiles = deleteStaleSegments(lastNMetadataFilesToKeep);
+                        listener.onResponse(deletedFiles);
                     } catch (Exception e) {
                         logger.error("Exception while deleting stale commits from remote segment store", e);
                         listener.onFailure(e);

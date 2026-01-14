@@ -36,5 +36,40 @@ public interface IndexingExecutionEngine<T extends DataFormat> extends Closeable
         return 0;
     }
 
+    /**
+     * Callback invoked after files are successfully uploaded to remote store.
+     * Engines can override this to perform post-upload actions (e.g., updating metadata catalogs).
+     * 
+     * @param indexName the index name
+     * @param s3PathsWithSizes map of S3 paths to file sizes
+     */
+    default void onFilesUploadedToRemoteStore(String indexName, Map<String, Long> s3PathsWithSizes) {
+        // Default: no-op
+    }
+
+    /**
+     * Callback invoked after files are successfully deleted from remote store.
+     * Engines can override this to perform cleanup (e.g., removing from metadata catalogs).
+     * 
+     * @param indexName the index name
+     * @param s3Paths collection of S3 paths that were deleted
+     */
+    default void onFilesDeletedFromRemoteStore(String indexName, Collection<String> s3Paths) {
+        // Default: no-op
+    }
+
+    /**
+     * Reconcile engine's catalog/metadata with current active files in remote store.
+     * Called after successful metadata upload to ensure catalogs stay in sync.
+     * Engines can override this to remove stale entries from their metadata systems.
+     * 
+     * @param indexName the index name
+     * @param shardId the shard ID for shard-aware reconciliation
+     * @param activeS3Paths collection of currently active S3 paths for this shard
+     */
+    default void reconcileWithActiveFiles(String indexName, int shardId, Collection<String> activeS3Paths) {
+        // Default: no-op
+    }
+
     void deleteFiles(Map<String, Collection<String>> filesToDelete) throws IOException;
 }

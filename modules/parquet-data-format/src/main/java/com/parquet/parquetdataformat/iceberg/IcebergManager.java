@@ -102,12 +102,23 @@ public class IcebergManager {
                 logger.debug("[Iceberg] Schema field: {} ({})", col.name(), col.type())
             );
 
-            Table table = catalog.buildTable(id, schema)
-                .withLocation(tableLocation)
-                .create();
-                
-            logger.info("[Iceberg] Successfully created table: {} at {}", indexName, tableLocation);
-            return table;
+            try {
+                Table table = catalog.buildTable(id, schema)
+                    .withLocation(tableLocation)
+                    .create();
+                    
+                logger.info("[Iceberg] Successfully created table: {} at {}", indexName, tableLocation);
+                return table;
+            } catch (org.apache.iceberg.exceptions.AlreadyExistsException alreadyExists) {
+                // Race condition: Another shard created the table concurrently
+                logger.info("[Iceberg] Table '{}' already exists (concurrent creation by another shard), loading it", indexName);
+                try {
+                    return catalog.loadTable(id);
+                } catch (Exception loadEx) {
+                    logger.error("[Iceberg] Failed to load table '{}' after concurrent creation", indexName, loadEx);
+                    throw new RuntimeException("Failed to load table after concurrent creation", loadEx);
+                }
+            }
         }
     }
 }

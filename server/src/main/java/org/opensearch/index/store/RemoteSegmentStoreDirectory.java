@@ -761,12 +761,12 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
      * @param lastNMetadataFilesToKeep number of metadata files to keep
      * @throws IOException in case of I/O error while reading from / writing to remote segment store
      */
-    public void deleteStaleSegments(int lastNMetadataFilesToKeep) throws IOException {
+    public Set<String> deleteStaleSegments(int lastNMetadataFilesToKeep) throws IOException {
         if (lastNMetadataFilesToKeep == -1) {
             logger.info(
                 "Stale segment deletion is disabled if cluster.remote_store.index.segment_metadata.retention.max_count is set to -1"
             );
-            return;
+            return Collections.emptySet();
         }
 
         List<String> sortedMetadataFileList = remoteMetadataDirectory.listFilesByPrefixInLexicographicOrder(
@@ -779,13 +779,13 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
                 sortedMetadataFileList.size(),
                 lastNMetadataFilesToKeep
             );
-            return;
+            return Collections.emptySet();
         }
 
         // Check last fetch status of pinned timestamps. If stale, return.
         if (lastNMetadataFilesToKeep != 0 && RemoteStoreUtils.isPinnedTimestampStateStale()) {
             logger.warn("Skipping remote segment store garbage collection as last fetch of pinned timestamp is stale");
-            return;
+            return Collections.emptySet();
         }
 
         Tuple<Long, Set<Long>> pinnedTimestampsState = RemoteStorePinnedTimestampService.getPinnedTimestamps();
@@ -807,7 +807,7 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
             );
         } catch (Exception e) {
             logger.error("Exception while fetching segment metadata lock files, skipping deleteStaleSegments", e);
-            return;
+            return Collections.emptySet();
         }
 
         List<String> metadataFilesEligibleToDelete = new ArrayList<>(
@@ -824,7 +824,7 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
 
         if (metadataFilesEligibleToDelete.isEmpty()) {
             logger.debug("No metadata files are eligible to be deleted based on lastNMetadataFilesToKeep and age");
-            return;
+            return Collections.emptySet();
         }
 
         List<String> metadataFilesToBeDeleted = metadataFilesEligibleToDelete.stream()
@@ -888,6 +888,7 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
             }
         }
         logger.debug("deletedSegmentFiles={}", deletedSegmentFiles);
+        return deletedSegmentFiles;
     }
 
     public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep) {
@@ -900,13 +901,13 @@ public class RemoteSegmentStoreDirectory extends FilterDirectory implements Remo
      *
      * @param lastNMetadataFilesToKeep number of metadata files to keep
      */
-    public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep, ActionListener<Void> listener) {
+    public void deleteStaleSegmentsAsync(int lastNMetadataFilesToKeep, ActionListener<Set<String>> listener) {
         if (canDeleteStaleCommits.compareAndSet(true, false)) {
             try {
                 threadPool.executor(ThreadPool.Names.REMOTE_PURGE).execute(() -> {
                     try {
-                        deleteStaleSegments(lastNMetadataFilesToKeep);
-                        listener.onResponse(null);
+                        Set<String> deletedFiles = deleteStaleSegments(lastNMetadataFilesToKeep);
+                        listener.onResponse(deletedFiles);
                     } catch (Exception e) {
                         logger.error(
                             "Exception while deleting stale commits from remote segment store, will retry delete post next commit",

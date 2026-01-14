@@ -169,19 +169,19 @@ public class CompositeIndexingExecutionEngine implements IndexingExecutionEngine
     }
 
     /**
-     * Get the writer for a specific data format from the current composite writer.
-     * Used by remote store listeners to notify writers of upload events.
+     * Get the execution engine for a specific data format.
+     * Used by remote store listeners to access engine-level resources without creating new writers.
      * 
-     * @param formatName the data format name (e.g., "parquet", "lucene")
-     * @return the writer for that format, or null if not found
+     * @param formatName the data format name (e.g., "parquet", "text")
+     * @return the execution engine for that format, or null if not found
      */
-    public Writer<?> getWriterForFormat(String formatName) {
-        CompositeDataFormatWriter writer = (CompositeDataFormatWriter) dataFormatWriterPool.getAndLock();
-        try {
-            return writer.getWriterForFormat(formatName);
-        } finally {
-            writer.unlock();
+    public IndexingExecutionEngine<?> getEngineForFormat(String formatName) {
+        for (IndexingExecutionEngine<?> delegate : delegates) {
+            if (delegate.getDataFormat().name().equals(formatName)) {
+                return delegate;
+            }
         }
+        return null;
     }
 
     @Override

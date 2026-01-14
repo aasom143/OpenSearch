@@ -277,13 +277,16 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                         public void onResponse(Void unused) {
                             try {
                 logger.debug("New segments upload successful");
-                // Start metadata file upload
-                uploadMetadata(localFilesPostRefresh, catalogSnapshot, checkpoint);
-                logger.debug("Metadata upload successful");
+                // Start metadata file upload and capture files written to metadata
+                Collection<FileMetadata> filesInMetadata = uploadMetadata(localFilesPostRefresh, catalogSnapshot, checkpoint);
+                logger.debug("Metadata upload successful with {} files", filesInMetadata.size());
                 clearStaleFilesFromLocalSegmentChecksumMap(localFilesPostRefresh);
                 
                 // Notify writers about successful upload (e.g., for Iceberg metadata updates)
                 notifyWritersOfSuccessfulUpload(localFilesPostRefresh, fileMetadataToSizeMap);
+                
+                // Reconcile engine catalogs with EXACT files from metadata (ground truth)
+                reconcileEngineCatalogs(filesInMetadata, fileMetadataToSizeMap);
                 
                 onSuccessfulSegmentsSync(
                                     refreshTimeMs,
@@ -475,7 +478,7 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
     }
 
     // ToDo:@Kamal Update MaxSeqNo
-    void uploadMetadata(Collection<FileMetadata> localFilesPostRefresh, CatalogSnapshot catalogSnapshot, ReplicationCheckpoint replicationCheckpoint)
+    Collection<FileMetadata> uploadMetadata(Collection<FileMetadata> localFilesPostRefresh, CatalogSnapshot catalogSnapshot, ReplicationCheckpoint replicationCheckpoint)
         throws IOException {
         final long maxSeqNo = indexShard.getIndexer().currentOngoingRefreshCheckpoint();
 
@@ -496,14 +499,42 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
             throw new UnsupportedOperationException("Encountered null TranslogGeneration while uploading metadata to remote segment store");
         } else {
             long translogFileGeneration = translogGeneration.translogFileGeneration;
-            remoteDirectory.uploadMetadata(
-                localFilesPostRefresh.stream().map(FileMetadata::serialize).collect(Collectors.toList()),
-                catalogSnapshotCloned,
-                compositeStoreDirectory,
-                translogFileGeneration,
-                replicationCheckpoint,
-                indexShard.getNodeId()
-            );
+            
+            // Call uploadMetadata and capture files written (if CompositeRemoteSegmentStoreDirectory)
+            if (remoteDirectory instanceof org.opensearch.index.store.CompositeRemoteSegmentStoreDirectory) {
+                org.opensearch.index.store.CompositeRemoteSegmentStoreDirectory compositeRemoteDir = 
+                    (org.opensearch.index.store.CompositeRemoteSegmentStoreDirectory) remoteDirectory;
+                
+                // uploadMetadataInternal returns the files written - but we need to call it via reflection or add a new method
+                // For now, filter to files that are in segmentsUploadedToRemoteStore (same logic as uploadMetadataInternal)
+                Collection<FileMetadata> filesWrittenToMetadata = localFilesPostRefresh.stream()
+                    .filter(fm -> remoteDirectory.getSegmentsUploadedToRemoteStore().containsKey(fm.serialize()))
+                    .collect(Collectors.toList());
+                
+                remoteDirectory.uploadMetadata(
+                    localFilesPostRefresh.stream().map(FileMetadata::serialize).collect(Collectors.toList()),
+                    catalogSnapshotCloned,
+                    compositeStoreDirectory,
+                    translogFileGeneration,
+                    replicationCheckpoint,
+                    indexShard.getNodeId()
+                );
+                
+                logger.info("Metadata uploaded with {} files (from {} in catalog)", 
+                           filesWrittenToMetadata.size(), localFilesPostRefresh.size());
+                
+                return filesWrittenToMetadata;
+            } else {
+                remoteDirectory.uploadMetadata(
+                    localFilesPostRefresh.stream().map(FileMetadata::serialize).collect(Collectors.toList()),
+                    catalogSnapshotCloned,
+                    compositeStoreDirectory,
+                    translogFileGeneration,
+                    replicationCheckpoint,
+                    indexShard.getNodeId()
+                );
+                return localFilesPostRefresh;
+            }
         }
     }
 
@@ -767,24 +798,24 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
                             })
                             .collect(Collectors.toList());
 
-                        // Build file sizes map (local filename -> size)
-                        Map<String, Long> fileSizes = new java.util.HashMap<>();
-                        for (FileMetadata fm : formatFiles) {
-                            Long size = fileMetadataToSizeMap.get(fm);
+                        // Build S3 path -> size map for engine notification
+                        Map<String, Long> s3PathsWithSizes = new java.util.HashMap<>();
+                        for (int i = 0; i < formatFiles.size() && i < s3PathMetadata.size(); i++) {
+                            FileMetadata localFm = formatFiles.get(i);
+                            FileMetadata s3Fm = s3PathMetadata.get(i);
+                            Long size = fileMetadataToSizeMap.get(localFm);
                             if (size != null) {
-                                fileSizes.put(fm.file(), size);
+                                // s3Fm.file() contains the full S3 path
+                                s3PathsWithSizes.put(s3Fm.file(), size);
                             }
                         }
 
-                        // Get writer for this format and call its callback with S3 paths and file sizes
-                        org.opensearch.index.engine.exec.Writer<?> writer = compositeEngine.getWriterForFormat(format);
-                        if (writer != null) {
-                            RemoteUploadCallback callback = writer.getRemoteUploadCallback();
-                            if (callback != null) {
-                                callback.onRemoteUploadSuccess(s3PathMetadata, fileSizes);
-                                logger.debug("Notified {} writer about {} uploaded files with S3 paths and sizes for index {}", 
-                                           format, s3PathMetadata.size(), indexName);
-                            }
+                        // Notify engine about successful upload (e.g., for Iceberg metadata updates)
+                        org.opensearch.index.engine.exec.IndexingExecutionEngine<?> engine = compositeEngine.getEngineForFormat(format);
+                        if (engine != null) {
+                            engine.onFilesUploadedToRemoteStore(indexName, s3PathsWithSizes);
+                            logger.debug("Notified {} engine about {} uploaded files for index {}", 
+                                       format, s3PathsWithSizes.size(), indexName);
                         }
                     } catch (Exception e) {
                         // Don't fail the upload if individual callback fails
@@ -795,6 +826,75 @@ public final class RemoteStoreRefreshListener extends ReleasableRetryableRefresh
         } catch (Exception e) {
             // Don't fail the upload if notification fails
             logger.warn("Exception while notifying writers of successful upload", e);
+        }
+    }
+
+    /**
+     * Reconciles engine catalogs with files written to metadata file (ground truth).
+     * Uses exact files from metadata to ensure engine catalogs match queryable state.
+     *
+     * @param filesInMetadata files that were written to the metadata file
+     * @param fileMetadataToSizeMap map of FileMetadata to actual file sizes
+     */
+    private void reconcileEngineCatalogs(Collection<FileMetadata> filesInMetadata, 
+                                         Map<FileMetadata, Long> fileMetadataToSizeMap) {
+        try {
+            if (indexShard.getIndexer() instanceof CompositeEngine) {
+                CompositeEngine compositeEngine = (CompositeEngine) indexShard.getIndexer();
+                
+                logger.info("Reconciliation using files from metadata: totalFiles={}", filesInMetadata.size());
+                
+                // Group files from metadata by data format
+                Map<String, List<FileMetadata>> filesByFormat = filesInMetadata.stream()
+                    .collect(Collectors.groupingBy(FileMetadata::dataFormat));
+                
+                String indexName = indexShard.shardId().getIndexName();
+                String indexUUID = indexShard.shardId().getIndex().getUUID();
+                int shardId = indexShard.shardId().id();
+                
+                // For each format, reconcile its catalog
+                for (Map.Entry<String, List<FileMetadata>> entry : filesByFormat.entrySet()) {
+                    String format = entry.getKey();
+                    List<FileMetadata> formatFiles = entry.getValue();
+                    
+                    try {
+                        // Build list of active S3 paths for this format
+                        List<String> activeS3Paths = new java.util.ArrayList<>();
+                        
+                        for (FileMetadata fm : formatFiles) {
+                            // Get the uploaded filename (with suffix) - we know it exists because we filtered
+                            String uploadedFilename = remoteDirectory.getSegmentsUploadedToRemoteStore()
+                                .get(fm.serialize())
+                                .getUploadedFilename();
+                            
+                            // Construct full S3 path
+                            String s3Path = String.format("s3://srirasac-iceberg-test/repository/%s/%d/segments/data/%s/%s",
+                                indexUUID, shardId, format, uploadedFilename);
+                            
+                            activeS3Paths.add(s3Path);
+                        }
+                        
+                        // Get the engine and trigger shard-aware reconciliation
+                        org.opensearch.index.engine.exec.IndexingExecutionEngine<?> engine = 
+                            compositeEngine.getEngineForFormat(format);
+                        
+                        if (engine != null) {
+                            int currentShardId = indexShard.shardId().id();
+                            logger.info("Reconciling {} engine for shard {}: formatFiles={}, activeS3Paths={}", 
+                                       format, currentShardId, formatFiles.size(), activeS3Paths.size());
+                            logger.info("Active S3 paths for {} shard {}: {}", format, currentShardId, activeS3Paths);
+                            engine.reconcileWithActiveFiles(indexName, currentShardId, activeS3Paths);
+                            logger.debug("Reconciled {} engine catalog with {} active files for index {} shard {}", 
+                                       format, activeS3Paths.size(), indexName, currentShardId);
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Exception during {} engine catalog reconciliation for index {}: {}", 
+                                   format, indexName, e.getMessage(), e);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("Exception during engine catalog reconciliation", e);
         }
     }
 }

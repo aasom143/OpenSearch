@@ -48,6 +48,7 @@ import org.opensearch.index.engine.Segment;
 import org.opensearch.index.engine.SegmentsStats;
 import org.opensearch.index.engine.VersionValue;
 import org.opensearch.index.engine.exec.FileStats;
+import org.opensearch.index.engine.exec.IndexingExecutionEngine;
 import org.opensearch.index.engine.exec.RefreshInput;
 import org.opensearch.index.engine.exec.RefreshResult;
 import org.opensearch.index.engine.exec.Writer;
@@ -437,14 +438,14 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
     }
 
     /**
-     * Get the writer for a specific data format.
-     * Used by remote store listeners to notify writers of upload events.
+     * Get the execution engine for a specific data format.
+     * Used by remote store listeners to access engine-level resources without creating new writers.
      * 
-     * @param formatName the data format name (e.g., "parquet", "lucene")
-     * @return the writer for that format, or null if not found
+     * @param formatName the data format name (e.g., "parquet", "text")
+     * @return the execution engine for that format, or null if not found
      */
-    public Writer<?> getWriterForFormat(String formatName) {
-        return engine.getWriterForFormat(formatName);
+    public IndexingExecutionEngine<?> getEngineForFormat(String formatName) {
+        return engine.getEngineForFormat(formatName);
     }
 
     /**

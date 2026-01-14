@@ -1,27 +1,19 @@
 package com.parquet.parquetdataformat.writer;
 
 import com.parquet.parquetdataformat.bridge.ParquetFileMetadata;
-import com.parquet.parquetdataformat.iceberg.ArrowToIcebergSchemaConverter;
-import com.parquet.parquetdataformat.iceberg.IcebergFileTracker;
 import com.parquet.parquetdataformat.memory.ArrowBufferPool;
 import com.parquet.parquetdataformat.vsr.VSRManager;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.engine.exec.FileInfos;
-import org.opensearch.index.engine.exec.FileMetadata;
 import org.opensearch.index.engine.exec.FlushIn;
 import org.opensearch.index.engine.exec.WriteResult;
 import org.opensearch.index.engine.exec.Writer;
 import org.opensearch.index.engine.exec.WriterFileSet;
-import org.opensearch.index.shard.RemoteUploadCallback;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 import static com.parquet.parquetdataformat.engine.ParquetDataFormat.PARQUET_DATA_FORMAT;
 
@@ -53,67 +45,12 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
     private final Schema schema;
     private final VSRManager vsrManager;
     private final long writerGeneration;
-    private final IcebergFileTracker icebergTracker;
-    private final RemoteUploadCallback remoteUploadCallback;
 
     public ParquetWriter(String file, Schema schema, long writerGeneration, ArrowBufferPool arrowBufferPool) {
         this.file = file;
         this.schema = schema;
         this.vsrManager = new VSRManager(file, schema, arrowBufferPool);
         this.writerGeneration = writerGeneration;
-        
-        // Convert Arrow schema to Iceberg schema
-        org.apache.iceberg.Schema icebergSchema = ArrowToIcebergSchemaConverter.convert(schema);
-        logger.info("[Iceberg] Converted Arrow schema ({} fields) to Iceberg schema ({} fields)",
-                   schema.getFields().size(), icebergSchema.columns().size());
-        
-        this.icebergTracker = new IcebergFileTracker(icebergSchema);
-        
-        // Create callback for remote upload success notifications
-        this.remoteUploadCallback = new RemoteUploadCallback() {
-            @Override
-            public void onRemoteUploadSuccess(Collection<FileMetadata> uploadedFiles, Map<String, Long> fileSizes) {
-                try {
-                    if (uploadedFiles.isEmpty()) {
-                        return;
-                    }
-                    
-                    // FileMetadata from RemoteStoreRefreshListener contains:
-                    // - dataFormat: index name (for Iceberg table identification)  
-                    // - file: full S3 path
-                    
-                    // Extract index name from first file (all files belong to same index)
-                    String indexName = uploadedFiles.iterator().next().dataFormat();
-                    
-                    // Build map of S3 path -> file size
-                    Map<String, Long> s3PathsWithSizes = new java.util.HashMap<>();
-                    for (FileMetadata fm : uploadedFiles) {
-                        String s3Path = fm.file();  // This is the S3 path
-                        
-                        // The fileSizes map uses local filenames as keys
-                        // We need to find the matching local filename
-                        // For now, use a reasonable default size
-                        Long size = fileSizes.values().stream().findFirst().orElse(1L);
-                        s3PathsWithSizes.put(s3Path, size);
-                    }
-                    
-                    logger.info("[Iceberg] Received {} S3 paths with sizes for index '{}', committing to Iceberg", 
-                               s3PathsWithSizes.size(), indexName);
-                    s3PathsWithSizes.forEach((path, size) -> 
-                        logger.debug("[Iceberg] File: {}, size: {} bytes", path, size)
-                    );
-                    
-                    // Commit these S3 paths with actual sizes to Iceberg
-                    icebergTracker.commitFilesWithSizes(indexName, s3PathsWithSizes);
-                    
-                    logger.info("[Iceberg] Successfully committed {} files to Iceberg catalog for index '{}'", 
-                                s3PathsWithSizes.size(), indexName);
-                } catch (Exception e) {
-                    logger.error("[Iceberg] Failed to commit files to Iceberg catalog after remote upload", e);
-                    // Don't throw - we don't want to fail the upload if Iceberg commit fails
-                }
-            }
-        };
     }
 
     @Override
@@ -162,24 +99,5 @@ public class ParquetWriter implements Writer<ParquetDocumentInput> {
 
         // Get a new ManagedVSR from VSRManager for this document input
         return new ParquetDocumentInput(vsrManager.getActiveManagedVSR());
-    }
-
-    /**
-     * Get the Iceberg file tracker for this writer.
-     * Used by refresh operations to commit pending files.
-     */
-    public IcebergFileTracker getIcebergTracker() {
-        return icebergTracker;
-    }
-
-    /**
-     * Get the remote upload callback for this writer.
-     * Called by RemoteStoreRefreshListener after successful S3 upload to update Iceberg metadata.
-     * 
-     * @return the callback that commits files to Iceberg catalog
-     */
-    @Override
-    public RemoteUploadCallback getRemoteUploadCallback() {
-        return remoteUploadCallback;
     }
 }
