@@ -233,8 +233,22 @@ dependencies {
   implementation 'org.apache.parquet:parquet-encoding:1.15.0'
   implementation 'org.apache.parquet:parquet-format-structures:1.15.0'
 
-  // AWS Glue catalog dependencies
+  // Apache HttpClient 5 for Iceberg RESTCatalog (required for S3 Tables REST endpoint)
+  implementation('org.apache.httpcomponents.client5:httpclient5:5.2.1') {
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.httpcomponents.core5:httpcore5:5.2') {
+    exclude group: 'org.slf4j'
+  }
+  implementation('org.apache.httpcomponents.core5:httpcore5-h2:5.2') {
+    exclude group: 'org.slf4j'
+  }
+  
+  // Note: File copying uses Iceberg's S3FileIO (from iceberg-aws-bundle) to avoid AWS SDK jar hell
+  
+  // AWS Glue catalog dependencies (keep for backward compatibility)
   // Use regular iceberg-aws for compile-time API access
+  // Note: REST catalog (RESTCatalog) is included in iceberg-core
   implementation('org.apache.iceberg:iceberg-aws:1.6.1') {
     exclude group: 'org.apache.hadoop'
     exclude group: 'org.slf4j'
@@ -301,9 +315,10 @@ test {
     jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
 
-  // System properties for Iceberg with Glue
+  // System properties for Iceberg with S3 Tables
   systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
-  systemProperty 'aws.region', System.getProperty('aws.region', 'us-west-2')
+  systemProperty 'aws.region', 'us-west-2'
+  systemProperty 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
 }
 
 task integTest(type: RestIntegTestTask) {
@@ -324,9 +339,10 @@ integTest {
     jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
 
-  // System properties for Iceberg with Glue
+  // System properties for Iceberg with S3 Tables
   systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
-  systemProperty 'aws.region', System.getProperty('aws.region', 'us-west-2')
+  systemProperty 'aws.region', 'us-west-2'
+  systemProperty 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
 
   // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable
   if (System.getProperty("test.debug") != null) {

@@ -2,7 +2,7 @@ package com.parquet.parquetdataformat.engine;
 
 import com.parquet.parquetdataformat.bridge.RustBridge;
 import com.parquet.parquetdataformat.iceberg.ArrowToIcebergSchemaConverter;
-import com.parquet.parquetdataformat.iceberg.IcebergFileTracker;
+import com.parquet.parquetdataformat.iceberg.S3TablesIcebergFileTracker;
 import com.parquet.parquetdataformat.memory.ArrowBufferPool;
 import com.parquet.parquetdataformat.merge.CompactionStrategy;
 import com.parquet.parquetdataformat.merge.ParquetMergeExecutor;
@@ -73,7 +73,7 @@ public class ParquetExecutionEngine implements IndexingExecutionEngine<ParquetDa
     private final ShardPath shardPath;
     private final ParquetMerger parquetMerger = new ParquetMergeExecutor(CompactionStrategy.RECORD_BATCH);
     private final ArrowBufferPool arrowBufferPool;
-    private final IcebergFileTracker icebergFileTracker;
+    private final S3TablesIcebergFileTracker icebergFileTracker;
 
     public ParquetExecutionEngine(Settings settings, Supplier<Schema> schema, ShardPath shardPath) {
         this.schema = schema;
@@ -83,8 +83,8 @@ public class ParquetExecutionEngine implements IndexingExecutionEngine<ParquetDa
         // Initialize IcebergFileTracker at engine level (one per shard)
         Schema arrowSchema = schema.get();
         org.apache.iceberg.Schema icebergSchema = ArrowToIcebergSchemaConverter.convert(arrowSchema);
-        this.icebergFileTracker = new IcebergFileTracker(icebergSchema);
-        logger.info("[Iceberg] ParquetExecutionEngine initialized with schema ({} fields)", 
+        this.icebergFileTracker = new S3TablesIcebergFileTracker(icebergSchema);
+        logger.info("[Iceberg S3Tables] ParquetExecutionEngine initialized with schema ({} fields)",
                    icebergSchema.columns().size());
     }
 
@@ -148,17 +148,19 @@ public class ParquetExecutionEngine implements IndexingExecutionEngine<ParquetDa
     }
 
     /**
-     * Get the IcebergFileTracker for this shard.
-     * Used by RemoteStoreRefreshListener to commit files to Iceberg catalog.
-     * 
-     * @return the IcebergFileTracker instance
+     * Get the S3TablesIcebergFileTracker for this shard.
+     * Used by RemoteStoreRefreshListener to commit files to S3 Tables Iceberg catalog.
+     *
+     * @return the S3TablesIcebergFileTracker instance
      */
-    public IcebergFileTracker getIcebergFileTracker() {
+    public S3TablesIcebergFileTracker getIcebergFileTracker() {
         return icebergFileTracker;
     }
 
     @Override
     public void onFilesUploadedToRemoteStore(String indexName, Map<String, Long> s3PathsWithSizes) {
+        logger.info("[Iceberg] onFilesUploadedToRemoteStore called: index={}, fileCount={}, files={}", 
+                   indexName, s3PathsWithSizes.size(), s3PathsWithSizes.keySet());
         try {
             icebergFileTracker.commitFilesWithSizes(indexName, s3PathsWithSizes);
             logger.info("[Iceberg] Committed {} files for index '{}'", s3PathsWithSizes.size(), indexName);
