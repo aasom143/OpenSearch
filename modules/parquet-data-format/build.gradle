@@ -187,123 +187,12 @@ dependencies {
   // DataFusion plugin for internalClusterTest
   internalClusterTestImplementation project(':plugins:engine-datafusion')
 
-  // Caffeine cache (required by Iceberg GlueCatalog)
-  implementation 'com.github.ben-manes.caffeine:caffeine:2.9.3'
-  
-  // Apache Avro (required by Iceberg)
-  implementation 'org.apache.avro:avro:1.11.3'
-  
-  // Apache Iceberg dependencies for metadata management (with exclusions)
-  implementation('org.apache.iceberg:iceberg-core:1.6.1') {
-    exclude group: 'org.apache.hadoop'
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.iceberg:iceberg-api:1.6.1') {
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.iceberg:iceberg-common:1.6.1') {
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.iceberg:iceberg-data:1.6.1') {
-    exclude group: 'org.apache.hadoop'
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.iceberg:iceberg-parquet:1.6.1') {
-    exclude group: 'org.apache.hadoop'
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.iceberg:iceberg-bundled-guava:1.6.1') {
-    exclude group: 'org.slf4j'
-  }
-
-  // Hadoop dependencies for Iceberg catalog (with exclusions to prevent jar hell)
-  // Only include hadoop-common as it contains the necessary classes
-  implementation('org.apache.hadoop:hadoop-common:3.4.1') {
-    exclude group: 'org.slf4j'
-    exclude group: 'log4j'
-    exclude group: 'commons-logging'
-    exclude group: 'javax.servlet'
-    exclude group: 'org.eclipse.jetty'
-  }
-
-  // Parquet dependencies for file operations - using only parquet-hadoop to avoid shaded class conflicts
+  // Parquet dependencies for file operations
   implementation 'org.apache.parquet:parquet-hadoop:1.15.0'
-  // implementation 'org.apache.parquet:parquet-column:1.15.0'  // Excluded to avoid jar hell
   implementation 'org.apache.parquet:parquet-common:1.15.0'
   implementation 'org.apache.parquet:parquet-encoding:1.15.0'
   implementation 'org.apache.parquet:parquet-format-structures:1.15.0'
-
-  // Apache HttpClient 5 for Iceberg RESTCatalog (required for S3 Tables REST endpoint)
-  implementation('org.apache.httpcomponents.client5:httpclient5:5.2.1') {
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.httpcomponents.core5:httpcore5:5.2') {
-    exclude group: 'org.slf4j'
-  }
-  implementation('org.apache.httpcomponents.core5:httpcore5-h2:5.2') {
-    exclude group: 'org.slf4j'
-  }
-  
-  // Note: File copying uses Iceberg's S3FileIO (from iceberg-aws-bundle) to avoid AWS SDK jar hell
-  
-  // AWS Glue catalog dependencies (keep for backward compatibility)
-  // Use regular iceberg-aws for compile-time API access
-  // Note: REST catalog (RESTCatalog) is included in iceberg-core
-  implementation('org.apache.iceberg:iceberg-aws:1.6.1') {
-    exclude group: 'org.apache.hadoop'
-    exclude group: 'org.slf4j'
-  }
-  
-  // JarJar for shading
-  jarjar 'org.pantsbuild:jarjar:1.7.2'
-  
-  // Iceberg bundle to be shaded
-  icebergBundle('org.apache.iceberg:iceberg-aws-bundle:1.6.1')
-  
-  // Shaded bundle as runtime dependency
-  runtimeOnly files("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar") {
-    builtBy 'shadeIcebergBundle'
-  }
 }
-
-// Shade iceberg-aws-bundle using Ant JarJar to relocate reactive-streams
-tasks.register('shadeIcebergBundle') {
-  description = 'Shade iceberg-aws-bundle to relocate reactive-streams and avoid jar hell'
-  
-  def outputJar = file("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar")
-  
-  inputs.files(configurations.icebergBundle)
-  outputs.file(outputJar)
-  
-  doLast {
-    def inputJar = configurations.icebergBundle.singleFile
-    
-    // Define jarjar Ant task
-    ant.taskdef(
-      name: 'jarjar',
-      classname: 'org.pantsbuild.jarjar.JarJarTask',
-      classpath: configurations.jarjar.asPath
-    )
-    
-    // Create shaded JAR with relocated reactive-streams
-    ant.jarjar(jarfile: outputJar.absolutePath) {
-      zipfileset(src: inputJar.absolutePath)
-      rule(pattern: 'org.reactivestreams.**', result: 'com.parquet.shaded.org.reactivestreams.@1')
-    }
-    
-    logger.lifecycle("Created shaded bundle: ${outputJar}")
-  }
-}
-
-// Add shaded JAR as runtime dependency
-dependencies {
-  runtimeOnly files("${buildDir}/shaded/iceberg-aws-bundle-shaded-1.6.1.jar") {
-    builtBy shadeIcebergBundle
-  }
-}
-
-// Ensure shaded JAR is built before packaging
-processResources.dependsOn shadeIcebergBundle
 
 test {
   include '**/*Tests.class'
@@ -315,10 +204,6 @@ test {
     jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
 
-  // System properties for Iceberg with S3 Tables
-  systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
-  systemProperty 'aws.region', 'us-west-2'
-  systemProperty 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
 }
 
 task integTest(type: RestIntegTestTask) {
@@ -338,11 +223,6 @@ integTest {
     jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
     jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
   }
-
-  // System properties for Iceberg with S3 Tables
-  systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
-  systemProperty 'aws.region', 'us-west-2'
-  systemProperty 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
 
   // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable
   if (System.getProperty("test.debug") != null) {

@@ -6,7 +6,7 @@
  * compatible open source license.
  */
 
-package com.parquet.parquetdataformat.iceberg;
+package org.opensearch.plugin.iceberg.catalog;
 
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -30,8 +30,13 @@ public class S3TablesIcebergManager {
     private static final Logger logger = LogManager.getLogger(S3TablesIcebergManager.class);
 
     private final RESTCatalog catalog;
+    private final org.apache.iceberg.aws.s3.S3FileIO fileIO;
     private final ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<>();
 
+    // Allow passing configuration from IcebergService
+    private String bucketArn;
+    private String region;
+    
     private S3TablesIcebergManager() {
         System.out.println("[Iceberg S3Tables] ===== CONSTRUCTOR CALLED =====");
         System.out.println("[Iceberg S3Tables] Creating RESTCatalog instance");
@@ -41,15 +46,15 @@ public class S3TablesIcebergManager {
 
         Map<String, String> properties = new HashMap<>();
         
-        // S3 Tables bucket ARN (format: arn:aws:s3tables:region:account-id:bucket/bucket-name)
-        String s3TablesBucketArn = System.getProperty("iceberg.s3tables.bucket.arn", 
-            "arn:aws:s3tables:us-west-2:123456789012:bucket/opensearch-iceberg-tables");
+        // S3 Tables bucket ARN from environment or default
+        // NOTE: This is called during static initialization, settings not available yet
+        // We'll initialize catalog lazily when first accessed with proper settings
+        this.bucketArn = "arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test";  // Hardcode for now
+        this.region = "us-west-2";
+        
+        String s3TablesBucketArn = this.bucketArn;
         
         System.out.println("[Iceberg S3Tables] Got bucket ARN: " + s3TablesBucketArn);
-        
-        // Extract region from ARN
-        String[] arnParts = s3TablesBucketArn.split(":");
-        String region = arnParts.length > 3 ? arnParts[3] : System.getProperty("aws.region", "us-west-2");
         
         System.out.println("[Iceberg S3Tables] Extracted region: " + region);
         
@@ -70,14 +75,34 @@ public class S3TablesIcebergManager {
         properties.put("rest.signing-name", "s3tables");
         properties.put("rest.signing-region", region);
         
+        // Let AWS SDK auto-discover credentials from environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+        // Don't explicitly set credentials-provider property - let it use default chain
+        
+        // Debug: Check if AWS credentials are available in environment
+        String accessKeyId = System.getenv("AWS_ACCESS_KEY_ID");
+        String secretKey = System.getenv("AWS_SECRET_ACCESS_KEY");
+        String sessionToken = System.getenv("AWS_SESSION_TOKEN");
+        System.out.println("[Iceberg S3Tables] AWS_ACCESS_KEY_ID present: " + (accessKeyId != null && !accessKeyId.isEmpty()));
+        System.out.println("[Iceberg S3Tables] AWS_SECRET_ACCESS_KEY present: " + (secretKey != null && !secretKey.isEmpty()));
+        System.out.println("[Iceberg S3Tables] AWS_SESSION_TOKEN present: " + (sessionToken != null && !sessionToken.isEmpty()));
+        
         System.out.println("[Iceberg S3Tables] Properties configured: endpoint=" + s3TablesEndpoint);
+        System.out.println("[Iceberg S3Tables] Properties: " + properties);
         System.out.println("[Iceberg S3Tables] About to call catalog.initialize()");
+        
+        // CRITICAL: Set thread context classloader so Iceberg's DynMethods can find AWS SDK classes
+        // This is needed because plugin classloader isolation prevents dynamic class loading
+        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
+        System.out.println("[Iceberg S3Tables] Set context classloader to plugin classloader");
         
         try {
             // Initialize the catalog with timeout handling
             java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
             java.util.concurrent.Future<?> future = executor.submit(() -> {
                 try {
+                    // Also set classloader in executor thread
+                    Thread.currentThread().setContextClassLoader(S3TablesIcebergManager.class.getClassLoader());
                     System.out.println("[Iceberg S3Tables] Inside executor: calling catalog.initialize()");
                     catalog.initialize("s3tables_catalog", properties);
                     System.out.println("[Iceberg S3Tables] Inside executor: catalog.initialize() completed");
@@ -92,7 +117,18 @@ public class S3TablesIcebergManager {
             future.get(10, java.util.concurrent.TimeUnit.SECONDS);
             System.out.println("[Iceberg S3Tables] catalog.initialize() returned successfully!");
             executor.shutdown();
+            
+            // Initialize S3FileIO for data file operations (with classloader still set)
+            System.out.println("[Iceberg S3Tables] Initializing S3FileIO");
+            this.fileIO = new org.apache.iceberg.aws.s3.S3FileIO();
+            Map<String, String> fileIOProperties = new HashMap<>();
+            fileIOProperties.put(S3FileIOProperties.ENDPOINT, String.format("https://s3.%s.amazonaws.com", region));
+            fileIOProperties.put("client.region", region);
+            this.fileIO.initialize(fileIOProperties);
+            System.out.println("[Iceberg S3Tables] S3FileIO initialized successfully!");
+            
         } catch (java.util.concurrent.TimeoutException e) {
+            Thread.currentThread().setContextClassLoader(originalClassLoader);
             System.err.println("[Iceberg S3Tables] TIMEOUT: catalog.initialize() took longer than 10 seconds!");
             System.err.println("[Iceberg S3Tables] This likely means:");
             System.err.println("[Iceberg S3Tables] 1. Network connectivity issue to S3 Tables endpoint: " + s3TablesEndpoint);
@@ -100,15 +136,27 @@ public class S3TablesIcebergManager {
             System.err.println("[Iceberg S3Tables] 3. Missing permissions for S3 Tables operations");
             throw new RuntimeException("S3 Tables catalog initialization timeout after 10 seconds", e);
         } catch (Exception e) {
+            Thread.currentThread().setContextClassLoader(originalClassLoader);
             System.err.println("[Iceberg S3Tables] ===== CATALOG INITIALIZATION FAILED =====");
             e.printStackTrace(System.err);
             throw new RuntimeException("Failed to initialize S3 Tables catalog", e);
+        } finally {
+            // Restore original classloader
+            Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
     }
 
     public static S3TablesIcebergManager getInstance() {
         System.out.println("[Iceberg S3Tables] getInstance() called, about to return INSTANCE");
         return INSTANCE;
+    }
+    
+    /**
+     * Get the pre-initialized S3FileIO instance.
+     * This FileIO is initialized with the correct classloader context.
+     */
+    public org.apache.iceberg.aws.s3.S3FileIO getFileIO() {
+        return this.fileIO;
     }
 
     /**
@@ -205,7 +253,6 @@ public class S3TablesIcebergManager {
 
     /**
      * List all tables in the OpenSearch namespace.
-     * Useful for debugging and monitoring S3 Tables integration.
      * 
      * @return List of table identifiers
      */
@@ -216,48 +263,6 @@ public class S3TablesIcebergManager {
         } catch (Exception e) {
             logger.error("[Iceberg] Failed to list tables from S3 Tables: {}", e.getMessage(), e);
             return java.util.Collections.emptyList();
-        }
-    }
-
-    /**
-     * Drop a table from S3 Tables catalog.
-     * This removes metadata but preserves data files in S3.
-     * 
-     * @param indexName OpenSearch index name
-     * @return true if table was dropped, false otherwise
-     */
-    public boolean dropTable(String indexName) {
-        String tableName = indexName.toLowerCase().replace("-", "_");
-        TableIdentifier tableId = TableIdentifier.of("opensearch", tableName);
-        
-        try {
-            boolean dropped = catalog.dropTable(tableId);
-            if (dropped) {
-                tables.remove(indexName);
-                logger.info("[Iceberg] Dropped table from S3 Tables: {}", indexName);
-            }
-            return dropped;
-        } catch (Exception e) {
-            logger.error("[Iceberg] Failed to drop table from S3 Tables: {}", indexName, e);
-            return false;
-        }
-    }
-
-    /**
-     * Refresh table metadata from S3 Tables.
-     * Useful when external processes modify the table.
-     * 
-     * @param indexName OpenSearch index name
-     */
-    public void refreshTable(String indexName) {
-        try {
-            String tableName = indexName.toLowerCase().replace("-", "_");
-            TableIdentifier tableId = TableIdentifier.of("opensearch", tableName);
-            Table table = catalog.loadTable(tableId);
-            tables.put(indexName, table);
-            logger.debug("[Iceberg] Refreshed table metadata from S3 Tables: {}", indexName);
-        } catch (Exception e) {
-            logger.warn("[Iceberg] Failed to refresh table from S3 Tables: {}", indexName, e);
         }
     }
 }

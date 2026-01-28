@@ -81,10 +81,10 @@ testClusters {
     // AWS region
     environment 'AWS_REGION', 'us-west-2'
     
-    // Iceberg S3 Tables configuration
-    systemProperty 'iceberg.warehouse', 's3://srirasac-iceberg-test/opensearch-iceberg-warehouse/'
-    systemProperty 'aws.region', 'us-west-2'
-    systemProperty 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
+    // Iceberg Metadata Catalog Plugin configuration
+    setting 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
+    setting 'iceberg.aws.region', 'us-west-2'
+    setting 'iceberg.catalog.type', 's3tables'
     
     // S3 remote store configuration (OpenSearch 3.x)
     // Note: Remote store for segments/translog is enabled via node attributes, not cluster settings

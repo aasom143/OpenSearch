@@ -1,0 +1,129 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
+apply plugin: 'opensearch.opensearchplugin'
+apply plugin: 'opensearch.java-rest-test'
+
+opensearchplugin {
+    name = 'iceberg-metadata-catalog'
+    description = 'Plugin for managing Iceberg table metadata for OpenSearch indices'
+    classname = 'org.opensearch.plugin.iceberg.IcebergMetadataCatalogPlugin'
+    licenseFile = rootProject.file('LICENSE.txt')
+    noticeFile = rootProject.file('NOTICE.txt')
+}
+
+configurations.all {
+    resolutionStrategy {
+        force 'commons-codec:commons-codec:1.18.0'
+        force 'org.slf4j:slf4j-api:2.0.17'
+        force 'commons-logging:commons-logging:1.2'
+    }
+
+    // Exclude conflicting dependencies to prevent jar hell
+    exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+    exclude group: 'log4j', module: 'log4j'
+}
+
+dependencies {
+    // Apache Iceberg dependencies - use 'api' to expose to plugin classloader
+    api('org.apache.iceberg:iceberg-core:1.6.1') {
+        exclude group: 'org.apache.hadoop'
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.iceberg:iceberg-api:1.6.1') {
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.iceberg:iceberg-common:1.6.1') {
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.iceberg:iceberg-aws:1.6.1') {
+        exclude group: 'org.apache.hadoop'
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.iceberg:iceberg-bundled-guava:1.6.1') {
+        exclude group: 'org.slf4j'
+    }
+    
+    // Apache Avro (required by Iceberg DataFiles)
+    api 'org.apache.avro:avro:1.11.3'
+
+    // Apache HttpClient 5 for RESTCatalog
+    api('org.apache.httpcomponents.client5:httpclient5:5.2.1') {
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.httpcomponents.core5:httpcore5:5.2') {
+        exclude group: 'org.slf4j'
+    }
+    api('org.apache.httpcomponents.core5:httpcore5-h2:5.2') {
+        exclude group: 'org.slf4j'
+    }
+    
+    // Caffeine cache (required by Iceberg)
+    api 'com.github.ben-manes.caffeine:caffeine:2.9.3'
+    
+    // SLF4J for Iceberg logging
+    api 'org.slf4j:slf4j-api:2.0.17'
+    api 'org.apache.logging.log4j:log4j-slf4j2-impl:2.23.1'
+    
+    // Jackson for Iceberg REST catalog  
+    api 'com.fasterxml.jackson.core:jackson-core:2.18.2'
+    api 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+    api 'com.fasterxml.jackson.core:jackson-annotations:2.18.2'
+    api 'com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.18.2'
+    
+    // AWS SDK v2 stack (complete, matching repository-s3 plugin)  
+    api "software.amazon.awssdk:sdk-core:2.32.29"
+    api "software.amazon.awssdk:annotations:2.32.29"
+    api "software.amazon.awssdk:aws-core:2.32.29"
+    api "software.amazon.awssdk:auth:2.32.29"
+    api "software.amazon.awssdk:identity-spi:2.32.29"
+    api "software.amazon.awssdk:checksums:2.32.29"
+    api "software.amazon.awssdk:checksums-spi:2.32.29"
+    api "software.amazon.awssdk.crt:aws-crt:0.35.0"
+    api "software.amazon.awssdk:http-auth:2.32.29"
+    api "software.amazon.awssdk:http-auth-aws:2.32.29"
+    api "software.amazon.awssdk:http-auth-spi:2.32.29"
+    api "software.amazon.awssdk:retries:2.32.29"
+    api "software.amazon.awssdk:retries-spi:2.32.29"
+    api "software.amazon.awssdk:endpoints-spi:2.32.29"
+    api "software.amazon.awssdk:http-client-spi:2.32.29"
+    api "software.amazon.awssdk:apache-client:2.32.29"
+    api "software.amazon.awssdk:metrics-spi:2.32.29"
+    api "software.amazon.awssdk:profiles:2.32.29"
+    api "software.amazon.awssdk:regions:2.32.29"
+    api "software.amazon.awssdk:utils:2.32.29"
+    api "software.amazon.awssdk:aws-json-protocol:2.32.29"
+    api "software.amazon.awssdk:protocol-core:2.32.29"
+    api "software.amazon.awssdk:json-utils:2.32.29"
+    api "software.amazon.awssdk:third-party-jackson-core:2.32.29"
+    api "software.amazon.awssdk:signer:2.32.29"
+    api "software.amazon.awssdk:crt-core:2.32.29"
+    api "software.amazon.awssdk:sts:2.32.29"
+    api "software.amazon.awssdk:s3:2.32.29"
+    api "software.amazon.awssdk:aws-xml-protocol:2.32.29"
+    api "software.amazon.awssdk:aws-query-protocol:2.32.29"
+    api "software.amazon.awssdk:aws-crt-client:2.32.29"
+    
+    // Additional dependencies
+    api 'org.reactivestreams:reactive-streams:1.0.4'
+    api 'org.apache.httpcomponents:httpclient:4.5.14'
+    api 'org.apache.httpcomponents:httpcore:4.4.16'
+    api 'joda-time:joda-time:2.12.7'
+    api 'commons-codec:commons-codec:1.18.0'
+    api 'org.apache.logging.log4j:log4j-1.2-api:2.21.0'
+    api 'commons-logging:commons-logging:1.2'
+    
+    // AWS netty HTTP client for ApacheHttpClientConfigurations
+    api "software.amazon.awssdk:netty-nio-client:2.32.29"
+}
+
+// No need for license validation or javadoc
+licenseHeaders.enabled = false
+dependencyLicenses.enabled = false
+javadoc.enabled = false
+missingJavadoc.enabled = false

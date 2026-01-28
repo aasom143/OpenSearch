@@ -10,8 +10,6 @@ package com.parquet.parquetdataformat.merge;
 
 import com.parquet.parquetdataformat.engine.ParquetDataFormat;
 import com.parquet.parquetdataformat.engine.ParquetExecutionEngine;
-import com.parquet.parquetdataformat.iceberg.S3TablesIcebergManager;
-import org.apache.iceberg.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
@@ -58,12 +56,6 @@ public class RecordBatchMergeStrategy implements ParquetMergeStrategy {
         try {
             // Merge files in Rust
             mergeParquetFilesInRust(filePaths, mergedFilePath);
-
-            // Update Iceberg metadata - extract index name from path
-            String indexName = extractIndexNameFromPath(outputDirectory);
-            if (indexName != null) {
-                updateIcebergOnMerge(files, mergedFilePath, indexName);
-            }
 
             // Build row ID mapping
             Map<RowId, Long> rowIdMapping = new HashMap<>();
@@ -113,71 +105,4 @@ public class RecordBatchMergeStrategy implements ParquetMergeStrategy {
         return Path.of(outputDirectory, getMergedFileName(generation)).toString();
     }
 
-    /**
-     * Extract index name from file path.
-     * Assumes path structure like: /data/indices/{indexName}/shards/{shardId}/
-     */
-    private String extractIndexNameFromPath(String directory) {
-        try {
-            Path path = Path.of(directory).toAbsolutePath();
-            // Look for "indices" in the path and get the next component as index name
-            for (int i = 0; i < path.getNameCount() - 1; i++) {
-                if ("indices".equals(path.getName(i).toString())) {
-                    return path.getName(i + 1).toString();
-                }
-            }
-            // Fallback: use the parent directory name
-            return path.getParent() != null ? path.getParent().getFileName().toString() : "unknown";
-        } catch (Exception e) {
-            logger.error("[Iceberg S3Tables] Failed to extract index name from path: {}, error: {}", directory, e.getMessage());
-            return "unknown";
-        }
-    }
-
-    /**
-     * Update Iceberg metadata after merge: delete old files, add merged file.
-     */
-    private void updateIcebergOnMerge(List<WriterFileSet> oldFiles, String mergedFilePath, String indexName) {
-        try {
-            // Load existing table - it should already exist with proper schema from initial file uploads
-            // If table doesn't exist, this will fail and we'll skip Iceberg update
-            Table table = S3TablesIcebergManager.getInstance().getOrCreateTable(indexName, null);
-            if (table == null) {
-                logger.warn("[Iceberg S3Tables] Table not found for index '{}', skipping merge metadata update", indexName);
-                return;
-            }
-            
-            Transaction txn = table.newTransaction();
-
-            // Delete old files from Iceberg
-            DeleteFiles delete = txn.newDelete();
-            int deletedCount = 0;
-            for (WriterFileSet fs : oldFiles) {
-                for (String file : fs.getFiles()) {
-                    String fullPath = fs.getDirectory() + "/" + file;
-                    delete.deleteFile(fullPath);
-                    deletedCount++;
-                }
-            }
-            delete.commit();
-
-            // Add merged file to Iceberg
-            AppendFiles append = txn.newAppend();
-            long fileSize = Files.size(Path.of(mergedFilePath));
-            DataFile dataFile = DataFiles.builder(table.spec())
-                .withPath(mergedFilePath)
-                .withFileSizeInBytes(fileSize)
-                .withRecordCount(0) // TODO: Extract from Parquet footer
-                .build();
-            append.appendFile(dataFile);
-            append.commit();
-
-            txn.commitTransaction();
-
-            logger.info("[Iceberg S3Tables] Merge committed for index '{}': deleted {} files, added 1 merged file, snapshot={}", 
-                       indexName, deletedCount, table.currentSnapshot().snapshotId());
-        } catch (Exception e) {
-            logger.error("[Iceberg S3Tables] Merge commit failed for index '{}': {}", indexName, e.getMessage(), e);
-        }
-    }
 }
