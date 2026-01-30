@@ -336,6 +336,7 @@ public class IcebergService {
 
     /**
      * Infer Iceberg schema from OpenSearch index mappings.
+     * Adds hidden partition fields: index_uuid and shard_id.
      */
     private org.apache.iceberg.Schema inferSchemaFromIndex(IndexMetadata indexMetadata) throws IOException {
         try {
@@ -361,6 +362,15 @@ public class IcebergService {
             List<org.apache.iceberg.types.Types.NestedField> fields = new java.util.ArrayList<>();
             int fieldId = 1;
             
+            // Add hidden partition fields FIRST (for efficient queries)
+            fields.add(org.apache.iceberg.types.Types.NestedField.optional(
+                fieldId++, "index_uuid", org.apache.iceberg.types.Types.StringType.get()
+            ));
+            fields.add(org.apache.iceberg.types.Types.NestedField.optional(
+                fieldId++, "shard_id", org.apache.iceberg.types.Types.IntegerType.get()
+            ));
+            
+            // Add data fields from index mappings
             for (Map.Entry<String, Object> entry : properties.entrySet()) {
                 String fieldName = entry.getKey();
                 @SuppressWarnings("unchecked")
@@ -374,7 +384,11 @@ public class IcebergService {
                 ));
             }
             
-            return new org.apache.iceberg.Schema(fields);
+            org.apache.iceberg.Schema schema = new org.apache.iceberg.Schema(fields);
+            logger.info("[Iceberg Plugin] Created schema with {} total fields (2 partition + {} data fields)", 
+                       fields.size(), properties.size());
+            
+            return schema;
         } catch (Exception e) {
             logger.error("[Iceberg Plugin] Failed to infer schema from index mappings: {}", e.getMessage());
             throw new IOException("Failed to convert index mappings to Iceberg schema", e);
@@ -406,7 +420,7 @@ public class IcebergService {
     
     /**
      * Add new files to Iceberg catalog with actual file size and row count.
-     * Copies files to S3 Tables warehouse location.
+     * Copies files to S3 Tables warehouse location, preserving original path structure.
      */
     private void addFilesToCatalog(Table table, Map<String, UploadedSegmentMetadata> filesToAdd) {
         // Set thread context classloader for Iceberg's dynamic class loading
@@ -427,13 +441,20 @@ public class IcebergService {
                 String sourceS3Path = entry.getKey();
                 UploadedSegmentMetadata metadata = entry.getValue();
                 
-                // Extract filename from source path
-                String fileName = sourceS3Path.substring(sourceS3Path.lastIndexOf('/') + 1);
+                // Extract partition values from source path
+                // Format: s3://bucket/base/indexUUID/shardId/segments/data/parquet/filename
+                PartitionValues partitionValues = extractPartitionValues(sourceS3Path);
                 
-                // Construct destination path in S3 Tables warehouse
-                String destinationPath = warehouseLocation + "/data/" + fileName;
+                // Extract relative path from source to preserve directory structure
+                // Source format: s3://bucket/base_path/indexUUID/shardId/segments/data/parquet/filename
+                // We want to preserve: indexUUID/shardId/segments/data/parquet/filename
+                String relativePath = extractRelativePath(sourceS3Path);
                 
-                logger.info("[Iceberg Plugin] Copying file from {} to {}", sourceS3Path, destinationPath);
+                // Construct destination path in S3 Tables warehouse, preserving structure
+                String destinationPath = warehouseLocation + "/data/" + relativePath;
+                
+                logger.info("[Iceberg Plugin] Copying file from {} to {} (index_uuid={}, shard_id={})", 
+                           sourceS3Path, destinationPath, partitionValues.indexUuid, partitionValues.shardId);
                 
                 // Copy file to warehouse location using S3 CopyObject
                 try {
@@ -448,23 +469,103 @@ public class IcebergService {
                 // Estimate rows (actual rows not available in metadata)
                 long recordCount = fileSize > 0 ? 100L : 1L;
                 
-                logger.info("[Iceberg Plugin] Adding file to catalog: path={}, size={} bytes", destinationPath, fileSize);
+                logger.info("[Iceberg Plugin] Adding file to catalog: path={}, size={} bytes, partitions=[{}, {}]", 
+                           destinationPath, fileSize, partitionValues.indexUuid, partitionValues.shardId);
                 
-                // Create DataFile with warehouse path
-                DataFile dataFile = DataFiles.builder(table.spec())
+                // Create DataFile with warehouse path and partition values
+                DataFiles.Builder builder = DataFiles.builder(table.spec())
                     .withPath(destinationPath)
                     .withFormat(FileFormat.PARQUET)
                     .withFileSizeInBytes(fileSize)
-                    .withRecordCount(recordCount)
-                    .build();
+                    .withRecordCount(recordCount);
                 
+                // Add partition path if table is partitioned (Hive-style: field1=value1/field2=value2)
+                if (table.spec().isPartitioned()) {
+                    String partitionPath = String.format("index_uuid=%s/shard_id=%d", 
+                                                        partitionValues.indexUuid, 
+                                                        partitionValues.shardId);
+                    builder.withPartitionPath(partitionPath);
+                    logger.debug("[Iceberg Plugin] Set partition path: {}", partitionPath);
+                }
+                
+                DataFile dataFile = builder.build();
                 append.appendFile(dataFile);
             }
             
             append.commit();
-            logger.info("[Iceberg Plugin] Added {} files to catalog", filesToAdd.size());
+            logger.info("[Iceberg Plugin] Added {} files to catalog with preserved path structure", filesToAdd.size());
         } finally {
             Thread.currentThread().setContextClassLoader(originalClassLoader);
+        }
+    }
+    
+    /**
+     * Extract relative path from full S3 path to preserve directory structure.
+     * Source format: s3://bucket/base_path/indexUUID/shardId/segments/data/parquet/filename
+     * Returns: indexUUID/shardId/segments/data/parquet/filename
+     */
+    private String extractRelativePath(String s3Path) {
+        try {
+            logger.info("[Iceberg Plugin] Extracting relative path from: {}", s3Path);
+            
+            // Remove s3:// prefix
+            String pathWithoutProtocol = s3Path.substring(5); // Remove "s3://"
+            
+            // Split by '/' and find the indexUUID (UUID format)
+            String[] parts = pathWithoutProtocol.split("/");
+            logger.info("[Iceberg Plugin] Path parts: {}", String.join(" | ", parts));
+            
+            // Find the start of the UUID (36 character format with dashes)
+            int uuidIndex = -1;
+            for (int i = 0; i < parts.length; i++) {
+                // UUID format: 8-4-4-4-12 characters (total 36 with dashes)
+                // Check both length and pattern
+                logger.debug("[Iceberg Plugin] Checking part[{}]: '{}' (length={})", i, parts[i], parts[i].length());
+                
+                if (parts[i].length() == 36 && parts[i].matches("[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}")) {
+                    uuidIndex = i;
+                    logger.info("[Iceberg Plugin] Found UUID at index {}: {}", i, parts[i]);
+                    break;
+                }
+            }
+            
+            if (uuidIndex == -1) {
+                logger.warn("[Iceberg Plugin] Could not find UUID in path: {}", s3Path);
+                logger.warn("[Iceberg Plugin] Falling back to full path after bucket");
+                
+                // Fallback: preserve everything after bucket name (first part)
+                StringBuilder fallbackPath = new StringBuilder();
+                for (int i = 1; i < parts.length; i++) {  // Skip bucket name (index 0)
+                    if (i > 1) {
+                        fallbackPath.append('/');
+                    }
+                    fallbackPath.append(parts[i]);
+                }
+                String result = fallbackPath.toString();
+                logger.info("[Iceberg Plugin] Using fallback path: {}", result);
+                return result;
+            }
+            
+            // Reconstruct path from UUID onwards
+            StringBuilder relativePath = new StringBuilder();
+            for (int i = uuidIndex; i < parts.length; i++) {
+                if (i > uuidIndex) {
+                    relativePath.append('/');
+                }
+                relativePath.append(parts[i]);
+            }
+            
+            String result = relativePath.toString();
+            logger.info("[Iceberg Plugin] Extracted relative path: {}", result);
+            return result;
+            
+        } catch (Exception e) {
+            logger.error("[Iceberg Plugin] Failed to extract relative path from {}: {}", 
+                        s3Path, e.getMessage(), e);
+            // Fallback to just filename
+            String filename = s3Path.substring(s3Path.lastIndexOf('/') + 1);
+            logger.warn("[Iceberg Plugin] Using filename only: {}", filename);
+            return filename;
         }
     }
     
@@ -494,6 +595,63 @@ public class IcebergService {
     }
 
     /**
+     * Extract partition values (index_uuid, shard_id) from S3 path.
+     * Format: s3://bucket/base_path/indexUUID/shardId/segments/data/parquet/filename
+     * Uses position-based detection: finds "segments" anchor, then extracts UUID and shard_id before it.
+     */
+    private PartitionValues extractPartitionValues(String s3Path) {
+        try {
+            logger.info("[Iceberg Plugin] Extracting partition values from: {}", s3Path);
+            
+            String pathWithoutProtocol = s3Path.substring(5); // Remove "s3://"
+            String[] parts = pathWithoutProtocol.split("/");
+            
+            logger.info("[Iceberg Plugin] Partition extraction - path parts: {}", String.join(" | ", parts));
+            
+            // Find "segments" anchor - it's always present in the path
+            int segmentsIndex = -1;
+            for (int i = 0; i < parts.length; i++) {
+                if ("segments".equals(parts[i])) {
+                    segmentsIndex = i;
+                    logger.info("[Iceberg Plugin] Found 'segments' at index {}", i);
+                    break;
+                }
+            }
+            
+            if (segmentsIndex < 2) {
+                logger.warn("[Iceberg Plugin] Could not find 'segments' anchor or not enough parts before it: {}", s3Path);
+                return new PartitionValues("unknown", 0);
+            }
+            
+            // UUID is 2 parts before "segments": bucket/base_path/UUID/shard_id/segments/...
+            String indexUuid = parts[segmentsIndex - 2];
+            logger.info("[Iceberg Plugin] Extracted index_uuid from part[{}]: {}", segmentsIndex - 2, indexUuid);
+            
+            // Shard ID is 1 part before "segments"
+            String shardIdPart = parts[segmentsIndex - 1];
+            logger.info("[Iceberg Plugin] Attempting to parse shard_id from part[{}]: '{}'", segmentsIndex - 1, shardIdPart);
+            
+            Integer shardId = null;
+            try {
+                shardId = Integer.parseInt(shardIdPart);
+                logger.info("[Iceberg Plugin] Successfully parsed shard_id: {}", shardId);
+            } catch (NumberFormatException e) {
+                logger.warn("[Iceberg Plugin] Failed to parse shard_id from '{}': {}", shardIdPart, e.getMessage());
+                return new PartitionValues(indexUuid, 0);
+            }
+            
+            logger.info("[Iceberg Plugin] Successfully extracted partition values: index_uuid={}, shard_id={}", 
+                       indexUuid, shardId);
+            return new PartitionValues(indexUuid, shardId);
+            
+        } catch (Exception e) {
+            logger.error("[Iceberg Plugin] Failed to extract partition values from {}: {}", 
+                        s3Path, e.getMessage(), e);
+            return new PartitionValues("unknown", 0);
+        }
+    }
+    
+    /**
      * Remove stale files from Iceberg catalog.
      */
     private void removeFilesFromCatalog(Table table, Set<String> filesToRemove) {
@@ -512,6 +670,19 @@ public class IcebergService {
             logger.info("[Iceberg Plugin] Removed {} stale files from catalog", filesToRemove.size());
         } finally {
             Thread.currentThread().setContextClassLoader(originalClassLoader);
+        }
+    }
+    
+    /**
+     * Helper class to hold partition values extracted from file paths.
+     */
+    private static class PartitionValues {
+        final String indexUuid;
+        final int shardId;
+        
+        PartitionValues(String indexUuid, int shardId) {
+            this.indexUuid = indexUuid;
+            this.shardId = shardId;
         }
     }
 }

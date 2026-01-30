@@ -225,16 +225,45 @@ public class S3TablesIcebergManager {
             );
 
             try {
+                // Create partition spec for hidden partitioning by index_uuid and shard_id
+                org.apache.iceberg.PartitionSpec partitionSpec = null;
+                try {
+                    if (schema.findField("index_uuid") != null && schema.findField("shard_id") != null) {
+                        partitionSpec = org.apache.iceberg.PartitionSpec.builderFor(schema)
+                            .identity("index_uuid")
+                            .identity("shard_id")
+                            .build();
+                        logger.info("[Iceberg S3Tables] Created partition spec with index_uuid and shard_id");
+                    } else {
+                        logger.warn("[Iceberg S3Tables] Schema missing partition fields, creating unpartitioned table");
+                    }
+                } catch (Exception partitionEx) {
+                    logger.warn("[Iceberg S3Tables] Failed to create partition spec: {}", partitionEx.getMessage());
+                }
+                
                 // S3 Tables automatically manages table metadata
-                logger.info("[Iceberg S3Tables] Creating table with ID: {}, schema fields: {}", 
-                           tableId, schema.columns().size());
-                Table table = catalog.buildTable(tableId, schema)
-                    .withLocation(tableLocation)
-                    .withProperty("write.format.default", "parquet")
-                    .withProperty("write.parquet.compression-codec", "snappy")
-                    .create();
+                logger.info("[Iceberg S3Tables] Creating table with ID: {}, schema fields: {}, partitioned: {}", 
+                           tableId, schema.columns().size(), (partitionSpec != null));
+                
+                // Build table with or without partition spec
+                Table table;
+                if (partitionSpec != null) {
+                    table = catalog.buildTable(tableId, schema)
+                        .withLocation(tableLocation)
+                        .withPartitionSpec(partitionSpec)
+                        .withProperty("write.format.default", "parquet")
+                        .withProperty("write.parquet.compression-codec", "snappy")
+                        .create();
+                } else {
+                    table = catalog.buildTable(tableId, schema)
+                        .withLocation(tableLocation)
+                        .withProperty("write.format.default", "parquet")
+                        .withProperty("write.parquet.compression-codec", "snappy")
+                        .create();
+                }
                     
-                logger.info("[Iceberg S3Tables] ===== TABLE CREATED SUCCESSFULLY: {} =====", indexName);
+                logger.info("[Iceberg S3Tables] ===== TABLE CREATED SUCCESSFULLY: {} (partitioned: {}) =====", 
+                           indexName, (partitionSpec != null));
                 return table;
             } catch (org.apache.iceberg.exceptions.AlreadyExistsException alreadyExists) {
                 // Race condition: Another shard created the table concurrently
