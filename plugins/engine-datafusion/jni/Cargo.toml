@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [lib]
 name = "opensearch_datafusion_jni"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # DataFusion dependencies
@@ -63,6 +63,12 @@ url = { workspace = true }
 
 # Substrait support
 substrait = { workspace = true }
+
+# Iceberg integration
+iceberg = "0.8.0"
+iceberg-datafusion = "0.8.0"
+iceberg-catalog-glue = "0.8.0"
+iceberg-catalog-s3tables = "0.8.0"
 
 # Temporary directory support
 tempfile ={ workspace = true }

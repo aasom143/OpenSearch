@@ -39,11 +39,13 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
 //    private final List<ReferenceManager.RefreshListener> refreshListeners = new CopyOnWriteArrayList();
 
     public DatafusionReaderManager(String path, Collection<FileMetadata> files, String dataFormat) throws IOException {
+        log.info("[FLOW] DatafusionReaderManager constructor: path={}, fileCount={}, format={}", path, files.size(), dataFormat);
         WriterFileSet writerFileSet = new WriterFileSet(Path.of(URI.create("file:///" + path)), 1, 0);
         files.forEach(fileMetadata -> writerFileSet.add(fileMetadata.file()));
         this.current = new DatafusionReader(path, null, List.of(writerFileSet));
         this.path = path;
         this.dataFormat = dataFormat;
+        log.info("[FLOW] DatafusionReaderManager initialized successfully");
     }
 
     /**
@@ -76,6 +78,7 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
 
     @Override
     public void afterRefresh(boolean didRefresh, Supplier<CompositeEngine.ReleasableRef<CatalogSnapshot>> catalogSnapshotSupplier) throws IOException {
+        log.info("[FLOW] afterRefresh called: didRefresh={}", didRefresh);
         if (didRefresh && catalogSnapshotSupplier != null) {
             DatafusionReader old = this.current;
             final CompositeEngine.ReleasableRef<CatalogSnapshot> catalogSnapshot = catalogSnapshotSupplier.get();
@@ -84,6 +87,7 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
                 return;
             }
             Collection<WriterFileSet> newFiles = catalogSnapshot.getRef().getSearchableFiles(dataFormat);
+            log.info("[FLOW] Refresh: newFileCount={}", newFiles.size());
             this.current = new DatafusionReader(this.path, catalogSnapshot, catalogSnapshot.getRef().getSearchableFiles(dataFormat));
             if (old != null) {
                 release(old);
@@ -91,6 +95,7 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
             } else {
                 processFileChanges(List.of(), newFiles);
             }
+            log.info("[FLOW] Refresh completed successfully");
         }
     }
 
@@ -105,6 +110,7 @@ public class DatafusionReaderManager implements EngineReaderManager<DatafusionRe
         Set<String> filesToRemove = new HashSet<>(oldFilePaths);
         filesToRemove.removeAll(newFilePaths);
 
+        log.info("[FLOW] File changes: added={}, removed={}", filesToAdd.size(), filesToRemove.size());
         if (!filesToAdd.isEmpty() && onFilesAdded != null) {
             onFilesAdded.accept(List.copyOf(filesToAdd));
         }

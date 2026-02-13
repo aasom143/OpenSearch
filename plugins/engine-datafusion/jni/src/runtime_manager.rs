@@ -109,6 +109,7 @@ impl RuntimeManager {
             .worker_threads(config.effective_cpu_threads())
             .thread_name("datafusion-cpu")
             .enable_time()
+            .enable_io()  // Enable IO for S3 access
             .on_thread_start(move || {
                 // Register IO runtime for each CPU thread
                 register_io_runtime(Some(io_handle.clone()));

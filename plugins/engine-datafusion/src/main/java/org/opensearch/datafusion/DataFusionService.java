@@ -44,7 +44,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     @Override
     protected void doStart() {
-        logger.info("Starting DataFusion service");
+        logger.info("[FLOW] Starting DataFusion service");
         try {
             // Initialize the data source registry
             // Test that at least one data source is available
@@ -52,7 +52,7 @@ public class DataFusionService extends AbstractLifecycleComponent {
                 logger.warn("No data sources available");
             } else {
                 logger.info(
-                    "DataFusion service started successfully with {} data sources: {}",
+                    "[FLOW] DataFusion service started successfully with {} data sources: {}",
                     dataSourceRegistry.getCodecNames().size(),
                     dataSourceRegistry.getCodecNames()
                 );
@@ -66,9 +66,9 @@ public class DataFusionService extends AbstractLifecycleComponent {
 
     @Override
     protected void doStop() {
-        logger.info("Stopping DataFusion service");
+        logger.info("[FLOW] Stopping DataFusion service");
         runtimeEnv.close();
-        logger.info("DataFusion service stopped");
+        logger.info("[FLOW] DataFusion service stopped");
     }
 
     @Override

@@ -82,6 +82,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         // For now, DataFusion is always enabled if the plugin is loaded
         // In the future, this could be controlled by a feature flag
         this.isDataFusionEnabled = true;
+        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] DataFusionPlugin constructor called, enabled={}", isDataFusionEnabled);
     }
 
     /**
@@ -115,10 +116,12 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
         Map<DataFormat, DataSourceCodec> dataSourceCodecs
     ) {
         String spill_dir = Arrays.stream(environment.dataFiles()).findFirst().get().getParent().resolve("tmp").toAbsolutePath().toString();
+        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] createComponents called, spillDir={}", spill_dir);
         if (!isDataFusionEnabled) {
             return Collections.emptyList();
         }
         dataFusionService = new DataFusionService(dataSourceCodecs, clusterService, spill_dir);
+        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] DataFusionService created successfully");
 
         for(DataFormat format : this.getSupportedFormats()) {
             dataSourceCodecs.get(format);
@@ -141,6 +144,8 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
     public SearchExecEngine<DatafusionContext, DatafusionSearcher,
             DatafusionReaderManager, DatafusionQuery>
         createEngine(DataFormat dataFormat,Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath) throws IOException {
+        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] createEngine called for format={}, shardPath={}, fileCount={}", 
+            dataFormat.getName(), shardPath.getShardId(), formatCatalogSnapshot.size());
         return new DatafusionEngine(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath);
     }
 

@@ -8,6 +8,8 @@
 
 package org.opensearch.datafusion.search;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.datafusion.jni.NativeBridge;
@@ -21,6 +23,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, RecordBatchStream> {
+    private static final Logger logger = LogManager.getLogger(DatafusionSearcher.class);
     private final String source;
     private DatafusionReader reader;
     private Closeable closeable;
@@ -39,6 +42,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public long search(DatafusionQuery datafusionQuery, Long runtimePtr) {
+        logger.info("[FLOW] DatafusionSearcher.search (fetch phase): isFetchPhase={}", datafusionQuery.isFetchPhase());
         if (datafusionQuery.isFetchPhase()) {
             long[] row_ids = datafusionQuery.getQueryPhaseRowIds()
                 .stream()
@@ -47,6 +51,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             String[] includeFields = Objects.isNull(datafusionQuery.getIncludeFields()) ? new String[]{} : datafusionQuery.getIncludeFields().toArray(String[]::new);
             String[] excludeFields = Objects.isNull(datafusionQuery.getExcludeFields()) ? new String[]{} : datafusionQuery.getExcludeFields().toArray(String[]::new);
 
+            logger.info("[FLOW] Calling JNI executeFetchPhase: rowIdCount={}", row_ids.length);
             return NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
         }
         throw new RuntimeException("Can be only called for fetch phase");
@@ -54,10 +59,12 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public CompletableFuture<Long> searchAsync(DatafusionQuery datafusionQuery, Long runtimePtr) {
+        logger.info("[FLOW] DatafusionSearcher.searchAsync (query phase): indexName={}", datafusionQuery.getIndexName());
         CompletableFuture<Long> result = new CompletableFuture<>();
         NativeBridge.executeQueryPhaseAsync(reader.getReaderPtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), datafusionQuery.getQueryPlanExplainEnabled(), runtimePtr, new ActionListener<Long>() {
             @Override
             public void onResponse(Long streamPointer) {
+                logger.info("[FLOW] Query phase async response: streamPointer={}", streamPointer);
                 if (streamPointer == 0) {
                     result.complete(0L);
                 } else {
@@ -67,6 +74,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
             @Override
             public void onFailure(Exception e) {
+                logger.error("[FLOW] Query phase async failure", e);
                 result.completeExceptionally(e);
             }
         });
