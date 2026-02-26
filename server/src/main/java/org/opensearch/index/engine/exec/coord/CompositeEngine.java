@@ -718,24 +718,40 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
     }
 
     public synchronized void refresh(String source) throws EngineException {
+        logger.info("[REFRESH] Starting refresh with source: {}", source);
+        final long localCheckpointBeforeRefresh = localCheckpointTracker.getProcessedCheckpoint();
+        logger.info("[REFRESH] Local checkpoint before refresh: {}", localCheckpointBeforeRefresh);
+        boolean refreshed = false;
         try (CompositeEngine.ReleasableRef<CatalogSnapshot> catalogSnapshotReleasableRef = catalogSnapshotManager.acquireSnapshot()) {
+            logger.info("[REFRESH] Acquired catalog snapshot, invoking pre-refresh listeners");
             refreshListeners.forEach(PRE_REFRESH_LISTENER_CONSUMER);
+            logger.info("[REFRESH] Pre-refresh listeners invoked, count: {}", refreshListeners.size());
 
             RefreshInput refreshInput = new RefreshInput();
             refreshInput.setExistingSegments(new ArrayList<>(catalogSnapshotReleasableRef.getRef().getSegments()));
+            logger.info("[REFRESH] Created refresh input with {} existing segments", catalogSnapshotReleasableRef.getRef().getSegments().size());
+            
+            logger.info("[REFRESH] Calling engine.refresh()");
             RefreshResult refreshResult = engine.refresh(refreshInput);
-            if (refreshResult == null) {
-                return;
+            if (refreshResult != null) {
+                logger.info("[REFRESH] Engine refresh returned result, applying to catalog snapshot manager");
+                catalogSnapshotManager.applyRefreshResult(refreshResult);
+                refreshed = true;
+                logger.info("[REFRESH] Refresh result applied successfully, refreshed=true");
+            } else {
+                logger.info("[REFRESH] Engine refresh returned null, no refresh needed");
             }
-            catalogSnapshotManager.applyRefreshResult(refreshResult);
-            catalogSnapshotAwareRefreshListeners.forEach(refreshListener -> POST_REFRESH_CATALOG_SNAPSHOT_AWARE_LISTENER_CONSUMER.accept(
-                this::acquireSnapshot,
-                refreshListener
-            ));
 
-            refreshListeners.forEach(POST_REFRESH_LISTENER_CONSUMER);
-            triggerPossibleMerges(); // trigger merges
+            logger.info("[REFRESH] Invoking refresh listeners with refreshed={}", refreshed);
+            invokeRefreshListeners(refreshed);
+
+            // Call checkpoint listener's afterRefresh to update refreshed checkpoint
+            if (refreshed) {
+                logger.info("[REFRESH] Triggering possible merges after successful refresh");
+                triggerPossibleMerges(); // trigger merges
+            }
         } catch (Exception ex) {
+            logger.error("[REFRESH] Refresh failed with source: {}", source, ex);
             try {
                 failEngine("refresh failed source[" + source + "]", ex);
             } catch (Exception inner) {
@@ -743,11 +759,40 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
             }
             throw new RefreshFailedEngineException(shardId, ex);
         }
+        
+        final long localCheckpointAfterRefresh = lastRefreshedCheckpoint();
+        logger.info("[REFRESH] Refresh completed - refreshed: {}, checkpoint before: {}, checkpoint after: {}", 
+                   refreshed, localCheckpointBeforeRefresh, localCheckpointAfterRefresh);
+
+        assert refreshed == false || localCheckpointAfterRefresh >= localCheckpointBeforeRefresh : "refresh checkpoint was not advanced; "
+            + "local_checkpoint="
+            + localCheckpointBeforeRefresh
+            + " refresh_checkpoint="
+            + localCheckpointAfterRefresh;
+    }
+
+    private void invokeRefreshListeners(boolean didRefresh) {
+        logger.info("[REFRESH] Invoking catalog snapshot aware refresh listeners, count: {}, didRefresh: {}", 
+                   catalogSnapshotAwareRefreshListeners.size(), didRefresh);
+        catalogSnapshotAwareRefreshListeners.forEach(refreshListener -> POST_REFRESH_CATALOG_SNAPSHOT_AWARE_LISTENER_CONSUMER.accept(
+            this::acquireSnapshot,
+            refreshListener
+        ));
+        logger.info("[REFRESH] Catalog snapshot aware refresh listeners completed");
+
+        logger.info("[REFRESH] Invoking standard refresh listeners, count: {}", refreshListeners.size());
+        refreshListeners.forEach(POST_REFRESH_LISTENER_CONSUMER);
+        logger.info("[REFRESH] Standard refresh listeners completed");
     }
 
     public synchronized void applyMergeChanges(MergeResult mergeResult, OneMerge oneMerge) {
+        logger.info("[MERGE] Applying merge changes for merge: {}", oneMerge);
         try {
+            logger.info("[MERGE] Applying merge results to catalog snapshot manager");
             catalogSnapshotManager.applyMergeResults(mergeResult, oneMerge);
+            logger.info("[MERGE] Merge results applied, invoking refresh listeners");
+            invokeRefreshListeners(true);
+            logger.info("[MERGE] Merge changes applied successfully");
         } catch (Exception ex) {
             try {
                 logger.error(
@@ -765,7 +810,9 @@ public class CompositeEngine implements LifecycleAware, Closeable, Indexer, Chec
     }
 
     public void triggerPossibleMerges() {
+        logger.info("[MERGE] Triggering possible merges via merge scheduler");
         mergeScheduler.triggerMerges();
+        logger.info("[MERGE] Merge trigger completed");
     }
 
     public void finalizeReplication(CatalogSnapshot catalogSnapshot, ShardPath shardPath) throws IOException {

@@ -39,6 +39,7 @@ public final class NativeBridge {
 
     // Query execution
     public static native void executeQueryPhaseAsync(long readerPtr, String tableName, byte[] plan, boolean isQueryPlanExplainEnabled, long runtimePtr, ActionListener<Long> listener);
+    public static native void executeQueryWithDownloadedPartitionAsync(String localDir, String tableBucketArn, String databaseName, String tableName, String partitionColumn, String partitionValue, byte[] plan, boolean isQueryPlanExplainEnabled, long runtimePtr, ActionListener<Long> listener);
     public static native long executeFetchPhase(long readerPtr, long[] rowIds, String[] includeFields, String[] excludeFields, long runtimePtr);
 
     // File Stats

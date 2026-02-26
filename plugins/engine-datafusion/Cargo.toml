@@ -9,11 +9,11 @@ members = [
 datafusion = "51.0.0"
 datafusion-expr = "51.0.0"
 datafusion-datasource = "51.0.0"
-arrow-json = "57.1.0"
-arrow = { version = "57.1.0", features = ["ffi", "ipc_compression"] }
-arrow-array = "57.1.0"
-arrow-schema = "57.1.0"
-arrow-buffer = "57.1.0"
+arrow-json = "57.0.0"
+arrow = { version = "57.0.0", features = ["ffi", "ipc_compression"] }
+arrow-array = "57.0.0"
+arrow-schema = "57.0.0"
+arrow-buffer = "57.0.0"
 downcast-rs = "1.2"
 
 
@@ -42,10 +42,10 @@ thiserror = "1.0"
 # Logging
 log = "0.4"
 # Parquet support
-parquet = "57.1.0"
+parquet = "57.0.0"
 
 # Object store for file access
-object_store = "=0.12.4"
+object_store = { version = "=0.12.4", features = ["aws"] }
 url = "2.0"
 
 # Substrait support

@@ -72,12 +72,13 @@ public class DatafusionReader implements Closeable {
         this.files = files;
         String[] fileNames = new String[0];
         if (files != null) {
-            System.out.println("Got the files!!!!!");
+            logger.info("[FLOW] DatafusionReader constructor: directoryPath={}, fileSetCount={}", directoryPath, files.size());
+            logger.info("[STACKTRACE] DatafusionReader constructor call stack:", new Exception("Stack trace"));
             fileNames = files.stream().flatMap(writerFileSet -> writerFileSet.getFiles().stream()).toArray(String[]::new);
         }
-        System.out.println("File names: " + Arrays.toString(fileNames));
-        System.out.println("Directory path: " + directoryPath);
+        logger.info("[FLOW] Creating native reader: fileCount={}, files={}", fileNames.length, Arrays.toString(fileNames));
         this.readerHandle = new ReaderHandle(directoryPath, fileNames, this::releaseCatalogSnapshot);
+        logger.info("[FLOW] Native reader created: readerPtr={}", readerHandle.getPointer());
     }
 
     /**

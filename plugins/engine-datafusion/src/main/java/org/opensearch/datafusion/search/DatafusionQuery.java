@@ -22,12 +22,21 @@ public class DatafusionQuery {
     private List<String> excludeFields;
     private Boolean isQueryPlanExplainEnabled;
 
+    // S3 partition download configuration
+    private Boolean useDownloadedPartition;
+    private String localDownloadDir;
+    private String tableBucketArn;
+    private String databaseName;
+    private String partitionColumn;
+    private String partitionValue;
+
     public DatafusionQuery(String indexName, byte[] substraitBytes, List<SearchExecutor> searchExecutors) {
         this.indexName = indexName;
         this.substraitBytes = substraitBytes;
         this.searchExecutors = searchExecutors;
         this.isFetchPhase = false;
         this.isQueryPlanExplainEnabled = false;
+        this.useDownloadedPartition = false;
     }
 
     public void setSource(List<String> includeFields, List<String> excludeFields) {
@@ -74,5 +83,46 @@ public class DatafusionQuery {
 
     public String getIndexName() {
         return indexName;
+    }
+
+    // S3 partition download configuration methods
+
+    public void configureDownloadedPartition(
+        String localDownloadDir,
+        String tableBucketArn,
+        String databaseName,
+        String partitionColumn,
+        String partitionValue
+    ) {
+        this.useDownloadedPartition = true;
+        this.localDownloadDir = localDownloadDir;
+        this.tableBucketArn = tableBucketArn;
+        this.databaseName = databaseName;
+        this.partitionColumn = partitionColumn;
+        this.partitionValue = partitionValue;
+    }
+
+    public boolean useDownloadedPartition() {
+        return this.useDownloadedPartition != null && this.useDownloadedPartition;
+    }
+
+    public String getLocalDownloadDir() {
+        return this.localDownloadDir;
+    }
+
+    public String getTableBucketArn() {
+        return this.tableBucketArn;
+    }
+
+    public String getDatabaseName() {
+        return this.databaseName;
+    }
+
+    public String getPartitionColumn() {
+        return this.partitionColumn;
+    }
+
+    public String getPartitionValue() {
+        return this.partitionValue;
     }
 }

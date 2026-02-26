@@ -240,6 +240,7 @@ public class S3TablesIcebergManager {
                 } catch (Exception partitionEx) {
                     logger.warn("[Iceberg S3Tables] Failed to create partition spec: {}", partitionEx.getMessage());
                 }
+
                 
                 // S3 Tables automatically manages table metadata
                 logger.info("[Iceberg S3Tables] Creating table with ID: {}, schema fields: {}, partitioned: {}", 

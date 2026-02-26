@@ -166,6 +166,35 @@ public class DatafusionContext extends SearchContext {
     public DatafusionQuery getDatafusionQuery() {
         return datafusionQuery;
     }
+    /**
+     * Configures the query to use downloaded S3 partition files.
+     *
+     * @param localDownloadDir Local directory where partition files will be downloaded
+     * @param tableBucketArn S3 Tables bucket ARN
+     * @param databaseName Database/namespace name
+     * @param partitionColumn Partition column name (e.g., "shard_id")
+     * @param partitionValue Partition value (e.g., "0")
+     * @return This context for method chaining
+     */
+    public DatafusionContext configureDownloadedPartition(
+        String localDownloadDir,
+        String tableBucketArn,
+        String databaseName,
+        String partitionColumn,
+        String partitionValue
+    ) {
+        if (this.datafusionQuery != null) {
+            this.datafusionQuery.configureDownloadedPartition(
+                localDownloadDir,
+                tableBucketArn,
+                databaseName,
+                partitionColumn,
+                partitionValue
+            );
+        }
+        return this;
+    }
+
 
     /**
      * Gets the engine searcher

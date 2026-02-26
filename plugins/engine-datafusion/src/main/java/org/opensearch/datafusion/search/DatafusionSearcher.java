@@ -8,6 +8,8 @@
 
 package org.opensearch.datafusion.search;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.datafusion.jni.NativeBridge;
@@ -21,6 +23,7 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, RecordBatchStream> {
+    private static final Logger logger = LogManager.getLogger(DatafusionSearcher.class);
     private final String source;
     private DatafusionReader reader;
     private Closeable closeable;
@@ -39,6 +42,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public long search(DatafusionQuery datafusionQuery, Long runtimePtr) {
+        logger.info("[FLOW] DatafusionSearcher.search (fetch phase): isFetchPhase={}", datafusionQuery.isFetchPhase());
         if (datafusionQuery.isFetchPhase()) {
             long[] row_ids = datafusionQuery.getQueryPhaseRowIds()
                 .stream()
@@ -47,6 +51,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             String[] includeFields = Objects.isNull(datafusionQuery.getIncludeFields()) ? new String[]{} : datafusionQuery.getIncludeFields().toArray(String[]::new);
             String[] excludeFields = Objects.isNull(datafusionQuery.getExcludeFields()) ? new String[]{} : datafusionQuery.getExcludeFields().toArray(String[]::new);
 
+            logger.info("[FLOW] Calling JNI executeFetchPhase: rowIdCount={}", row_ids.length);
             return NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
         }
         throw new RuntimeException("Can be only called for fetch phase");
@@ -54,10 +59,34 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public CompletableFuture<Long> searchAsync(DatafusionQuery datafusionQuery, Long runtimePtr) {
+        logger.info("[FLOW] DatafusionSearcher.searchAsync (query phase): indexName={}", datafusionQuery.getIndexName());
+        
+        // Check if we should use downloaded partition approach
+        if (datafusionQuery.useDownloadedPartition()) {
+            logger.info("[FLOW] Using downloaded partition approach: localDir={}, partition={}={}",
+                datafusionQuery.getLocalDownloadDir(),
+                datafusionQuery.getPartitionColumn(),
+                datafusionQuery.getPartitionValue());
+            
+            return searchAsyncWithDownloadedPartition(
+                datafusionQuery.getLocalDownloadDir(),
+                datafusionQuery.getTableBucketArn(),
+                datafusionQuery.getDatabaseName(),
+                datafusionQuery.getIndexName(),
+                datafusionQuery.getPartitionColumn(),
+                datafusionQuery.getPartitionValue(),
+                datafusionQuery.getSubstraitBytes(),
+                datafusionQuery.getQueryPlanExplainEnabled(),
+                runtimePtr
+            );
+        }
+        
+        // Default: use direct S3 Tables access
         CompletableFuture<Long> result = new CompletableFuture<>();
         NativeBridge.executeQueryPhaseAsync(reader.getReaderPtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), datafusionQuery.getQueryPlanExplainEnabled(), runtimePtr, new ActionListener<Long>() {
             @Override
             public void onResponse(Long streamPointer) {
+                logger.info("[FLOW] Query phase async response: streamPointer={}", streamPointer);
                 if (streamPointer == 0) {
                     result.complete(0L);
                 } else {
@@ -67,11 +96,72 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
             @Override
             public void onFailure(Exception e) {
+                logger.error("[FLOW] Query phase async failure", e);
                 result.completeExceptionally(e);
             }
         });
         return result;
     }
+
+    /**
+     * Execute query by downloading S3 table partition files to local directory first.
+     * This approach is useful when you want to cache partition data locally for repeated queries.
+     *
+     * @param localDir Local directory path where files will be downloaded
+     * @param tableBucketArn S3 Tables bucket ARN
+     * @param databaseName Database/namespace name
+     * @param tableName Table name
+     * @param partitionColumn Partition column name (e.g., "shard_id")
+     * @param partitionValue Partition value to download (e.g., "0")
+     * @param substraitBytes Serialized Substrait query plan
+     * @param isQueryPlanExplainEnabled Enable query plan explanation
+     * @param runtimePtr Pointer to DataFusion runtime
+     * @return CompletableFuture with stream pointer
+     */
+    public CompletableFuture<Long> searchAsyncWithDownloadedPartition(
+        String localDir,
+        String tableBucketArn,
+        String databaseName,
+        String tableName,
+        String partitionColumn,
+        String partitionValue,
+        byte[] substraitBytes,
+        boolean isQueryPlanExplainEnabled,
+        Long runtimePtr
+    ) {
+        logger.info("[FLOW] DatafusionSearcher.searchAsyncWithDownloadedPartition: table={}.{}, partition={}={}, localDir={}",
+            databaseName, tableName, partitionColumn, partitionValue, localDir);
+
+        CompletableFuture<Long> result = new CompletableFuture<>();
+
+        NativeBridge.executeQueryWithDownloadedPartitionAsync(
+            localDir,
+            tableBucketArn,
+            databaseName,
+            tableName,
+            partitionColumn,
+            partitionValue,
+            substraitBytes,
+            isQueryPlanExplainEnabled,
+            runtimePtr,
+            new ActionListener<Long>() {
+                @Override
+                public void onResponse(Long streamPointer) {
+                    logger.info("[FLOW] Downloaded partition query async response: streamPointer={}", streamPointer);
+                    result.complete(streamPointer != null ? streamPointer : 0L);
+                }
+
+                @Override
+                public void onFailure(Exception e) {
+                    logger.error("[FLOW] Downloaded partition query async failure", e);
+                    result.completeExceptionally(e);
+                }
+            }
+        );
+
+        return result;
+    }
+
 
     public DatafusionReader getReader() {
         return reader;
