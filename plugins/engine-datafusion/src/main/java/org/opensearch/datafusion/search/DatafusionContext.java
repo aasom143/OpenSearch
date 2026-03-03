@@ -181,7 +181,8 @@ public class DatafusionContext extends SearchContext {
         String tableBucketArn,
         String databaseName,
         String partitionColumn,
-        String partitionValue
+        String partitionValue,
+        Map<String, String> s3Options
     ) {
         if (this.datafusionQuery != null) {
             this.datafusionQuery.configureDownloadedPartition(
@@ -189,7 +190,8 @@ public class DatafusionContext extends SearchContext {
                 tableBucketArn,
                 databaseName,
                 partitionColumn,
-                partitionValue
+                partitionValue,
+                s3Options
             );
         }
         return this;

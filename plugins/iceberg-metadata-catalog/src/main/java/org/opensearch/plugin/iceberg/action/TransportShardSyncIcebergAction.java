@@ -82,10 +82,16 @@ public class TransportShardSyncIcebergAction extends TransportReplicationAction<
     ) {
         ActionListener.completeWith(listener, () -> {
             ShardId shardId = request.shardId();
-            logger.info("[Iceberg Shard Sync] Syncing shard: {}", shardId);
+            logger.info("[Iceberg Shard Sync] Syncing shard: {} (role={}, bucket={}, region={})", 
+                       shardId, request.getRoleArn(), request.getS3Bucket(), request.getRegion());
             
-            // Perform sync for this shard using IcebergService
-            Map<String, Object> result = icebergService.syncShard(shardId);
+            // Perform sync for this shard using IcebergService with role parameters
+            Map<String, Object> result = icebergService.syncShard(
+                shardId, 
+                request.getRoleArn(), 
+                request.getS3Bucket(), 
+                request.getRegion()
+            );
             
             logger.info("[Iceberg Shard Sync] Shard {} synced: {}", shardId, result);
             

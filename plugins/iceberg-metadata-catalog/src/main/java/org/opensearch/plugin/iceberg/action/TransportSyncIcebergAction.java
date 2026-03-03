@@ -57,7 +57,12 @@ public class TransportSyncIcebergAction extends TransportBroadcastReplicationAct
     
     @Override
     protected ShardSyncIcebergRequest newShardRequest(SyncIcebergRequest request, ShardId shardId) {
-        ShardSyncIcebergRequest shardRequest = new ShardSyncIcebergRequest(shardId);
+        ShardSyncIcebergRequest shardRequest = new ShardSyncIcebergRequest(
+            shardId,
+            request.getRoleArn(),
+            request.getS3Bucket(),
+            request.getRegion()
+        );
         shardRequest.waitForActiveShards(ActiveShardCount.NONE);
         return shardRequest;
     }

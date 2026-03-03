@@ -9,8 +9,13 @@
 package org.opensearch.datafusion.search;
 
 import java.util.List;
+import java.util.Map;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 public class DatafusionQuery {
+    private static final Logger logger = LogManager.getLogger(DatafusionQuery.class);
+    
     private String indexName;
     private final byte[] substraitBytes;
 
@@ -29,6 +34,7 @@ public class DatafusionQuery {
     private String databaseName;
     private String partitionColumn;
     private String partitionValue;
+    private Map<String, String> s3Options;
 
     public DatafusionQuery(String indexName, byte[] substraitBytes, List<SearchExecutor> searchExecutors) {
         this.indexName = indexName;
@@ -92,14 +98,32 @@ public class DatafusionQuery {
         String tableBucketArn,
         String databaseName,
         String partitionColumn,
-        String partitionValue
+        String partitionValue,
+        Map<String, String> s3Options
     ) {
+        logger.info("[TRACE] DatafusionQuery.configureDownloadedPartition() called");
+        logger.info("[TRACE] - localDownloadDir: {}", localDownloadDir);
+        logger.info("[TRACE] - tableBucketArn: {}", tableBucketArn);
+        logger.info("[TRACE] - databaseName: {}", databaseName);
+        logger.info("[TRACE] - partitionColumn: {}", partitionColumn);
+        logger.info("[TRACE] - partitionValue: {}", partitionValue);
+        logger.info("[TRACE] - s3Options: {}", s3Options != null ? s3Options.toString() : "null");
+        if (s3Options != null) {
+            logger.info("[TRACE] - s3Options keys: {}", s3Options.keySet());
+            for (Map.Entry<String, String> entry : s3Options.entrySet()) {
+                logger.info("[TRACE] - s3Options[{}] = {}", entry.getKey(), entry.getValue());
+            }
+        }
+        
         this.useDownloadedPartition = true;
         this.localDownloadDir = localDownloadDir;
         this.tableBucketArn = tableBucketArn;
         this.databaseName = databaseName;
         this.partitionColumn = partitionColumn;
         this.partitionValue = partitionValue;
+        this.s3Options = s3Options;
+        
+        logger.info("[TRACE] DatafusionQuery.configureDownloadedPartition() completed");
     }
 
     public boolean useDownloadedPartition() {
@@ -124,5 +148,9 @@ public class DatafusionQuery {
 
     public String getPartitionValue() {
         return this.partitionValue;
+    }
+
+    public Map<String, String> getS3Options() {
+        return this.s3Options;
     }
 }

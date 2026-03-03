@@ -59,7 +59,11 @@ public class RestSyncIcebergAction extends BaseRestHandler {
             };
         }
 
-        SyncIcebergRequest syncRequest = new SyncIcebergRequest(indexName);
+        String roleArn = request.param("role_arn");
+        String s3Bucket = request.param("s3_bucket");
+        String region = request.param("region", "us-east-1");
+
+        SyncIcebergRequest syncRequest = new SyncIcebergRequest(indexName, roleArn, s3Bucket, region);
         
         return channel -> client.execute(
             SyncIcebergAction.INSTANCE,

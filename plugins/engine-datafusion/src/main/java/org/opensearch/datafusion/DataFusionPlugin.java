@@ -186,6 +186,24 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
                 CacheSettings.CACHE_SETTINGS,
                 CacheSettings.CACHE_ENABLED)
             .flatMap(x -> x.stream()).collect(Collectors.toList()));
+        
+        // Cross-account S3 settings
+        settingList.add(Setting.simpleString(
+            "datafusion.s3.role_arn",
+            Setting.Property.NodeScope,
+            Setting.Property.Dynamic
+        ));
+        settingList.add(Setting.simpleString(
+            "datafusion.s3.bucket",
+            Setting.Property.NodeScope,
+            Setting.Property.Dynamic
+        ));
+        settingList.add(Setting.simpleString(
+            "datafusion.s3.region",
+            "us-east-1",
+            Setting.Property.NodeScope,
+            Setting.Property.Dynamic
+        ));
 
         return settingList;
     }

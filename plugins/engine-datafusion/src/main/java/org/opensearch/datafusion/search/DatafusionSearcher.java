@@ -75,6 +75,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
                 datafusionQuery.getIndexName(),
                 datafusionQuery.getPartitionColumn(),
                 datafusionQuery.getPartitionValue(),
+                datafusionQuery.getS3Options(),
                 datafusionQuery.getSubstraitBytes(),
                 datafusionQuery.getQueryPlanExplainEnabled(),
                 runtimePtr
@@ -113,6 +114,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
      * @param tableName Table name
      * @param partitionColumn Partition column name (e.g., "shard_id")
      * @param partitionValue Partition value to download (e.g., "0")
+     * @param s3Options Map containing S3 credentials (access key, secret key, session token, region)
      * @param substraitBytes Serialized Substrait query plan
      * @param isQueryPlanExplainEnabled Enable query plan explanation
      * @param runtimePtr Pointer to DataFusion runtime
@@ -125,15 +127,32 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
         String tableName,
         String partitionColumn,
         String partitionValue,
+        java.util.Map<String, String> s3Options,
         byte[] substraitBytes,
         boolean isQueryPlanExplainEnabled,
         Long runtimePtr
     ) {
-        logger.info("[FLOW] DatafusionSearcher.searchAsyncWithDownloadedPartition: table={}.{}, partition={}={}, localDir={}",
-            databaseName, tableName, partitionColumn, partitionValue, localDir);
+        logger.info("[TRACE] DatafusionSearcher.searchAsyncWithDownloadedPartition() called");
+        logger.info("[TRACE] - localDir: {}", localDir);
+        logger.info("[TRACE] - tableBucketArn: {}", tableBucketArn);
+        logger.info("[TRACE] - databaseName: {}", databaseName);
+        logger.info("[TRACE] - tableName: {}", tableName);
+        logger.info("[TRACE] - partitionColumn: {}", partitionColumn);
+        logger.info("[TRACE] - partitionValue: {}", partitionValue);
+        logger.info("[TRACE] - s3Options: {}", s3Options != null ? s3Options.toString() : "null");
+        if (s3Options != null) {
+            logger.info("[TRACE] - s3Options keys: {}", s3Options.keySet());
+            for (java.util.Map.Entry<String, String> entry : s3Options.entrySet()) {
+                logger.info("[TRACE] - s3Options[{}] = {}", entry.getKey(), entry.getValue());
+            }
+        }
+        logger.info("[TRACE] - substraitBytes: {} bytes", substraitBytes != null ? substraitBytes.length : "null");
+        logger.info("[TRACE] - isQueryPlanExplainEnabled: {}", isQueryPlanExplainEnabled);
+        logger.info("[TRACE] - runtimePtr: {}", runtimePtr);
 
         CompletableFuture<Long> result = new CompletableFuture<>();
 
+        logger.info("[TRACE] About to call NativeBridge.executeQueryWithDownloadedPartitionAsync");
         NativeBridge.executeQueryWithDownloadedPartitionAsync(
             localDir,
             tableBucketArn,
@@ -141,6 +160,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             tableName,
             partitionColumn,
             partitionValue,
+            s3Options,
             substraitBytes,
             isQueryPlanExplainEnabled,
             runtimePtr,

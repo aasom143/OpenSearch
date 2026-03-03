@@ -444,16 +444,14 @@ pub async fn execute_query_with_cross_rt_stream(
 ) -> Result<jlong, DataFusionError> {
     log_info!("[FLOW] execute_query_with_cross_rt_stream: tableName={}, source={:?}", table_name, table_source);
 
-    // Set AWS credentials if using Iceberg (temporary hardcoded for testing)
+    // Set AWS profile for customer account (691585341994) - for Iceberg metadata and S3 Tables
     match &table_source {
         TableSource::IcebergS3 { .. }
         | TableSource::IcebergGlue { .. }
         | TableSource::IcebergS3Tables { .. } => {
+            std::env::set_var("AWS_PROFILE", "customer-account");
             std::env::set_var("AWS_REGION", "us-west-2");
-            std::env::set_var("AWS_ACCESS_KEY_ID", "<access-key>");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "<secret-key>");
-            std::env::set_var("AWS_SESSION_TOKEN", "<token>");
-            log_info!("[FLOW] AWS credentials set programmatically (hardcoded)");
+            log_info!("[FLOW] AWS profile set to 'customer-account' for Iceberg operations");
         }
         _ => {}
     }
@@ -546,7 +544,7 @@ pub async fn execute_query_with_cross_rt_stream(
         }
         TableSource::DownloadedPartition { local_dir } => {
             log_info!("[FLOW] Registering table from downloaded partition: local_dir={}", local_dir);
-            
+
             // Create ListingTable from local directory
             let local_url = format!("file://{}", local_dir);
             let table_path = ListingTableUrl::parse(&local_url)?;
@@ -601,7 +599,7 @@ pub async fn execute_query_with_cross_rt_stream(
     }
 
     let mut modified_plan = substrait_plan.clone();
-    
+
     // Fix function name mappings
     for ext in modified_plan.extensions.iter_mut() {
         if let Some(mapping_type) = &mut ext.mapping_type {
@@ -637,7 +635,7 @@ pub async fn execute_query_with_cross_rt_stream(
                 let shard_value: i32 = shard.parse().unwrap_or(0);
                 let filter_expr = col("shard_id").eq(lit(shard_value));
                 log_info!("[PARTITION-INJECT] Injecting filter into logical plan: shard_id = {}", shard_value);
-                
+
                 // Inject filter at the TableScan level by transforming the plan
                 logical_plan = inject_filter_at_table_scan(logical_plan, filter_expr)?;
             } else {

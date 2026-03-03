@@ -25,6 +25,7 @@ import org.opensearch.action.search.SearchShardTask;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
+import org.opensearch.common.settings.Setting;
 import org.opensearch.common.util.BigArrays;
 import org.opensearch.common.xcontent.XContentFactory;
 import org.opensearch.core.action.ActionListener;
@@ -119,37 +120,91 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 
     @Override
     public DatafusionContext createContext(ReaderContext readerContext, ShardSearchRequest request, SearchShardTarget searchShardTarget, SearchShardTask task, BigArrays bigArrays, SearchContext originalContext, ClusterService clusterService) throws IOException {
+        logger.info("[TRACE] DatafusionEngine.createContext() ENTRY");
+        logger.info("[TRACE] Parameters: readerContext={}, request={}, searchShardTarget={}, task={}, originalContext={}", 
+            readerContext != null ? "present" : "null",
+            request != null ? "present" : "null", 
+            searchShardTarget != null ? "present" : "null",
+            task != null ? "present" : "null",
+            originalContext != null ? "present" : "null");
+            
         DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays, originalContext, clusterService);
         
         String indexName = request.shardId().getIndexName();
         DatafusionQuery query = new DatafusionQuery(indexName, request.source().queryPlanIR(), new ArrayList<>());
         
-        // Configure partition download for S3 Tables
-        // Get the actual shard_id from the request
         int shardId = request.shardId().id();
         String shardIdStr = String.valueOf(shardId);
+        String icebergTableName = indexName;
         
-        // IMPORTANT: The Iceberg table name might be different from the OpenSearch index name
-        // For now, we assume they match, but you may need to add a mapping configuration
-        // Example: If OpenSearch index is "my_index" but Iceberg table is "my_index_v2",
-        // you'll need to configure this mapping somewhere
-        String icebergTableName = indexName;  // TODO: Add table name mapping if needed
+        logger.info("[TRACE] ShardSearchRequest details:");
+        logger.info("[TRACE] - shardId: {}", request.shardId());
+        logger.info("[TRACE] - source: {}", request.source() != null ? "present" : "null");
+        if (request.source() != null) {
+            SearchSourceBuilder source = request.source();
+            logger.info("[TRACE] - SearchSourceBuilder.toString(): {}", source.toString());
+            logger.info("[TRACE] - queryPlanIR: {} bytes", source.queryPlanIR() != null ? source.queryPlanIR().length : "null");
+        }
         
-        logger.info("[FLOW] Creating context for index '{}', shard_id={}, iceberg_table='{}'", 
-            indexName, shardIdStr, icebergTableName);
-        
-        // Enable download approach
         String localDir = "/tmp/s3_partition_" + indexName + "_" + shardIdStr;
         String tableBucketArn = "arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test";
         String databaseName = "opensearch";
         String partitionColumn = "shard_id";
+        
+        // Get cross-account parameters from cluster settings
+        String roleArn = clusterService.getClusterSettings().get(
+            Setting.simpleString("datafusion.s3.role_arn", Setting.Property.NodeScope, Setting.Property.Dynamic)
+        );
+        String s3Bucket = clusterService.getClusterSettings().get(
+            Setting.simpleString("datafusion.s3.bucket", Setting.Property.NodeScope, Setting.Property.Dynamic)
+        );
+        String region = clusterService.getClusterSettings().get(
+            Setting.simpleString("datafusion.s3.region", "us-east-1", Setting.Property.NodeScope, Setting.Property.Dynamic)
+        );
+        
+        // Apply fallback defaults if not set
+        if (roleArn == null || roleArn.isEmpty()) {
+            roleArn = "arn:aws:iam::691585341994:role/opensearch-snapshot-role";
+            logger.info("[FLOW] Using fallback role_arn: {}", roleArn);
+        }
+        if (s3Bucket == null || s3Bucket.isEmpty()) {
+            s3Bucket = "customer-s3tables-bucket";
+            logger.info("[FLOW] Using fallback s3_bucket: {}", s3Bucket);
+        }
+        if (region == null || region.isEmpty()) {
+            region = "us-east-1";
+            logger.info("[FLOW] Using fallback region: {}", region);
+        }
+        
+        logger.info("[FLOW] Retrieved from cluster settings: roleArn={}, s3Bucket={}, region={}", 
+            roleArn, s3Bucket, region);
+        
+        // Debug: Log all available request information
+        Map<String, String> s3Options = null;
+        logger.info("[FLOW] Checking cross-account condition: roleArn={}, s3Bucket={}, region={}", 
+            roleArn != null ? "present" : "null", 
+            s3Bucket != null ? "present" : "null", 
+            region != null ? "present" : "null");
+            
+        if (roleArn != null && s3Bucket != null && region != null) {
+            logger.info("[FLOW] Cross-account query detected: role={}, bucket={}, region={}", roleArn, s3Bucket, region);
+            // For now, pass the role ARN to Rust - Rust will assume the role
+            s3Options = new HashMap<>();
+            s3Options.put("role_arn", roleArn);
+            s3Options.put("region", region);
+            tableBucketArn = String.format(java.util.Locale.ROOT, "arn:aws:s3tables:%s:%s:bucket/%s", 
+                region, extractAccountId(roleArn), s3Bucket);
+        } else {
+            logger.info("[FLOW] Cross-account condition not met, using default s3Options (null)");
+        }
         
         query.configureDownloadedPartition(
             localDir,
             tableBucketArn,
             databaseName,
             partitionColumn,
-            shardIdStr
+            shardIdStr,
+            s3Options
         );
         
         logger.info("[FLOW] Configured downloaded partition: localDir={}, partition={}={}, table={}",
@@ -159,6 +214,47 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         
         return datafusionContext;
     }
+    
+    private String extractAccountId(String roleArn) {
+        String[] parts = roleArn.split(":");
+        return parts.length > 4 ? parts[4] : "";
+    }
+    
+    /**
+     * Simple JSON value extractor for parameter parsing
+     */
+    private String extractJsonValue(String json, String key) {
+        try {
+            String searchKey = "\"" + key + "\"";
+            int keyIndex = json.indexOf(searchKey);
+            if (keyIndex == -1) return null;
+            
+            int colonIndex = json.indexOf(":", keyIndex);
+            if (colonIndex == -1) return null;
+            
+            int startQuote = json.indexOf("\"", colonIndex);
+            if (startQuote == -1) return null;
+            
+            int endQuote = json.indexOf("\"", startQuote + 1);
+            if (endQuote == -1) return null;
+            
+            return json.substring(startQuote + 1, endQuote);
+        } catch (Exception e) {
+            logger.debug("Failed to extract JSON value for key {}: {}", key, e.getMessage());
+            return null;
+        }
+    }
+    
+    private ThreadLocal<?>[] getThreadLocals() {
+        try {
+            // This is a simplified approach - in practice, thread-locals are harder to access
+            return new ThreadLocal<?>[0];
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+
 
     @Override
     public EngineSearcherSupplier<DatafusionSearcher> acquireSearcherSupplier(Function<DatafusionSearcher, DatafusionSearcher> wrapper) throws EngineException {

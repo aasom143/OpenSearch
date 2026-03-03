@@ -70,6 +70,10 @@ iceberg-datafusion = "0.8.0"
 iceberg-catalog-glue = "0.8.0"
 iceberg-catalog-s3tables = "0.8.0"
 
+# AWS SDK for role assumption
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.50"
+
 # Temporary directory support
 tempfile ={ workspace = true }
 chrono = { workspace = true }

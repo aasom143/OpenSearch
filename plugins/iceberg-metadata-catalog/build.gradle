@@ -105,6 +105,7 @@ dependencies {
     api "software.amazon.awssdk:crt-core:2.32.29"
     api "software.amazon.awssdk:sts:2.32.29"
     api "software.amazon.awssdk:s3:2.32.29"
+    api "software.amazon.awssdk:arns:2.32.29"
     api "software.amazon.awssdk:aws-xml-protocol:2.32.29"
     api "software.amazon.awssdk:aws-query-protocol:2.32.29"
     api "software.amazon.awssdk:aws-crt-client:2.32.29"

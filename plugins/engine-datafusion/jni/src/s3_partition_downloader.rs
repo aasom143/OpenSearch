@@ -46,6 +46,8 @@ pub struct S3PartitionDownloadConfig {
     pub partition_column: String,
     /// Partition value to filter (e.g., "0", "1", etc.)
     pub partition_value: String,
+    /// Optional IAM role ARN for cross-account access
+    pub role_arn: Option<String>,
     /// Optional S3 configuration
     pub s3_options: Option<HashMap<String, String>>,
 }
@@ -66,8 +68,14 @@ impl S3PartitionDownloadConfig {
             table_name: table_name.into(),
             partition_column: partition_column.into(),
             partition_value: partition_value.into(),
+            role_arn: None,
             s3_options: None,
         }
+    }
+
+    pub fn with_role_arn(mut self, role_arn: impl Into<String>) -> Self {
+        self.role_arn = Some(role_arn.into());
+        self
     }
 
     pub fn with_s3_options(mut self, options: HashMap<String, String>) -> Self {
@@ -99,16 +107,46 @@ pub async fn get_s3_partition_file_paths(
         config.partition_value
     );
 
+    // Handle role assumption if role_arn is provided in s3_options
+    if let Some(opts) = &config.s3_options {
+        if let Some(role_arn) = opts.get("role_arn") {
+            log_info!("[S3-PATHS] Assuming role: {}", role_arn);
+            
+            use aws_config::BehaviorVersion;
+            
+            let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+            let sts_client = aws_sdk_sts::Client::new(&aws_config);
+            
+            let assume_role_output = sts_client
+                .assume_role()
+                .role_arn(role_arn)
+                .role_session_name("opensearch-datafusion-query")
+                .send()
+                .await
+                .map_err(|e| DataFusionError::Execution(format!("Failed to assume role: {}", e)))?;
+            
+            let creds = assume_role_output.credentials()
+                .ok_or_else(|| DataFusionError::Execution("No credentials returned from AssumeRole".to_string()))?;
+            
+            log_info!("[S3-PATHS] Role assumed successfully, setting credentials");
+            
+            std::env::set_var("AWS_ACCESS_KEY_ID", creds.access_key_id());
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", creds.secret_access_key());
+            std::env::set_var("AWS_SESSION_TOKEN", creds.session_token());
+        }
+        
+        if let Some(region) = opts.get("region") {
+            std::env::set_var("AWS_REGION", region);
+            log_info!("[S3-PATHS] Set AWS_REGION to: {}", region);
+        }
+    }
+
     // Create S3 Tables catalog
     let mut catalog_props = HashMap::new();
     catalog_props.insert(
         S3TABLES_CATALOG_PROP_TABLE_BUCKET_ARN.to_string(),
         config.table_bucket_arn.clone(),
     );
-
-    if let Some(opts) = &config.s3_options {
-        catalog_props.extend(opts.clone());
-    }
 
     let s3tables_catalog = S3TablesCatalogBuilder::default()
         .load("s3tables_catalog", catalog_props)
@@ -160,7 +198,7 @@ pub async fn get_s3_partition_file_paths(
         let file_path = file_scan_task.data_file_path().to_string();
         let file_size = file_scan_task.length;
         let record_count = file_scan_task.record_count;
-        
+
         file_paths.push((file_path, file_size, record_count));
     }
 
@@ -185,6 +223,15 @@ pub async fn get_s3_partition_file_paths(
 pub async fn download_s3_partition_files(
     config: &S3PartitionDownloadConfig,
 ) -> Result<Vec<String>> {
+    log_info!("[S3-DOWNLOAD-DEBUG] Function called with config:");
+    log_info!("[S3-DOWNLOAD-DEBUG] - database_name: {}", config.database_name);
+    log_info!("[S3-DOWNLOAD-DEBUG] - table_name: {}", config.table_name);
+    log_info!("[S3-DOWNLOAD-DEBUG] - partition_column: {}", config.partition_column);
+    log_info!("[S3-DOWNLOAD-DEBUG] - partition_value: {}", config.partition_value);
+    log_info!("[S3-DOWNLOAD-DEBUG] - table_bucket_arn: {}", config.table_bucket_arn);
+    log_info!("[S3-DOWNLOAD-DEBUG] - local_dir: {}", config.local_dir);
+    log_info!("[S3-DOWNLOAD-DEBUG] - s3_options is_some: {}", config.s3_options.is_some());
+    
     log_info!(
         "[S3-DOWNLOAD] Starting download: table={}.{}, partition={}={}",
         config.database_name,
@@ -192,6 +239,75 @@ pub async fn download_s3_partition_files(
         config.partition_column,
         config.partition_value
     );
+    
+    log_info!("[S3-DOWNLOAD] s3_options present: {}", config.s3_options.is_some());
+    if let Some(opts) = &config.s3_options {
+        log_info!("[S3-DOWNLOAD] s3_options keys: {:?}", opts.keys().collect::<Vec<_>>());
+        for (key, value) in opts {
+            log_info!("[S3-DOWNLOAD] s3_option: {} = {}", key, value);
+        }
+    } else {
+        log_info!("[S3-DOWNLOAD] s3_options is None");
+    }
+
+    // Handle role assumption if role_arn is provided in s3_options
+    if let Some(opts) = &config.s3_options {
+        log_info!("[S3-DOWNLOAD] Checking for role_arn in s3_options");
+        if let Some(role_arn) = opts.get("role_arn") {
+            log_info!("[S3-DOWNLOAD] Assuming role: {}", role_arn);
+            
+            use aws_config::BehaviorVersion;
+            
+            let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+            let sts_client = aws_sdk_sts::Client::new(&aws_config);
+            
+            let assume_role_output = sts_client
+                .assume_role()
+                .role_arn(role_arn)
+                .role_session_name("opensearch-datafusion-query")
+                .send()
+                .await
+                .map_err(|e| DataFusionError::Execution(format!("Failed to assume role: {}", e)))?;
+            
+            let creds = assume_role_output.credentials()
+                .ok_or_else(|| DataFusionError::Execution("No credentials returned from AssumeRole".to_string()))?;
+            
+            log_info!("[S3-DOWNLOAD] Role assumed successfully, setting credentials");
+            
+            log_info!("[S3-DOWNLOAD] AccessKeyId: {}", creds.access_key_id());
+            log_info!("[S3-DOWNLOAD] SecretAccessKey: {}...", &creds.secret_access_key()[..10]);
+            log_info!("[S3-DOWNLOAD] SessionToken: {}...", &creds.session_token()[..20]);
+            
+            std::env::set_var("AWS_ACCESS_KEY_ID", creds.access_key_id());
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", creds.secret_access_key());
+            std::env::set_var("AWS_SESSION_TOKEN", creds.session_token());
+        } else {
+            log_info!("[S3-DOWNLOAD] No role_arn found in s3_options");
+        }
+        
+        if let Some(region) = opts.get("region") {
+            std::env::set_var("AWS_REGION", region);
+            log_info!("[S3-DOWNLOAD] Set AWS_REGION to: {}", region);
+        } else {
+            log_info!("[S3-DOWNLOAD] No region provided in s3_options");
+        }
+    } else {
+        log_info!("[S3-DOWNLOAD] No s3_options provided, skipping role assumption");
+    }
+
+    // Log current AWS credentials being used
+    log_info!("[S3-DOWNLOAD] Current AWS_ACCESS_KEY_ID: {}", 
+        std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_else(|_| "<not set>".to_string()));
+    log_info!("[S3-DOWNLOAD] Current AWS_SECRET_ACCESS_KEY: {}...", 
+        std::env::var("AWS_SECRET_ACCESS_KEY")
+            .map(|s| if s.len() > 10 { format!("{}...", &s[..10]) } else { "<short>".to_string() })
+            .unwrap_or_else(|_| "<not set>".to_string()));
+    log_info!("[S3-DOWNLOAD] Current AWS_SESSION_TOKEN: {}", 
+        std::env::var("AWS_SESSION_TOKEN")
+            .map(|s| if s.len() > 20 { format!("{}...", &s[..20]) } else { "<short>".to_string() })
+            .unwrap_or_else(|_| "<not set>".to_string()));
+    log_info!("[S3-DOWNLOAD] Current AWS_REGION: {}", 
+        std::env::var("AWS_REGION").unwrap_or_else(|_| "<not set>".to_string()));
 
     // Create S3 Tables catalog
     let mut catalog_props = HashMap::new();
@@ -199,10 +315,6 @@ pub async fn download_s3_partition_files(
         S3TABLES_CATALOG_PROP_TABLE_BUCKET_ARN.to_string(),
         config.table_bucket_arn.clone(),
     );
-    
-    if let Some(opts) = &config.s3_options {
-        catalog_props.extend(opts.clone());
-    }
 
     let s3tables_catalog = S3TablesCatalogBuilder::default()
         .load("s3tables_catalog", catalog_props)
@@ -222,39 +334,14 @@ pub async fn download_s3_partition_files(
 
     log_info!("[S3-DOWNLOAD] Iceberg table loaded: {}.{}", config.database_name, config.table_name);
 
-    // First, let's see what partitions are available in the table
-    log_info!("[S3-DOWNLOAD] Scanning table to see available partitions...");
-    let all_scan = iceberg_table
-        .scan()
-        .select_all()
-        .build()
-        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-    
-    let mut all_files_stream = all_scan
-        .plan_files()
-        .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))?;
-    
-    let mut partition_values = HashSet::new();
-    while let Some(file_scan_task) = all_files_stream.try_next().await
-        .map_err(|e| DataFusionError::External(Box::new(e)))? {
-        let data_file = file_scan_task.data_file();
-        if let Some(partition_struct) = data_file.partition() {
-            log_info!("[S3-DOWNLOAD] Found file with partition: {:?}", partition_struct);
-            partition_values.insert(format!("{:?}", partition_struct));
-        }
-    }
-    
-    log_info!("[S3-DOWNLOAD] Available partitions in table: {:?}", partition_values);
-
     // Build partition filter predicate
     // Parse partition value as integer for shard_id
     let partition_predicate = if config.partition_column == "shard_id" {
         let shard_id_value: i32 = config.partition_value.parse()
             .map_err(|e| DataFusionError::Execution(format!("Failed to parse shard_id as integer: {}", e)))?;
-        
+
         log_info!("[S3-DOWNLOAD] Applying partition filter: {}={} (as integer)", config.partition_column, shard_id_value);
-        
+
         iceberg::expr::Predicate::Binary(
             iceberg::expr::BinaryExpression::new(
                 iceberg::expr::PredicateOperator::Eq,
@@ -265,7 +352,7 @@ pub async fn download_s3_partition_files(
     } else {
         // For other partition columns, use string
         log_info!("[S3-DOWNLOAD] Applying partition filter: {}={} (as string)", config.partition_column, config.partition_value);
-        
+
         iceberg::expr::Predicate::Binary(
             iceberg::expr::BinaryExpression::new(
                 iceberg::expr::PredicateOperator::Eq,
@@ -292,37 +379,21 @@ pub async fn download_s3_partition_files(
         .await
         .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-    // Collect files from the stream
-    let mut plan_files = Vec::new();
-    while let Some(file_scan_task) = plan_files_stream.try_next().await
-        .map_err(|e| DataFusionError::External(Box::new(e)))? {
-        plan_files.push(file_scan_task);
-    }
-
-    log_info!("[S3-DOWNLOAD] Found {} data files for partition", plan_files.len());
-
     // Create local directory
     fs::create_dir_all(&config.local_dir)
         .await
         .map_err(|e| DataFusionError::Execution(format!("Failed to create local directory: {}", e)))?;
 
     let mut downloaded_files = Vec::new();
+    let mut file_count = 0;
 
     // Download each file
-    for file_scan_task in plan_files {
+    while let Some(file_scan_task) = plan_files_stream.try_next().await
+        .map_err(|e| DataFusionError::External(Box::new(e)))? {
+        file_count += 1;
         let file_path = file_scan_task.data_file_path();
-        
+
         log_debug!("[S3-DOWNLOAD] Downloading file: {}", file_path);
-
-        // Read file from S3 using Iceberg's FileIO
-        let input_file = file_io
-            .new_input(file_path)
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-        let file_bytes = input_file
-            .read()
-            .await
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
         // Extract filename from path and normalize extension
         let original_filename = Path::new(file_path)
@@ -342,12 +413,17 @@ pub async fn download_s3_partition_files(
 
         let local_file_path = format!("{}/{}", config.local_dir, normalized_filename);
 
-        // Write to local file
-        let mut file = fs::File::create(&local_file_path)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("Failed to create local file: {}", e)))?;
+        // Read file from S3 using Iceberg's FileIO and write directly
+        let input_file = file_io
+            .new_input(file_path)
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-        file.write_all(&file_bytes)
+        let file_bytes = input_file
+            .read()
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+        fs::write(&local_file_path, file_bytes)
             .await
             .map_err(|e| DataFusionError::Execution(format!("Failed to write file: {}", e)))?;
 
@@ -355,7 +431,7 @@ pub async fn download_s3_partition_files(
         downloaded_files.push(local_file_path);
     }
 
-    log_info!("[S3-DOWNLOAD] Successfully downloaded {} files to {}", downloaded_files.len(), config.local_dir);
+    log_info!("[S3-DOWNLOAD] Successfully downloaded {} files to {}", file_count, config.local_dir);
 
     Ok(downloaded_files)
 }

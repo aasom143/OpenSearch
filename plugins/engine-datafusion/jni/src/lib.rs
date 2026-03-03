@@ -983,6 +983,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamClo
 /// * `table_name` - Table name (also used for registration in DataFusion context)
 /// * `partition_column` - Partition column name (e.g., "shard_id")
 /// * `partition_value` - Partition value to filter (e.g., "0")
+/// * `s3_options` - Java Map containing S3 credentials (access key, secret key, session token, region)
 /// * `substrait_bytes` - Serialized Substrait query plan
 /// * `is_query_plan_explain_enabled` - Enable query plan explanation
 /// * `runtime_ptr` - Pointer to DataFusion runtime
@@ -997,6 +998,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     table_name: JString,
     partition_column: JString,
     partition_value: JString,
+    s3_options_map: JObject,
     substrait_bytes: jbyteArray,
     is_query_plan_explain_enabled: jboolean,
     runtime_ptr: jlong,
@@ -1080,6 +1082,21 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
         database_name, table_name, partition_column, partition_value, local_dir
     );
 
+    // Extract s3Options from Java Map if provided
+    let mut s3_options = HashMap::new();
+    if !s3_options_map.is_null() {
+        let map = JMap::from_env(&mut env, &s3_options_map).expect("Failed to convert to JMap");
+        let mut iter = map.iter(&mut env).expect("Failed to get map iterator");
+        
+        while let Some((key, value)) = iter.next(&mut env).expect("Failed to iterate map") {
+            let key_str: String = env.get_string(&JString::from(key)).expect("Failed to get key").into();
+            let value_str: String = env.get_string(&JString::from(value)).expect("Failed to get value").into();
+            s3_options.insert(key_str, value_str);
+        }
+        
+        log_info!("[FLOW] Received {} s3Options from Java", s3_options.len());
+    }
+
     let is_query_plan_explain_enabled: bool = is_query_plan_explain_enabled != 0;
 
     let plan_bytes_obj = unsafe { JByteArray::from_raw(substrait_bytes) };
@@ -1115,9 +1132,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     io_runtime.block_on(async move {
         // First, download the partition files
         use crate::s3_partition_downloader::{S3PartitionDownloadConfig, download_s3_partition_files};
-        
-        let mut s3_options = HashMap::new();
-        s3_options.insert("aws.region".to_string(), "us-west-2".to_string());
         
         let download_config = S3PartitionDownloadConfig::new(
             local_dir.clone(),

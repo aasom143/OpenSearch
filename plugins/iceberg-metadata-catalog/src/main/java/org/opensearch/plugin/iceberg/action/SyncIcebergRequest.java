@@ -19,16 +19,45 @@ import java.io.IOException;
  */
 public class SyncIcebergRequest extends BroadcastRequest<SyncIcebergRequest> {
     
+    private String roleArn;
+    private String s3Bucket;
+    private String region;
+    
     public SyncIcebergRequest(StreamInput in) throws IOException {
         super(in);
+        this.roleArn = in.readOptionalString();
+        this.s3Bucket = in.readOptionalString();
+        this.region = in.readOptionalString();
     }
     
-    public SyncIcebergRequest(String... indices) {
-        super(indices);
+    public SyncIcebergRequest(String indexName) {
+        super(new String[]{indexName});
+    }
+    
+    public SyncIcebergRequest(String indexName, String roleArn, String s3Bucket, String region) {
+        super(new String[]{indexName});
+        this.roleArn = roleArn;
+        this.s3Bucket = s3Bucket;
+        this.region = region;
+    }
+    
+    public String getRoleArn() {
+        return roleArn;
+    }
+    
+    public String getS3Bucket() {
+        return s3Bucket;
+    }
+    
+    public String getRegion() {
+        return region;
     }
     
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
+        out.writeOptionalString(roleArn);
+        out.writeOptionalString(s3Bucket);
+        out.writeOptionalString(region);
     }
 }
