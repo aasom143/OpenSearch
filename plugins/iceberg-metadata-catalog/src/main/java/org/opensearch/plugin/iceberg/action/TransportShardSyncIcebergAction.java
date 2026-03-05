@@ -80,11 +80,11 @@ public class TransportShardSyncIcebergAction extends TransportReplicationAction<
         IndexShard primary,
         ActionListener<PrimaryResult<ShardSyncIcebergRequest, ReplicationResponse>> listener
     ) {
-        ActionListener.completeWith(listener, () -> {
-            ShardId shardId = request.shardId();
-            logger.info("[Iceberg Shard Sync] Syncing shard: {} (role={}, bucket={}, region={})", 
-                       shardId, request.getRoleArn(), request.getS3Bucket(), request.getRegion());
-            
+        ShardId shardId = request.shardId();
+        logger.info("[Iceberg Shard Sync] Syncing shard: {} (role={}, bucket={}, region={})", 
+                   shardId, request.getRoleArn(), request.getS3Bucket(), request.getRegion());
+        
+        try {
             // Perform sync for this shard using IcebergService with role parameters
             Map<String, Object> result = icebergService.syncShard(
                 shardId, 
@@ -96,8 +96,12 @@ public class TransportShardSyncIcebergAction extends TransportReplicationAction<
             logger.info("[Iceberg Shard Sync] Shard {} synced: {}", shardId, result);
             
             ReplicationResponse response = new ReplicationResponse();
-            return new PrimaryResult<>(request, response);
-        });
+            listener.onResponse(new PrimaryResult<>(request, response));
+            
+        } catch (Exception e) {
+            logger.error("[Iceberg Shard Sync] FAILED for shard {}: {}", shardId, e.getMessage(), e);
+            listener.onFailure(e);
+        }
     }
     
     @Override

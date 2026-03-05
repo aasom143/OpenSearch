@@ -71,6 +71,7 @@ public class IcebergService {
     private final Supplier<RepositoriesService> repositoriesServiceSupplier;
     private final ThreadPool threadPool;
     private final Settings settings;
+    private final S3TablesIcebergManager s3TablesManager;
 
     public IcebergService(
         ClusterService clusterService,
@@ -82,6 +83,9 @@ public class IcebergService {
         this.repositoriesServiceSupplier = repositoriesServiceSupplier;
         this.threadPool = threadPool;
         this.settings = settings;
+        
+        // Create manager with settings (reads bucket ARN from configuration)
+        this.s3TablesManager = new S3TablesIcebergManager(settings);
     }
 
     /**
@@ -119,7 +123,7 @@ public class IcebergService {
         }
 
         // 4. Get Iceberg table (will be created if doesn't exist and schema available)
-        Table table = S3TablesIcebergManager.getInstance().getOrCreateTable(indexName, icebergSchema);
+        Table table = s3TablesManager.getOrCreateTable(indexName, icebergSchema);
         if (table == null) {
             throw new IllegalStateException("Failed to get or create Iceberg table for index: " + indexName);
         }
@@ -194,99 +198,109 @@ public class IcebergService {
      * Sync a specific shard to Iceberg catalog in customer account using role assumption.
      */
     public Map<String, Object> syncShard(ShardId shardId, String roleArn, String s3Bucket, String region) throws IOException {
-        String indexName = shardId.getIndexName();
-        String indexUUID = shardId.getIndex().getUUID();
-        int shardNum = shardId.id();
-
-        logger.info("[Iceberg Shard Sync] Syncing shard: {} (role={}, bucket={}, region={})",
-                   shardId, roleArn, s3Bucket, region);
-
-        // Get index metadata
-        IndexMetadata indexMetadata = clusterService.state().metadata().index(indexName);
-        if (indexMetadata == null) {
-            throw new IllegalArgumentException("Index not found: " + indexName);
-        }
-
-        // Read active files for THIS shard only
-        Map<String, UploadedSegmentMetadata> activeFiles = readShardFiles(indexName, indexUUID, shardNum, indexMetadata);
-        logger.info("[Iceberg Shard Sync] Shard {}: found {} files", shardId, activeFiles.size());
-
-        // Infer schema from index mappings (only once, cached in table)
-        org.apache.iceberg.Schema icebergSchema = null;
+        // CRITICAL: Set classloader for ALL Iceberg operations to prevent DynMethods issues
+        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(S3TablesIcebergManager.class.getClassLoader());
+        
         try {
-            icebergSchema = inferSchemaFromIndex(indexMetadata);
-        } catch (Exception e) {
-            logger.warn("[Iceberg Shard Sync] Failed to infer schema: {}", e.getMessage());
-        }
+            String indexName = shardId.getIndexName();
+            String indexUUID = shardId.getIndex().getUUID();
+            int shardNum = shardId.id();
 
-        // Create source FileIO BEFORE role assumption to use service account credentials
-        org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO();
+            logger.info("[Iceberg Shard Sync] Syncing shard: {} (role={}, bucket={}, region={})",
+                       shardId, roleArn, s3Bucket, region);
 
-        // Get or create table (with or without role assumption)
-        org.apache.iceberg.Table table;
-        if (roleArn != null && s3Bucket != null && region != null) {
-            // Cross-account: create catalog directly with assumed role
-            table = createTableWithAssumedRole(indexName, icebergSchema, roleArn, s3Bucket, region);
-        } else {
-            table = S3TablesIcebergManager.getInstance().getOrCreateTable(indexName, icebergSchema);
-        }
-
-        if (table == null) {
-            throw new IllegalStateException("Failed to get Iceberg table for: " + indexName);
-        }
-
-        // Get current files in catalog for comparison
-        Set<String> catalogFiles = new HashSet<>();
-        if (table.currentSnapshot() != null) {
-            try (org.apache.iceberg.io.CloseableIterable<org.apache.iceberg.FileScanTask> tasks =
-                    table.newScan().planFiles()) {
-                for (org.apache.iceberg.FileScanTask task : tasks) {
-                    catalogFiles.add(task.file().path().toString());
-                }
+            // Get index metadata
+            IndexMetadata indexMetadata = clusterService.state().metadata().index(indexName);
+            if (indexMetadata == null) {
+                throw new IllegalArgumentException("Index not found: " + indexName);
             }
-        }
 
-        // Compute diff for this shard
-        Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
-        for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-            if (!catalogFiles.contains(entry.getKey())) {
-                filesToAdd.put(entry.getKey(), entry.getValue());
-            }
-        }
+            // Read active files for THIS shard only
+            Map<String, UploadedSegmentMetadata> activeFiles = readShardFiles(indexName, indexUUID, shardNum, indexMetadata);
+            logger.info("[Iceberg Shard Sync] Shard {}: found {} files", shardId, activeFiles.size());
 
-        Set<String> filesToRemove = new HashSet<>(catalogFiles);
-        filesToRemove.removeAll(activeFiles.keySet());
-
-        int filesKept = activeFiles.size() - filesToAdd.size();
-
-        logger.info("[Iceberg Shard Sync] Shard {}: add={}, remove={}, keep={}",
-                   shardId, filesToAdd.size(), filesToRemove.size(), filesKept);
-
-        // Apply changes - pass pre-created source FileIO
-        if (!filesToAdd.isEmpty()) {
+            // Infer schema from index mappings (only once, cached in table)
+            org.apache.iceberg.Schema icebergSchema = null;
             try {
-                addFilesToCatalog(table, filesToAdd, sourceFileIO);
-            } finally {
-                // Close source FileIO after use
-                try {
-                    sourceFileIO.close();
-                } catch (Exception e) {
-                    logger.warn("[Iceberg Plugin] Failed to close source FileIO: {}", e.getMessage());
+                icebergSchema = inferSchemaFromIndex(indexMetadata);
+            } catch (Exception e) {
+                logger.warn("[Iceberg Shard Sync] Failed to infer schema: {}", e.getMessage());
+            }
+
+            // Create source FileIO BEFORE role assumption to use service account credentials
+            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO();
+
+            // Get or create table (with or without role assumption)
+            org.apache.iceberg.Table table;
+            if (roleArn != null && s3Bucket != null && region != null) {
+                // Cross-account: create catalog directly with assumed role
+                table = createTableWithAssumedRole(indexName, icebergSchema, roleArn, s3Bucket, region);
+            } else {
+                table = s3TablesManager.getOrCreateTable(indexName, icebergSchema);
+            }
+
+            if (table == null) {
+                throw new IllegalStateException("Failed to get Iceberg table for: " + indexName);
+            }
+
+            // Get current files in catalog for comparison (classloader already set!)
+            Set<String> catalogFiles = new HashSet<>();
+            if (table.currentSnapshot() != null) {
+                try (org.apache.iceberg.io.CloseableIterable<org.apache.iceberg.FileScanTask> tasks =
+                        table.newScan().planFiles()) {
+                    for (org.apache.iceberg.FileScanTask task : tasks) {
+                        catalogFiles.add(task.file().path().toString());
+                    }
                 }
             }
+
+            // Compute diff for this shard
+            Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+            for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
+                if (!catalogFiles.contains(entry.getKey())) {
+                    filesToAdd.put(entry.getKey(), entry.getValue());
+                }
+            }
+
+            Set<String> filesToRemove = new HashSet<>(catalogFiles);
+            filesToRemove.removeAll(activeFiles.keySet());
+
+            int filesKept = activeFiles.size() - filesToAdd.size();
+
+            logger.info("[Iceberg Shard Sync] Shard {}: add={}, remove={}, keep={}",
+                       shardId, filesToAdd.size(), filesToRemove.size(), filesKept);
+
+            // Apply changes - pass pre-created source FileIO
+            if (!filesToAdd.isEmpty()) {
+                try {
+                    addFilesToCatalog(table, filesToAdd, sourceFileIO);
+                } finally {
+                    // Close source FileIO after use
+                    try {
+                        sourceFileIO.close();
+                    } catch (Exception e) {
+                        logger.warn("[Iceberg Plugin] Failed to close source FileIO: {}", e.getMessage());
+                    }
+                }
+            }
+
+            if (!filesToRemove.isEmpty()) {
+                removeFilesFromCatalog(table, filesToRemove);
+            }
+
+            // Return results
+            Map<String, Object> result = new HashMap<>();
+            result.put("files_added", filesToAdd.size());
+            result.put("files_removed", filesToRemove.size());
+            result.put("files_kept", filesKept);
+
+            return result;
+            
+        } finally {
+            // CRITICAL: Always restore original classloader
+            Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
-
-        if (!filesToRemove.isEmpty()) {
-            removeFilesFromCatalog(table, filesToRemove);
-        }
-
-        // Return results
-        Map<String, Object> result = new HashMap<>();
-        result.put("files_added", filesToAdd.size());
-        result.put("files_removed", filesToRemove.size());
-        result.put("files_kept", filesKept);
-
-        return result;
     }
 
     /**
