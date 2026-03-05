@@ -26,18 +26,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * Auto-creates tables on first access.
  */
 public class S3TablesIcebergManager {
-    private static final S3TablesIcebergManager INSTANCE = new S3TablesIcebergManager();
     private static final Logger logger = LogManager.getLogger(S3TablesIcebergManager.class);
 
     private final RESTCatalog catalog;
     private final org.apache.iceberg.aws.s3.S3FileIO fileIO;
     private final ConcurrentHashMap<String, Table> tables = new ConcurrentHashMap<>();
 
-    // Allow passing configuration from IcebergService
-    private String bucketArn;
-    private String region;
+    // Configuration from Settings
+    private final String bucketArn;
+    private final String region;
 
-    private S3TablesIcebergManager() {
+    public S3TablesIcebergManager(org.opensearch.common.settings.Settings settings) {
         System.out.println("[Iceberg S3Tables] ===== CONSTRUCTOR CALLED =====");
         System.out.println("[Iceberg S3Tables] Creating RESTCatalog instance");
         this.catalog = new RESTCatalog();
@@ -49,8 +48,13 @@ public class S3TablesIcebergManager {
         // S3 Tables bucket ARN from environment or default
         // NOTE: This is called during static initialization, settings not available yet
         // We'll initialize catalog lazily when first accessed with proper settings
-        this.bucketArn = "arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test";  // Hardcode for now
-        this.region = "us-west-2";
+        // Read from Settings (no defaults - must be configured)
+        this.bucketArn = settings.get("iceberg.s3tables.bucket.arn");
+        this.region = settings.get("iceberg.aws.region");
+        
+        if (this.bucketArn == null || this.region == null) {
+            throw new IllegalArgumentException("Missing required settings: iceberg.s3tables.bucket.arn and iceberg.aws.region");
+        }
 
         String s3TablesBucketArn = this.bucketArn;
 
@@ -146,11 +150,6 @@ public class S3TablesIcebergManager {
             // Restore original classloader
             Thread.currentThread().setContextClassLoader(originalClassLoader);
         }
-    }
-
-    public static S3TablesIcebergManager getInstance() {
-        System.out.println("[Iceberg S3Tables] getInstance() called, about to return INSTANCE");
-        return INSTANCE;
     }
 
     /**

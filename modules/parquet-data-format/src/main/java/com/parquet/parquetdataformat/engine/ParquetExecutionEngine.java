@@ -138,24 +138,6 @@ public class ParquetExecutionEngine implements IndexingExecutionEngine<ParquetDa
     }
 
     @Override
-    public void onFilesUploadedToRemoteStore(String indexName, Map<String, Long> s3PathsWithSizes) {
-        // No-op - Iceberg metadata managed by iceberg-metadata-catalog plugin
-        logger.debug("onFilesUploadedToRemoteStore called for index '{}' - delegating to plugin", indexName);
-    }
-
-    @Override
-    public void onFilesDeletedFromRemoteStore(String indexName, Collection<String> s3Paths) {
-        // No-op - Iceberg metadata managed by iceberg-metadata-catalog plugin
-        logger.debug("onFilesDeletedFromRemoteStore called for index '{}' - delegating to plugin", indexName);
-    }
-
-    @Override
-    public void reconcileWithActiveFiles(String indexName, int shardId, Collection<String> activeS3Paths) {
-        // No-op - Iceberg metadata managed by iceberg-metadata-catalog plugin
-        logger.debug("reconcileWithActiveFiles called for index '{}' shard {} - delegating to plugin", indexName, shardId);
-    }
-
-    @Override
     public void close() throws IOException {
         arrowBufferPool.close();
     }
