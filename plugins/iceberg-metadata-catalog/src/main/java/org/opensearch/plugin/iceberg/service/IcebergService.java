@@ -76,7 +76,7 @@ public class IcebergService {
      */
     public static final Setting<String> CREDENTIALS_FILE_PATH_SETTING = Setting.simpleString(
         "iceberg.credentials.file",
-        "/home/ec2-user/creds-iceberg/credentials.txt",
+        "/home/es2user/creds-iceberg/credentials.txt",
         Setting.Property.NodeScope
     );
 
