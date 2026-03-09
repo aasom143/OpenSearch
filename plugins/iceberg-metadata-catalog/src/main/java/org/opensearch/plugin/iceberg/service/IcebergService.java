@@ -67,6 +67,19 @@ public class IcebergService {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Full path to the Iceberg credentials file.
+     * File should contain credentials in format:
+     * aws_access_key_id=[access key]
+     * aws_secret_access_key=[secret access key]
+     * aws_session_token=[session token]
+     */
+    public static final Setting<String> CREDENTIALS_FILE_PATH_SETTING = Setting.simpleString(
+        "iceberg.credentials.file",
+        "/home/ec2-user/creds-iceberg/credentials.txt",
+        Setting.Property.NodeScope
+    );
+
     private final ClusterService clusterService;
     private final Supplier<RepositoriesService> repositoriesServiceSupplier;
     private final ThreadPool threadPool;
@@ -736,9 +749,35 @@ public class IcebergService {
 
         RESTCatalog customerCatalog = null;
         try {
+            // Get file credentials to use for STS authentication
+            Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
+            
+            // Build credentials provider from file
+            software.amazon.awssdk.auth.credentials.AwsCredentialsProvider credentialsProvider;
+            if (fileCreds.containsKey("access_key") && fileCreds.containsKey("secret_key")) {
+                software.amazon.awssdk.auth.credentials.AwsCredentials credentials;
+                if (fileCreds.containsKey("session_token")) {
+                    credentials = software.amazon.awssdk.auth.credentials.AwsSessionCredentials.create(
+                        fileCreds.get("access_key"),
+                        fileCreds.get("secret_key"),
+                        fileCreds.get("session_token")
+                    );
+                } else {
+                    credentials = software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create(
+                        fileCreds.get("access_key"),
+                        fileCreds.get("secret_key")
+                    );
+                }
+                credentialsProvider = software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(credentials);
+                logger.info("[Iceberg S3Tables] Using file credentials for STS client");
+            } else {
+                throw new RuntimeException("File credentials not available for STS client");
+            }
+            
             // Check if we're already using the target role
             software.amazon.awssdk.services.sts.StsClient stsClient = software.amazon.awssdk.services.sts.StsClient.builder()
                 .region(software.amazon.awssdk.regions.Region.of(region))
+                .credentialsProvider(credentialsProvider)
                 .build();
 
             software.amazon.awssdk.services.sts.model.GetCallerIdentityResponse callerIdentity =
@@ -875,22 +914,42 @@ public class IcebergService {
     }
 
     /**
-     * Create source FileIO with service account credentials.
-     * Must be called BEFORE role assumption to capture service account credentials.
+     * Create source FileIO with credentials from file.
      */
     private org.apache.iceberg.aws.s3.S3FileIO createSourceFileIO() {
         String sourceRegion = getSourceBucketRegion();
         logger.info("[Iceberg Plugin] Creating source FileIO with region: {}", sourceRegion);
         
-        // Capture current credentials BEFORE they get overwritten by role assumption
-        software.amazon.awssdk.auth.credentials.AwsCredentialsProvider credentialsProvider =
-            software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider.create();
-        software.amazon.awssdk.auth.credentials.AwsCredentials credentials = credentialsProvider.resolveCredentials();
+        // Get credentials from file (loaded by S3TablesIcebergManager)
+        Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
         
-        logger.info("[Iceberg Plugin] Captured service account credentials: accessKeyId={}",
-                   credentials.accessKeyId().substring(0, 4) + "...");
+        if (!fileCreds.containsKey("access_key") || !fileCreds.containsKey("secret_key")) {
+            throw new RuntimeException("Iceberg credentials not found in file. " +
+                "Please ensure credentials file exists at configured path with required keys: " +
+                "aws_access_key_id, aws_secret_access_key");
+        }
         
-        // Create S3 client with captured credentials
+        // Create credentials from file
+        software.amazon.awssdk.auth.credentials.AwsCredentials credentials;
+        if (fileCreds.containsKey("session_token")) {
+            credentials = software.amazon.awssdk.auth.credentials.AwsSessionCredentials.create(
+                fileCreds.get("access_key"),
+                fileCreds.get("secret_key"),
+                fileCreds.get("session_token")
+            );
+            logger.info("[Iceberg Plugin] Using session credentials from file");
+        } else {
+            credentials = software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create(
+                fileCreds.get("access_key"),
+                fileCreds.get("secret_key")
+            );
+            logger.info("[Iceberg Plugin] Using basic credentials from file");
+        }
+        
+        logger.info("[Iceberg Plugin] Using credentials with accessKeyId: {}...",
+                   credentials.accessKeyId().substring(0, Math.min(4, credentials.accessKeyId().length())));
+        
+        // Create S3 client with file credentials
         software.amazon.awssdk.services.s3.S3Client s3Client = software.amazon.awssdk.services.s3.S3Client.builder()
             .region(software.amazon.awssdk.regions.Region.of(sourceRegion))
             .credentialsProvider(software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(credentials))
