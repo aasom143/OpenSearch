@@ -171,7 +171,7 @@ public class IcebergService {
 
         // 6. Apply changes
         if (!filesToAdd.isEmpty()) {
-            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO();
+            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO(indexMetadata);
             try {
                 addFilesToCatalog(table, filesToAdd, sourceFileIO);
             } finally {
@@ -242,7 +242,7 @@ public class IcebergService {
             }
 
             // Create source FileIO BEFORE role assumption to use service account credentials
-            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO();
+            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO(indexMetadata);
 
             // Get or create table (with or without role assumption)
             org.apache.iceberg.Table table;
@@ -329,7 +329,10 @@ public class IcebergService {
 
         try {
             // Create RemoteSegmentStoreDirectory to read metadata
-            String remoteStoreRepo = "test-rs-repo";  // From node attributes
+            String remoteStoreRepo = indexMetadata.settings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
+            if (remoteStoreRepo == null || remoteStoreRepo.isEmpty()) {
+                throw new IllegalArgumentException("Remote segment store repository is not configured for index " + indexName);
+            }
 
             RemoteSegmentStoreDirectoryFactory factory = new RemoteSegmentStoreDirectoryFactory(
                 repositoriesServiceSupplier,
@@ -916,8 +919,8 @@ public class IcebergService {
     /**
      * Create source FileIO with credentials from file.
      */
-    private org.apache.iceberg.aws.s3.S3FileIO createSourceFileIO() {
-        String sourceRegion = getSourceBucketRegion();
+    private org.apache.iceberg.aws.s3.S3FileIO createSourceFileIO(IndexMetadata indexMetadata) {
+        String sourceRegion = getSourceBucketRegion(indexMetadata);
         logger.info("[Iceberg Plugin] Creating source FileIO with region: {}", sourceRegion);
         
         // Get credentials from file (loaded by S3TablesIcebergManager)
@@ -965,9 +968,13 @@ public class IcebergService {
     /**
      * Get source bucket region from repository settings.
      */
-    private String getSourceBucketRegion() {
+    private String getSourceBucketRegion(IndexMetadata indexMetadata) {
         try {
-            String remoteStoreRepo = "test-rs-repo";
+            String remoteStoreRepo = indexMetadata.settings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
+            if (remoteStoreRepo == null || remoteStoreRepo.isEmpty()) {
+                logger.warn("[Iceberg Plugin] Remote segment store repository not configured, defaulting region to us-west-2");
+                return "us-west-2";
+            }
             org.opensearch.repositories.Repository repository = repositoriesServiceSupplier.get().repository(remoteStoreRepo);
             org.opensearch.repositories.blobstore.BlobStoreRepository blobRepo =
                 (org.opensearch.repositories.blobstore.BlobStoreRepository) repository;
@@ -984,3 +991,4 @@ public class IcebergService {
         }
     }
 }
+
