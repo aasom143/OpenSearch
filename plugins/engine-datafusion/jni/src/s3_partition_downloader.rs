@@ -257,9 +257,35 @@ pub async fn download_s3_partition_files(
             log_info!("[S3-DOWNLOAD] Assuming role: {}", role_arn);
             
             use aws_config::BehaviorVersion;
-            
-            let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-            let sts_client = aws_sdk_sts::Client::new(&aws_config);
+
+            // Build STS client using file-based credentials if provided in s3_options,
+            // since instance profile credentials (IMDS) may not be available.
+            let region = opts.get("region").map(|r| aws_sdk_sts::config::Region::new(r.clone()));
+            let sts_config_builder = aws_config::defaults(BehaviorVersion::latest());
+            let sts_config = if let (Some(access_key), Some(secret_key)) = 
+                (opts.get("aws_access_key_id"), opts.get("aws_secret_access_key")) {
+                log_info!("[S3-DOWNLOAD] Using file-based credentials for STS call");
+                let creds = if let Some(session_token) = opts.get("aws_session_token") {
+                    aws_sdk_sts::config::Credentials::new(
+                        access_key, secret_key, Some(session_token.to_string()), None, "file-credentials"
+                    )
+                } else {
+                    aws_sdk_sts::config::Credentials::new(
+                        access_key, secret_key, None, None, "file-credentials"
+                    )
+                };
+                let mut builder = sts_config_builder.credentials_provider(creds);
+                if let Some(ref r) = region {
+                    builder = builder.region(r.clone());
+                }
+                builder.load().await
+            } else {
+                log_info!("[S3-DOWNLOAD] Using default credential chain for STS call");
+                sts_config_builder.load().await
+            };
+
+            log_info!("[S3-DOWNLOAD] STS client region: {:?}", sts_config.region());
+            let sts_client = aws_sdk_sts::Client::new(&sts_config);
             
             let assume_role_output = sts_client
                 .assume_role()
@@ -267,7 +293,7 @@ pub async fn download_s3_partition_files(
                 .role_session_name("opensearch-datafusion-query")
                 .send()
                 .await
-                .map_err(|e| DataFusionError::Execution(format!("Failed to assume role: {}", e)))?;
+                .map_err(|e| DataFusionError::Execution(format!("Failed to assume role: {:?}", e)))?;
             
             let creds = assume_role_output.credentials()
                 .ok_or_else(|| DataFusionError::Execution("No credentials returned from AssumeRole".to_string()))?;
@@ -284,12 +310,11 @@ pub async fn download_s3_partition_files(
         } else {
             log_info!("[S3-DOWNLOAD] No role_arn found in s3_options");
         }
-        
+
+        // Set target region for subsequent S3/S3Tables operations AFTER role assumption
         if let Some(region) = opts.get("region") {
             std::env::set_var("AWS_REGION", region);
-            log_info!("[S3-DOWNLOAD] Set AWS_REGION to: {}", region);
-        } else {
-            log_info!("[S3-DOWNLOAD] No region provided in s3_options");
+            log_info!("[S3-DOWNLOAD] Set AWS_REGION to target region: {}", region);
         }
     } else {
         log_info!("[S3-DOWNLOAD] No s3_options provided, skipping role assumption");
@@ -681,3 +706,4 @@ pub async fn create_iceberg_table_from_s3tables_partition(
     // Iceberg's partition pruning will automatically skip files not matching the partition
     Ok(provider)
 }
+

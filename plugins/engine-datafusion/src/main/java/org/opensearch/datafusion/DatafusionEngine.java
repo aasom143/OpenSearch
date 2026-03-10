@@ -188,12 +188,31 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             
         if (roleArn != null && s3Bucket != null && region != null) {
             logger.info("[FLOW] Cross-account query detected: role={}, bucket={}, region={}", roleArn, s3Bucket, region);
-            // For now, pass the role ARN to Rust - Rust will assume the role
             s3Options = new HashMap<>();
             s3Options.put("role_arn", roleArn);
             s3Options.put("region", region);
             tableBucketArn = String.format(java.util.Locale.ROOT, "arn:aws:s3tables:%s:%s:bucket/%s", 
                 region, extractAccountId(roleArn), s3Bucket);
+
+            // Load service account credentials from file for STS assume-role in Rust.
+            // Instance profile credentials may not be available, so we pass file-based
+            // credentials that the Rust code can use to call STS.
+            String credsFilePath = "/home/es2user/creds-iceberg/credentials.txt";
+            try {
+                java.util.Map<String, String> fileCreds = loadCredentialsFile(credsFilePath);
+                if (fileCreds.containsKey("aws_access_key_id")) {
+                    s3Options.put("aws_access_key_id", fileCreds.get("aws_access_key_id"));
+                }
+                if (fileCreds.containsKey("aws_secret_access_key")) {
+                    s3Options.put("aws_secret_access_key", fileCreds.get("aws_secret_access_key"));
+                }
+                if (fileCreds.containsKey("aws_session_token")) {
+                    s3Options.put("aws_session_token", fileCreds.get("aws_session_token"));
+                }
+                logger.info("[FLOW] Loaded service credentials from file for Rust STS call");
+            } catch (Exception e) {
+                logger.warn("[FLOW] Could not load credentials file {}: {}", credsFilePath, e.getMessage());
+            }
         } else {
             logger.info("[FLOW] Cross-account condition not met, using default s3Options (null)");
         }
@@ -671,4 +690,21 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             return datafusionReader.fetchSegmentStats();
         }
     }
+
+    private static Map<String, String> loadCredentialsFile(String filePath) throws java.io.IOException {
+        Map<String, String> creds = new HashMap<>();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                String[] parts = line.split("=", 2);
+                if (parts.length == 2) {
+                    creds.put(parts[0].trim(), parts[1].trim());
+                }
+            }
+        }
+        return creds;
+    }
 }
+

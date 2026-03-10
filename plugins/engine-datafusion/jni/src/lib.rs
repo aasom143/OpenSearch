@@ -1005,7 +1005,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     listener: JObject,
 ) {
     log_info!("[FLOW] executeQueryWithDownloadedPartitionAsync: runtimePtr={}", runtime_ptr);
-    
+
     let manager = match TOKIO_RUNTIME_MANAGER.get() {
         Some(m) => m,
         None => {
@@ -1087,13 +1087,13 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     if !s3_options_map.is_null() {
         let map = JMap::from_env(&mut env, &s3_options_map).expect("Failed to convert to JMap");
         let mut iter = map.iter(&mut env).expect("Failed to get map iterator");
-        
+
         while let Some((key, value)) = iter.next(&mut env).expect("Failed to iterate map") {
             let key_str: String = env.get_string(&JString::from(key)).expect("Failed to get key").into();
             let value_str: String = env.get_string(&JString::from(value)).expect("Failed to get value").into();
             s3_options.insert(key_str, value_str);
         }
-        
+
         log_info!("[FLOW] Received {} s3Options from Java", s3_options.len());
     }
 
@@ -1125,14 +1125,10 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let cpu_executor = manager.cpu_executor();
     let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
 
-    // Set AWS credentials
-    std::env::set_var("AWS_REGION", "us-west-2");
-    log_info!("[FLOW] AWS credentials set from environment");
-
     io_runtime.block_on(async move {
         // First, download the partition files
         use crate::s3_partition_downloader::{S3PartitionDownloadConfig, download_s3_partition_files};
-        
+
         let download_config = S3PartitionDownloadConfig::new(
             local_dir.clone(),
             table_bucket_arn,
@@ -1144,11 +1140,11 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
 
         // Download files
         let download_result = download_s3_partition_files(&download_config).await;
-        
+
         match download_result {
             Ok(files) => {
                 log_info!("[FLOW] Downloaded {} files to {}", files.len(), local_dir);
-                
+
                 // Now execute query with downloaded files
                 let result = execute_query_with_cross_rt_stream(
                     TableSource::DownloadedPartition {
@@ -1185,3 +1181,4 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
         }
     });
 }
+
