@@ -329,7 +329,7 @@ public class IcebergService {
 
         try {
             // Create RemoteSegmentStoreDirectory to read metadata
-            String remoteStoreRepo = indexMetadata.settings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
+            String remoteStoreRepo = indexMetadata.getSettings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
             if (remoteStoreRepo == null || remoteStoreRepo.isEmpty()) {
                 throw new IllegalArgumentException("Remote segment store repository is not configured for index " + indexName);
             }
@@ -970,7 +970,7 @@ public class IcebergService {
      */
     private String getSourceBucketRegion(IndexMetadata indexMetadata) {
         try {
-            String remoteStoreRepo = indexMetadata.settings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
+            String remoteStoreRepo = indexMetadata.getSettings().get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY);
             if (remoteStoreRepo == null || remoteStoreRepo.isEmpty()) {
                 logger.warn("[Iceberg Plugin] Remote segment store repository not configured, defaulting region to us-west-2");
                 return "us-west-2";
