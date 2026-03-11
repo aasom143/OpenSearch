@@ -41,6 +41,7 @@ public class S3TablesIcebergManager {
     private final String bucketArn;
     private final String region;
     private final String credentialsFilePath;
+    private final String namespaceName;
     
     // Credentials loaded from file
     private final Map<String, String> fileCredentials;
@@ -64,6 +65,7 @@ public class S3TablesIcebergManager {
         this.bucketArn = "arn:aws:iam::691585341994:role/opensearch-snapshot-role";
 
         this.credentialsFilePath = settings.get("iceberg.credentials.file", "/home/es2user/creds-iceberg/credentials.txt");
+        this.namespaceName = settings.get("datafusion.iceberg.s3tables.namespace", "opensearch");
         
         if (this.bucketArn == null || this.region == null) {
             throw new IllegalArgumentException("Missing required settings: iceberg.s3tables.bucket.arn and iceberg.aws.region");
@@ -207,20 +209,20 @@ public class S3TablesIcebergManager {
 
     private Table loadOrCreateTableWithCatalog(RESTCatalog catalog, String indexName, org.apache.iceberg.Schema schema) {
         String tableName = indexName.toLowerCase().replace("-", "_");
-        Namespace namespace = Namespace.of("opensearch");
+        Namespace namespace = Namespace.of(namespaceName);
 
         try {
             catalog.loadNamespaceMetadata(namespace);
         } catch (Exception e) {
             try {
                 catalog.createNamespace(namespace, new HashMap<>());
-                logger.info("[Iceberg S3Tables] Created namespace 'opensearch' in customer account");
+                logger.info("[Iceberg S3Tables] Created namespace '{}' in customer account", namespaceName);
             } catch (Exception createEx) {
                 logger.warn("[Iceberg S3Tables] Failed to create namespace: {}", createEx.getMessage());
             }
         }
 
-        TableIdentifier tableId = TableIdentifier.of("opensearch", tableName);
+        TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
 
         try {
             return catalog.loadTable(tableId);
@@ -258,24 +260,24 @@ public class S3TablesIcebergManager {
         String tableName = indexName.toLowerCase().replace("-", "_");
 
         // Ensure namespace exists in S3 Tables
-        Namespace namespace = Namespace.of("opensearch");
+        Namespace namespace = Namespace.of(namespaceName);
         try {
             catalog.loadNamespaceMetadata(namespace);
-            logger.info("[Iceberg S3Tables] Namespace 'opensearch' already exists");
+            logger.info("[Iceberg S3Tables] Namespace '{}' already exists", namespaceName);
         } catch (Exception e) {
-            logger.info("[Iceberg S3Tables] Namespace 'opensearch' doesn't exist, creating it: {}", e.getMessage());
+            logger.info("[Iceberg S3Tables] Namespace '{}' doesn't exist, creating it: {}", namespaceName, e.getMessage());
             try {
                 // Create namespace in S3 Tables bucket
                 // NOTE: S3 Tables doesn't support namespace properties, so pass empty map
                 catalog.createNamespace(namespace, new HashMap<>());
-                logger.info("[Iceberg S3Tables] Successfully created namespace 'opensearch'");
+                logger.info("[Iceberg S3Tables] Successfully created namespace '{}'", namespaceName);
             } catch (Exception createEx) {
                 logger.error("[Iceberg S3Tables] Failed to create namespace: {}", createEx.getMessage(), createEx);
                 // Continue anyway - namespace might exist but loadNamespaceMetadata failed
             }
         }
 
-        TableIdentifier tableId = TableIdentifier.of("opensearch", tableName);
+        TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
 
         try {
             // Try to load existing table from S3 Tables
@@ -367,7 +369,7 @@ public class S3TablesIcebergManager {
      */
     public java.util.List<TableIdentifier> listTables() {
         try {
-            Namespace namespace = Namespace.of("opensearch");
+            Namespace namespace = Namespace.of(namespaceName);
             return catalog.listTables(namespace);
         } catch (Exception e) {
             logger.error("[Iceberg] Failed to list tables from S3 Tables: {}", e.getMessage(), e);
@@ -390,7 +392,7 @@ public class S3TablesIcebergManager {
                    tableName, roleArn, s3Bucket);
 
         RESTCatalog customerCatalog = createCustomerCatalog(roleArn, s3Bucket, region);
-        TableIdentifier tableId = TableIdentifier.of("opensearch", tableName.toLowerCase().replace("-", "_"));
+        TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName.toLowerCase().replace("-", "_"));
 
         try {
             return customerCatalog.loadTable(tableId);

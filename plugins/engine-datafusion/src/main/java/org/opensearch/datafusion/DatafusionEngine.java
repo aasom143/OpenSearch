@@ -121,22 +121,24 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     @Override
     public DatafusionContext createContext(ReaderContext readerContext, ShardSearchRequest request, SearchShardTarget searchShardTarget, SearchShardTask task, BigArrays bigArrays, SearchContext originalContext, ClusterService clusterService) throws IOException {
         logger.info("[TRACE] DatafusionEngine.createContext() ENTRY");
-        logger.info("[TRACE] Parameters: readerContext={}, request={}, searchShardTarget={}, task={}, originalContext={}", 
+        logger.info("[TRACE] Parameters: readerContext={}, request={}, searchShardTarget={}, task={}, originalContext={}",
             readerContext != null ? "present" : "null",
-            request != null ? "present" : "null", 
+            request != null ? "present" : "null",
             searchShardTarget != null ? "present" : "null",
             task != null ? "present" : "null",
             originalContext != null ? "present" : "null");
-            
+
         DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays, originalContext, clusterService);
-        
+
         String indexName = request.shardId().getIndexName();
-        DatafusionQuery query = new DatafusionQuery(indexName, request.source().queryPlanIR(), new ArrayList<>());
-        
+
+        // Resolve S3 Table name from mapping if configured, otherwise use index name
+        String s3TableIndex = resolveS3TableName(indexName);
+        DatafusionQuery query = new DatafusionQuery(s3TableIndex, request.source().queryPlanIR(), new ArrayList<>());
+
         int shardId = request.shardId().id();
         String shardIdStr = String.valueOf(shardId);
-        String icebergTableName = indexName;
-        
+
         logger.info("[TRACE] ShardSearchRequest details:");
         logger.info("[TRACE] - shardId: {}", request.shardId());
         logger.info("[TRACE] - source: {}", request.source() != null ? "present" : "null");
@@ -145,78 +147,61 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             logger.info("[TRACE] - SearchSourceBuilder.toString(): {}", source.toString());
             logger.info("[TRACE] - queryPlanIR: {} bytes", source.queryPlanIR() != null ? source.queryPlanIR().length : "null");
         }
-        
+
         String localDir = "/tmp/s3_partition_" + indexName + "_" + shardIdStr;
-        String tableBucketArn = "arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test";
-        String databaseName = "opensearch";
         String partitionColumn = "shard_id";
-        
+
         // Get cross-account parameters from cluster settings
         String roleArn = clusterService.getClusterSettings().get(
-            Setting.simpleString("datafusion.s3.role_arn", Setting.Property.NodeScope, Setting.Property.Dynamic)
+            Setting.simpleString("datafusion.iceberg.s3tables.role_arn", Setting.Property.NodeScope, Setting.Property.Dynamic)
         );
         String s3Bucket = clusterService.getClusterSettings().get(
-            Setting.simpleString("datafusion.s3.bucket", Setting.Property.NodeScope, Setting.Property.Dynamic)
+            Setting.simpleString("datafusion.iceberg.s3tables.bucket", Setting.Property.NodeScope, Setting.Property.Dynamic)
         );
         String region = clusterService.getClusterSettings().get(
-            Setting.simpleString("datafusion.s3.region", "us-east-1", Setting.Property.NodeScope, Setting.Property.Dynamic)
+            Setting.simpleString("datafusion.iceberg.s3tables.region", Setting.Property.NodeScope, Setting.Property.Dynamic)
         );
-        
-        // Apply fallback defaults if not set
-        if (roleArn == null || roleArn.isEmpty()) {
-            roleArn = "arn:aws:iam::691585341994:role/opensearch-snapshot-role";
-            logger.info("[FLOW] Using fallback role_arn: {}", roleArn);
-        }
-        if (s3Bucket == null || s3Bucket.isEmpty()) {
-            s3Bucket = "customer-s3tables-bucket";
-            logger.info("[FLOW] Using fallback s3_bucket: {}", s3Bucket);
-        }
-        if (region == null || region.isEmpty()) {
-            region = "us-east-1";
-            logger.info("[FLOW] Using fallback region: {}", region);
-        }
-        
-        logger.info("[FLOW] Retrieved from cluster settings: roleArn={}, s3Bucket={}, region={}", 
-            roleArn, s3Bucket, region);
-        
-        // Debug: Log all available request information
-        Map<String, String> s3Options = null;
-        logger.info("[FLOW] Checking cross-account condition: roleArn={}, s3Bucket={}, region={}", 
-            roleArn != null ? "present" : "null", 
-            s3Bucket != null ? "present" : "null", 
-            region != null ? "present" : "null");
-            
-        if (roleArn != null && s3Bucket != null && region != null) {
-            logger.info("[FLOW] Cross-account query detected: role={}, bucket={}, region={}", roleArn, s3Bucket, region);
-            s3Options = new HashMap<>();
-            s3Options.put("role_arn", roleArn);
-            s3Options.put("region", region);
-            tableBucketArn = String.format(java.util.Locale.ROOT, "arn:aws:s3tables:%s:%s:bucket/%s", 
-                region, extractAccountId(roleArn), s3Bucket);
+        String databaseName = clusterService.getClusterSettings().get(
+            Setting.simpleString("datafusion.iceberg.s3tables.namespace", "opensearch", Setting.Property.NodeScope, Setting.Property.Dynamic)
+        );
 
-            // Load service account credentials from file for STS assume-role in Rust.
-            // Instance profile credentials may not be available, so we pass file-based
-            // credentials that the Rust code can use to call STS.
-            String credsFilePath = "/home/es2user/creds-iceberg/credentials.txt";
-            try {
-                java.util.Map<String, String> fileCreds = loadCredentialsFile(credsFilePath);
-                if (fileCreds.containsKey("aws_access_key_id")) {
-                    s3Options.put("aws_access_key_id", fileCreds.get("aws_access_key_id"));
-                }
-                if (fileCreds.containsKey("aws_secret_access_key")) {
-                    s3Options.put("aws_secret_access_key", fileCreds.get("aws_secret_access_key"));
-                }
-                if (fileCreds.containsKey("aws_session_token")) {
-                    s3Options.put("aws_session_token", fileCreds.get("aws_session_token"));
-                }
-                logger.info("[FLOW] Loaded service credentials from file for Rust STS call");
-            } catch (Exception e) {
-                logger.warn("[FLOW] Could not load credentials file {}: {}", credsFilePath, e.getMessage());
-            }
-        } else {
-            logger.info("[FLOW] Cross-account condition not met, using default s3Options (null)");
+        if (roleArn == null || roleArn.isEmpty() || s3Bucket == null || s3Bucket.isEmpty() || region == null || region.isEmpty()) {
+            throw new IllegalStateException(
+                "Required cluster settings not configured: datafusion.iceberg.s3tables.role_arn, " +
+                "datafusion.iceberg.s3tables.bucket, datafusion.iceberg.s3tables.region"
+            );
         }
-        
+
+        String tableBucketArn = String.format(java.util.Locale.ROOT, "arn:aws:s3tables:%s:%s:bucket/%s",
+            region, extractAccountId(roleArn), s3Bucket);
+
+        logger.info("[FLOW] Retrieved from cluster settings: roleArn={}, s3Bucket={}, region={}, namespace={}",
+            roleArn, s3Bucket, region, databaseName);
+
+        Map<String, String> s3Options = new HashMap<>();
+        s3Options.put("role_arn", roleArn);
+        s3Options.put("region", region);
+
+        // Load service account credentials from file for STS assume-role in Rust.
+        // Instance profile credentials may not be available, so we pass file-based
+        // credentials that the Rust code can use to call STS.
+        String credsFilePath = "/home/es2user/creds-iceberg/credentials.txt";
+        try {
+            java.util.Map<String, String> fileCreds = loadCredentialsFile(credsFilePath);
+            if (fileCreds.containsKey("aws_access_key_id")) {
+                s3Options.put("aws_access_key_id", fileCreds.get("aws_access_key_id"));
+            }
+            if (fileCreds.containsKey("aws_secret_access_key")) {
+                s3Options.put("aws_secret_access_key", fileCreds.get("aws_secret_access_key"));
+            }
+            if (fileCreds.containsKey("aws_session_token")) {
+                s3Options.put("aws_session_token", fileCreds.get("aws_session_token"));
+            }
+            logger.info("[FLOW] Loaded service credentials from file for Rust STS call");
+        } catch (Exception e) {
+            logger.warn("[FLOW] Could not load credentials file {}: {}", credsFilePath, e.getMessage());
+        }
+
         query.configureDownloadedPartition(
             localDir,
             tableBucketArn,
@@ -225,20 +210,41 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             shardIdStr,
             s3Options
         );
-        
+
         logger.info("[FLOW] Configured downloaded partition: localDir={}, partition={}={}, table={}",
-            localDir, partitionColumn, shardIdStr, icebergTableName);
-        
+            localDir, partitionColumn, shardIdStr, indexName);
+
         datafusionContext.datafusionQuery(query);
-        
+
         return datafusionContext;
     }
-    
+
     private String extractAccountId(String roleArn) {
         String[] parts = roleArn.split(":");
         return parts.length > 4 ? parts[4] : "";
     }
-    
+
+    /**
+     * Resolve S3 Table name from cluster setting mapping.
+     * Setting format: datafusion.coldIndex.s3Table.mapping = "index1:s3TableIndex1, index2:s3TableIndex2"
+     * Returns mapped name if found, otherwise returns the original index name.
+     */
+    private String resolveS3TableName(String indexName) {
+        String mapping = clusterService.getClusterSettings().get(
+            Setting.simpleString("datafusion.coldIndex.s3Table.mapping", Setting.Property.NodeScope, Setting.Property.Dynamic)
+        );
+        if (mapping != null && !mapping.isEmpty()) {
+            for (String entry : mapping.split(",")) {
+                String[] kv = entry.trim().split(":", 2);
+                if (kv.length == 2 && kv[0].trim().equals(indexName)) {
+                    logger.info("[FLOW] Resolved S3 table mapping: {} -> {}", indexName, kv[1].trim());
+                    return kv[1].trim();
+                }
+            }
+        }
+        return indexName;
+    }
+
     /**
      * Simple JSON value extractor for parameter parsing
      */
@@ -247,23 +253,23 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             String searchKey = "\"" + key + "\"";
             int keyIndex = json.indexOf(searchKey);
             if (keyIndex == -1) return null;
-            
+
             int colonIndex = json.indexOf(":", keyIndex);
             if (colonIndex == -1) return null;
-            
+
             int startQuote = json.indexOf("\"", colonIndex);
             if (startQuote == -1) return null;
-            
+
             int endQuote = json.indexOf("\"", startQuote + 1);
             if (endQuote == -1) return null;
-            
+
             return json.substring(startQuote + 1, endQuote);
         } catch (Exception e) {
             logger.debug("Failed to extract JSON value for key {}: {}", key, e.getMessage());
             return null;
         }
     }
-    
+
     private ThreadLocal<?>[] getThreadLocals() {
         try {
             // This is a simplified approach - in practice, thread-locals are harder to access
@@ -272,7 +278,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             return null;
         }
     }
-    
+
 
 
     @Override

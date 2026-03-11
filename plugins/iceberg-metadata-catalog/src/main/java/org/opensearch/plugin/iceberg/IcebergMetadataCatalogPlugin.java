@@ -45,6 +45,7 @@ import java.util.function.Supplier;
 public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin {
 
     private IcebergService icebergService;
+    private ClusterService clusterService;
 
     @Override
     public Collection<Object> createComponents(
@@ -66,6 +67,7 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             threadPool,
             environment.settings()
         );
+        this.clusterService = clusterService;
         
         return Collections.singletonList(icebergService);
     }
@@ -81,7 +83,7 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
         return Collections.singletonList(
-            new RestSyncIcebergAction()
+            new RestSyncIcebergAction(clusterService)
         );
     }
     
@@ -101,7 +103,11 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             IcebergService.CATALOG_TYPE_SETTING,
             IcebergService.S3_TABLES_BUCKET_ARN_SETTING,
             IcebergService.AWS_REGION_SETTING,
-            IcebergService.CREDENTIALS_FILE_PATH_SETTING
+            IcebergService.CREDENTIALS_FILE_PATH_SETTING,
+            IcebergService.S3TABLES_ROLE_ARN_SETTING,
+            IcebergService.S3TABLES_BUCKET_SETTING,
+            IcebergService.S3TABLES_REGION_SETTING,
+            IcebergService.S3TABLES_NAMESPACE_SETTING
         );
     }
 }

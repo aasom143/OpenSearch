@@ -72,7 +72,7 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
                 datafusionQuery.getLocalDownloadDir(),
                 datafusionQuery.getTableBucketArn(),
                 datafusionQuery.getDatabaseName(),
-                datafusionQuery.getIndexName(),
+                datafusionQuery.getIcebergTableName(),
                 datafusionQuery.getPartitionColumn(),
                 datafusionQuery.getPartitionValue(),
                 datafusionQuery.getS3Options(),

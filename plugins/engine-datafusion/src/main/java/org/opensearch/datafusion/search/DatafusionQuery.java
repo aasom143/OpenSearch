@@ -35,6 +35,7 @@ public class DatafusionQuery {
     private String partitionColumn;
     private String partitionValue;
     private Map<String, String> s3Options;
+    private String icebergTableName;
 
     public DatafusionQuery(String indexName, byte[] substraitBytes, List<SearchExecutor> searchExecutors) {
         this.indexName = indexName;
@@ -91,6 +92,10 @@ public class DatafusionQuery {
         return indexName;
     }
 
+    public String getIcebergTableName() {
+        return icebergTableName != null ? icebergTableName : indexName;
+    }
+
     // S3 partition download configuration methods
 
     public void configureDownloadedPartition(
@@ -122,6 +127,7 @@ public class DatafusionQuery {
         this.partitionColumn = partitionColumn;
         this.partitionValue = partitionValue;
         this.s3Options = s3Options;
+        this.icebergTableName = this.indexName.toLowerCase().replace("-", "_");
         
         logger.info("[TRACE] DatafusionQuery.configureDownloadedPartition() completed");
     }

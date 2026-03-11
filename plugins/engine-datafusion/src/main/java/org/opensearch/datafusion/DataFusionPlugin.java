@@ -205,6 +205,15 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
             Setting.Property.Dynamic
         ));
 
+        // Iceberg S3 Tables settings
+        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.role_arn", Setting.Property.NodeScope, Setting.Property.Dynamic));
+        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.bucket", Setting.Property.NodeScope, Setting.Property.Dynamic));
+        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.region", Setting.Property.NodeScope, Setting.Property.Dynamic));
+        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.namespace", "opensearch", Setting.Property.NodeScope, Setting.Property.Dynamic));
+
+        // Cold index to S3 Table name mapping
+        settingList.add(Setting.simpleString("datafusion.coldIndex.s3Table.mapping", Setting.Property.NodeScope, Setting.Property.Dynamic));
+
         return settingList;
     }
 

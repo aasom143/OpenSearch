@@ -9,12 +9,14 @@
 package org.opensearch.plugin.iceberg.rest;
 
 import org.opensearch.transport.client.node.NodeClient;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.plugin.iceberg.action.SyncIcebergAction;
 import org.opensearch.plugin.iceberg.action.SyncIcebergRequest;
 import org.opensearch.plugin.iceberg.action.SyncIcebergResponse;
+import org.opensearch.plugin.iceberg.service.IcebergService;
 import org.opensearch.rest.BaseRestHandler;
 import org.opensearch.rest.BytesRestResponse;
 import org.opensearch.rest.RestRequest;
@@ -29,9 +31,18 @@ import static org.opensearch.rest.RestRequest.Method.POST;
  * 
  * Endpoint: POST /_iceberg/sync?index={indexName}
  * 
- * Broadcasts to all shards of the index across all nodes.
+ * Reads role_arn, bucket, region from cluster settings:
+ *   datafusion.iceberg.s3tables.role_arn
+ *   datafusion.iceberg.s3tables.bucket
+ *   datafusion.iceberg.s3tables.region
  */
 public class RestSyncIcebergAction extends BaseRestHandler {
+
+    private final ClusterService clusterService;
+
+    public RestSyncIcebergAction(ClusterService clusterService) {
+        this.clusterService = clusterService;
+    }
 
     @Override
     public String getName() {
@@ -59,9 +70,24 @@ public class RestSyncIcebergAction extends BaseRestHandler {
             };
         }
 
-        String roleArn = request.param("role_arn");
-        String s3Bucket = request.param("s3_bucket");
-        String region = request.param("region", "us-east-1");
+        String roleArn = clusterService.getClusterSettings().get(IcebergService.S3TABLES_ROLE_ARN_SETTING);
+        String s3Bucket = clusterService.getClusterSettings().get(IcebergService.S3TABLES_BUCKET_SETTING);
+        String region = clusterService.getClusterSettings().get(IcebergService.S3TABLES_REGION_SETTING);
+
+        StringBuilder missing = new StringBuilder();
+        if (roleArn == null || roleArn.isEmpty()) missing.append("datafusion.iceberg.s3tables.role_arn ");
+        if (s3Bucket == null || s3Bucket.isEmpty()) missing.append("datafusion.iceberg.s3tables.bucket ");
+        if (region == null || region.isEmpty()) missing.append("datafusion.iceberg.s3tables.region ");
+
+        if (missing.length() > 0) {
+            return channel -> {
+                XContentBuilder builder = channel.newErrorBuilder();
+                builder.startObject();
+                builder.field("error", "Required cluster settings not configured: " + missing.toString().trim());
+                builder.endObject();
+                channel.sendResponse(new BytesRestResponse(RestStatus.BAD_REQUEST, builder));
+            };
+        }
 
         SyncIcebergRequest syncRequest = new SyncIcebergRequest(indexName, roleArn, s3Bucket, region);
         

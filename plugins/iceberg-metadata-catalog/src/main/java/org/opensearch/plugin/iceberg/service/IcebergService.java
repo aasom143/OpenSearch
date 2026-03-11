@@ -67,6 +67,31 @@ public class IcebergService {
         Setting.Property.NodeScope
     );
 
+    public static final Setting<String> S3TABLES_ROLE_ARN_SETTING = Setting.simpleString(
+        "datafusion.iceberg.s3tables.role_arn",
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    public static final Setting<String> S3TABLES_BUCKET_SETTING = Setting.simpleString(
+        "datafusion.iceberg.s3tables.bucket",
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    public static final Setting<String> S3TABLES_REGION_SETTING = Setting.simpleString(
+        "datafusion.iceberg.s3tables.region",
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
+    public static final Setting<String> S3TABLES_NAMESPACE_SETTING = Setting.simpleString(
+        "datafusion.iceberg.s3tables.namespace",
+        "opensearch",
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     /**
      * Full path to the Iceberg credentials file.
      * File should contain credentials in format:
@@ -849,20 +874,22 @@ public class IcebergService {
 
                 // Create or load table
                 String tableName = indexName.toLowerCase().replace("-", "_");
-                Namespace namespace = Namespace.of("opensearch");
+                String ns = clusterService.getClusterSettings().get(S3TABLES_NAMESPACE_SETTING);
+                if (ns == null || ns.isEmpty()) ns = "opensearch";
+                Namespace namespace = Namespace.of(ns);
 
                 try {
                     customerCatalog.loadNamespaceMetadata(namespace);
                 } catch (Exception e) {
                     try {
                         customerCatalog.createNamespace(namespace, new HashMap<>());
-                        logger.info("[Iceberg S3Tables] Created namespace 'opensearch' in customer account");
+                        logger.info("[Iceberg S3Tables] Created namespace '{}' in customer account", ns);
                     } catch (Exception createEx) {
                         logger.warn("[Iceberg S3Tables] Failed to create namespace: {}", createEx.getMessage());
                     }
                 }
 
-                TableIdentifier tableId = TableIdentifier.of("opensearch", tableName);
+                TableIdentifier tableId = TableIdentifier.of(ns, tableName);
 
                 try {
                     Table table = customerCatalog.loadTable(tableId);
