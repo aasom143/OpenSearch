@@ -1133,7 +1133,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
             local_dir.clone(),
             table_bucket_arn,
             database_name,
-            table_name.clone(),
+            s3_options.get("s3_table_name").cloned().unwrap_or_else(|| table_name.clone()),
             partition_column,
             partition_value,
         ).with_s3_options(s3_options);

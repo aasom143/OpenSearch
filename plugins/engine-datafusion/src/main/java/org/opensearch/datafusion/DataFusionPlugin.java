@@ -144,7 +144,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
     public SearchExecEngine<DatafusionContext, DatafusionSearcher,
             DatafusionReaderManager, DatafusionQuery>
         createEngine(DataFormat dataFormat,Collection<FileMetadata> formatCatalogSnapshot, ShardPath shardPath) throws IOException {
-        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] createEngine called for format={}, shardPath={}, fileCount={}", 
+        LogManager.getLogger(DataFusionPlugin.class).info("[FLOW] createEngine called for format={}, shardPath={}, fileCount={}",
             dataFormat.getName(), shardPath.getShardId(), formatCatalogSnapshot.size());
         return new DatafusionEngine(dataFormat, formatCatalogSnapshot, dataFusionService, shardPath);
     }
@@ -186,7 +186,7 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
                 CacheSettings.CACHE_SETTINGS,
                 CacheSettings.CACHE_ENABLED)
             .flatMap(x -> x.stream()).collect(Collectors.toList()));
-        
+
         // Cross-account S3 settings
         settingList.add(Setting.simpleString(
             "datafusion.s3.role_arn",
@@ -204,12 +204,6 @@ public class DataFusionPlugin extends Plugin implements ActionPlugin, SearchEngi
             Setting.Property.NodeScope,
             Setting.Property.Dynamic
         ));
-
-        // Iceberg S3 Tables settings
-        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.role_arn", Setting.Property.NodeScope, Setting.Property.Dynamic));
-        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.bucket", Setting.Property.NodeScope, Setting.Property.Dynamic));
-        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.region", Setting.Property.NodeScope, Setting.Property.Dynamic));
-        settingList.add(Setting.simpleString("datafusion.iceberg.s3tables.namespace", "opensearch", Setting.Property.NodeScope, Setting.Property.Dynamic));
 
         // Cold index to S3 Table name mapping
         settingList.add(Setting.simpleString("datafusion.coldIndex.s3Table.mapping", Setting.Property.NodeScope, Setting.Property.Dynamic));

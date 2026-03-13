@@ -16,12 +16,10 @@ datafusion-expr = { workspace = true }
 datafusion-datasource = { workspace = true }
 arrow-json = { workspace = true }
 arrow = { workspace = true }
-#arrow = "55.2.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
 dashmap = "5.5"
-
 
 # JNI dependencies
 jni = { workspace = true }
@@ -30,11 +28,9 @@ jni = { workspace = true }
 datafusion-substrait = { workspace = true }
 prost = { workspace = true }
 
-
 # Async runtime
 tokio = { workspace = true }
 futures = { workspace = true }
-#tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }
 tokio-metrics = { workspace = true }
 
 # Serialization
@@ -56,7 +52,6 @@ parquet = { workspace = true }
 # System info
 num_cpus = "1.16"
 
-
 # Object store for file access
 object_store = { workspace = true }
 url = { workspace = true }
@@ -65,14 +60,14 @@ url = { workspace = true }
 substrait = { workspace = true }
 
 # Iceberg integration
-iceberg = "0.8.0"
-iceberg-datafusion = "0.8.0"
-iceberg-catalog-glue = "0.8.0"
-iceberg-catalog-s3tables = "0.8.0"
+iceberg = { workspace = true }
+iceberg-datafusion = { workspace = true }
+iceberg-catalog-glue = { workspace = true }
+iceberg-catalog-s3tables = { workspace = true }
 
 # AWS SDK for role assumption
-aws-config = { version = "1.5", features = ["behavior-version-latest"] }
-aws-sdk-sts = "1.50"
+aws-config = { workspace = true }
+aws-sdk-sts = { workspace = true }
 
 # Temporary directory support
 tempfile ={ workspace = true }

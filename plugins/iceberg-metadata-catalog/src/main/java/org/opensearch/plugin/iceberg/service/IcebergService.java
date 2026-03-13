@@ -101,7 +101,7 @@ public class IcebergService {
      */
     public static final Setting<String> CREDENTIALS_FILE_PATH_SETTING = Setting.simpleString(
         "iceberg.credentials.file",
-        "/home/es2user/creds-iceberg/credentials.txt",
+        "/Users/guptasom/creds-iceberg/credentials.txt",
         Setting.Property.NodeScope
     );
 
@@ -121,7 +121,7 @@ public class IcebergService {
         this.repositoriesServiceSupplier = repositoriesServiceSupplier;
         this.threadPool = threadPool;
         this.settings = settings;
-        
+
         // Create manager with settings (reads bucket ARN from configuration)
         this.s3TablesManager = new S3TablesIcebergManager(settings);
     }
@@ -246,7 +246,7 @@ public class IcebergService {
         // CRITICAL: Set classloader for ALL Iceberg operations to prevent DynMethods issues
         ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(S3TablesIcebergManager.class.getClassLoader());
-        
+
         try {
             String indexName = shardId.getIndexName();
             String indexUUID = shardId.getIndex().getUUID();
@@ -273,8 +273,9 @@ public class IcebergService {
                 logger.warn("[Iceberg Shard Sync] Failed to infer schema: {}", e.getMessage());
             }
 
-            // Create source FileIO BEFORE role assumption to use service account credentials
-            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = createSourceFileIO(indexMetadata);
+            // Create source FileIO only for S3 repos (not needed for local fs repos)
+            boolean isLocalSource = activeFiles.keySet().stream().anyMatch(p -> p.startsWith("file://"));
+            org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = isLocalSource ? null : createSourceFileIO(indexMetadata);
 
             // Get or create table (with or without role assumption)
             org.apache.iceberg.Table table;
@@ -328,11 +329,12 @@ public class IcebergService {
                 try {
                     addFilesToCatalog(table, filesToAdd, sourceFileIO);
                 } finally {
-                    // Close source FileIO after use
-                    try {
-                        sourceFileIO.close();
-                    } catch (Exception e) {
-                        logger.warn("[Iceberg Plugin] Failed to close source FileIO: {}", e.getMessage());
+                    if (sourceFileIO != null) {
+                        try {
+                            sourceFileIO.close();
+                        } catch (Exception e) {
+                            logger.warn("[Iceberg Plugin] Failed to close source FileIO: {}", e.getMessage());
+                        }
                     }
                 }
             }
@@ -348,7 +350,7 @@ public class IcebergService {
             result.put("files_kept", filesKept);
 
             return result;
-            
+
         } finally {
             // CRITICAL: Always restore original classloader
             Thread.currentThread().setContextClassLoader(originalClassLoader);
@@ -398,37 +400,39 @@ public class IcebergService {
             org.opensearch.repositories.blobstore.BlobStoreRepository blobRepo =
                 (org.opensearch.repositories.blobstore.BlobStoreRepository) repository;
 
-            // Get bucket and base path from repository metadata
+            // Get repository metadata to determine type and settings
             org.opensearch.cluster.metadata.RepositoryMetadata repoMetadata = blobRepo.getMetadata();
             Settings repoSettings = repoMetadata.settings();
+            String repoType = repoMetadata.type();
 
-            // Extract bucket name from repository settings
-            String bucketName = repoSettings.get("bucket");
-            String basePath = repoSettings.get("base_path", "");
-
-            logger.info("[Iceberg Plugin] Repository: bucket={}, basePath={}", bucketName, basePath);
+            logger.info("[Iceberg Plugin] Repository type: {}", repoType);
 
             // Read latest metadata
             RemoteSegmentMetadata metadata = remoteDir.readLatestMetadataFile();
 
             if (metadata != null) {
-                // Extract active file paths from metadata
-                String finalBucket = bucketName;
-                String finalBase = basePath;
                 int finalShardId = shardId.id();
 
+                // Build source path prefix based on repository type
+                final String sourcePrefix;
+                if ("fs".equals(repoType)) {
+                    String location = repoSettings.get("location", "");
+                    sourcePrefix = String.format("file://%s/%s/%d/segments/data/parquet/",
+                        location, indexUUID, finalShardId);
+                    logger.info("[Iceberg Plugin] Using local fs source: location={}", location);
+                } else {
+                    String bucketName = repoSettings.get("bucket");
+                    String basePath = repoSettings.get("base_path", "");
+                    sourcePrefix = String.format("s3://%s/%s/%s/%d/segments/data/parquet/",
+                        bucketName, basePath, indexUUID, finalShardId);
+                    logger.info("[Iceberg Plugin] Using S3 source: bucket={}, basePath={}", bucketName, basePath);
+                }
+
                 metadata.getMetadata().forEach((fileNameKey, uploadedMetadata) -> {
-                    // Check if it's a parquet file
                     if (fileNameKey.contains("parquet")) {
-                        // Construct full S3 URI from repository config + metadata
-                        String s3Path = String.format("s3://%s/%s/%s/%d/segments/data/parquet/%s",
-                            finalBucket,
-                            finalBase,
-                            indexUUID,
-                            finalShardId,
-                            uploadedMetadata.getUploadedFilename());
-                        activeFiles.put(s3Path, uploadedMetadata);
-                        logger.debug("[Iceberg Plugin] Discovered file: {}", s3Path);
+                        String sourcePath = sourcePrefix + uploadedMetadata.getUploadedFilename();
+                        activeFiles.put(sourcePath, uploadedMetadata);
+                        logger.debug("[Iceberg Plugin] Discovered file: {}", sourcePath);
                     }
                 });
             }
@@ -540,22 +544,24 @@ public class IcebergService {
         Thread.currentThread().setContextClassLoader(S3TablesIcebergManager.class.getClassLoader());
 
         try {
-            // Use pre-created source FileIO (has service account credentials)
             // Use table's FileIO which has CUSTOMER ROLE credentials for writing to warehouse
             org.apache.iceberg.io.FileIO destFileIO = table.io();
 
             for (Map.Entry<String, UploadedSegmentMetadata> entry : filesToAdd.entrySet()) {
-                String sourceS3Path = entry.getKey();
+                String sourcePath = entry.getKey();
                 UploadedSegmentMetadata metadata = entry.getValue();
 
-                PartitionValues partitionValues = extractPartitionValues(sourceS3Path);
-                String relativePath = extractRelativePath(sourceS3Path);
+                PartitionValues partitionValues = extractPartitionValues(sourcePath);
+                String relativePath = extractRelativePath(sourcePath);
                 String destinationPath = table.location() + "/" + relativePath;
 
-                logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourceS3Path, destinationPath);
+                logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourcePath, destinationPath);
 
-                // Copy file using separate credential contexts
-                copyS3File(sourceFileIO, destFileIO, sourceS3Path, destinationPath);
+                if (sourcePath.startsWith("file://")) {
+                    copyLocalFile(sourcePath, destFileIO, destinationPath);
+                } else {
+                    copyS3File(sourceFileIO, destFileIO, sourcePath, destinationPath);
+                }
 
                 long fileSize = metadata.getLength();
                 long recordCount = fileSize > 0 ? 100L : 1L;
@@ -588,74 +594,46 @@ public class IcebergService {
     }
 
     /**
-     * Extract relative path from full S3 path to preserve directory structure.
+     * Extract relative path from full source path to preserve directory structure.
      * Source format: s3://bucket/base_path/indexUUID/shardId/segments/data/parquet/filename
+     *            or: file:///path/to/repo/indexUUID/shardId/segments/data/parquet/filename
      * Returns: indexUUID/shardId/segments/data/parquet/filename
      */
-    private String extractRelativePath(String s3Path) {
+    private String extractRelativePath(String sourcePath) {
         try {
-            logger.info("[Iceberg Plugin] Extracting relative path from: {}", s3Path);
+            logger.info("[Iceberg Plugin] Extracting relative path from: {}", sourcePath);
 
-            // Remove s3:// prefix
-            String pathWithoutProtocol = s3Path.substring(5); // Remove "s3://"
+            // Split by '/' and find "segments" anchor
+            String[] parts = sourcePath.split("/");
 
-            // Split by '/' and find the indexUUID (UUID format)
-            String[] parts = pathWithoutProtocol.split("/");
-            logger.info("[Iceberg Plugin] Path parts: {}", String.join(" | ", parts));
-
-            // Find the start of the UUID (22 character base64-like format)
-            int uuidIndex = -1;
+            int segmentsIndex = -1;
             for (int i = 0; i < parts.length; i++) {
-                // UUID can be either:
-                // 1. Standard format: 8-4-4-4-12 characters (36 chars with dashes)
-                // 2. Base64 format: 22 characters with letters, numbers, hyphens, underscores
-                logger.debug("[Iceberg Plugin] Checking part[{}]: '{}' (length={})", i, parts[i], parts[i].length());
-
-                if ((parts[i].length() == 36 && parts[i].matches("[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}"))
-                    || (parts[i].length() == 22 && parts[i].matches("[a-zA-Z0-9_-]{22}"))) {
-                    uuidIndex = i;
-                    logger.info("[Iceberg Plugin] Found UUID at index {}: {}", i, parts[i]);
+                if ("segments".equals(parts[i])) {
+                    segmentsIndex = i;
                     break;
                 }
             }
 
-            if (uuidIndex == -1) {
-                logger.warn("[Iceberg Plugin] Could not find UUID in path: {}", s3Path);
-                logger.warn("[Iceberg Plugin] Falling back to full path after bucket");
-
-                // Fallback: preserve everything after bucket name (first part)
-                StringBuilder fallbackPath = new StringBuilder();
-                for (int i = 1; i < parts.length; i++) {  // Skip bucket name (index 0)
-                    if (i > 1) {
-                        fallbackPath.append('/');
-                    }
-                    fallbackPath.append(parts[i]);
+            if (segmentsIndex >= 2) {
+                // UUID is 2 parts before "segments"
+                int uuidIndex = segmentsIndex - 2;
+                StringBuilder relativePath = new StringBuilder();
+                for (int i = uuidIndex; i < parts.length; i++) {
+                    if (i > uuidIndex) relativePath.append('/');
+                    relativePath.append(parts[i]);
                 }
-                String result = fallbackPath.toString();
-                logger.info("[Iceberg Plugin] Using fallback path: {}", result);
+                String result = relativePath.toString();
+                logger.info("[Iceberg Plugin] Extracted relative path: {}", result);
                 return result;
             }
 
-            // Reconstruct path from UUID onwards
-            StringBuilder relativePath = new StringBuilder();
-            for (int i = uuidIndex; i < parts.length; i++) {
-                if (i > uuidIndex) {
-                    relativePath.append('/');
-                }
-                relativePath.append(parts[i]);
-            }
-
-            String result = relativePath.toString();
-            logger.info("[Iceberg Plugin] Extracted relative path: {}", result);
-            return result;
+            logger.warn("[Iceberg Plugin] Could not find 'segments' anchor in path: {}", sourcePath);
+            return sourcePath.substring(sourcePath.lastIndexOf('/') + 1);
 
         } catch (Exception e) {
             logger.error("[Iceberg Plugin] Failed to extract relative path from {}: {}",
-                        s3Path, e.getMessage(), e);
-            // Fallback to just filename
-            String filename = s3Path.substring(s3Path.lastIndexOf('/') + 1);
-            logger.warn("[Iceberg Plugin] Using filename only: {}", filename);
-            return filename;
+                        sourcePath, e.getMessage(), e);
+            return sourcePath.substring(sourcePath.lastIndexOf('/') + 1);
         }
     }
 
@@ -698,58 +676,77 @@ public class IcebergService {
     }
 
     /**
-     * Extract partition values (index_uuid, shard_id) from S3 path.
-     * Format: s3://bucket/base_path/indexUUID/shardId/segments/data/parquet/filename
+     * Copy a local file to the destination using FileIO.
+     * Used when the remote store repository is type "fs" (local filesystem).
+     */
+    private void copyLocalFile(String sourcePath, org.apache.iceberg.io.FileIO destFileIO,
+                               String destPath) throws IOException {
+        try {
+            // Strip file:// prefix to get local path
+            String localPath = sourcePath.substring("file://".length());
+            logger.info("[Iceberg Plugin] Copying local file: {} -> {}", localPath, destPath);
+
+            java.io.File sourceFile = new java.io.File(localPath);
+            org.apache.iceberg.io.OutputFile outputFile = destFileIO.newOutputFile(destPath);
+
+            try (java.io.InputStream in = new java.io.FileInputStream(sourceFile);
+                 org.apache.iceberg.io.PositionOutputStream out = outputFile.createOrOverwrite()) {
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, bytesRead);
+                }
+            }
+
+            logger.info("[Iceberg Plugin] Local file copy completed");
+        } catch (Exception e) {
+            logger.error("[Iceberg Plugin] Local file copy failed: {}", e.getMessage());
+            throw new IOException("Local file copy failed", e);
+        }
+    }
+
+    /**
+     * Extract partition values (index_uuid, shard_id) from source path.
+     * Format: .../indexUUID/shardId/segments/data/parquet/filename
      * Uses position-based detection: finds "segments" anchor, then extracts UUID and shard_id before it.
      */
-    private PartitionValues extractPartitionValues(String s3Path) {
+    private PartitionValues extractPartitionValues(String sourcePath) {
         try {
-            logger.info("[Iceberg Plugin] Extracting partition values from: {}", s3Path);
+            logger.info("[Iceberg Plugin] Extracting partition values from: {}", sourcePath);
 
-            String pathWithoutProtocol = s3Path.substring(5); // Remove "s3://"
-            String[] parts = pathWithoutProtocol.split("/");
-
-            logger.info("[Iceberg Plugin] Partition extraction - path parts: {}", String.join(" | ", parts));
+            String[] parts = sourcePath.split("/");
 
             // Find "segments" anchor - it's always present in the path
             int segmentsIndex = -1;
             for (int i = 0; i < parts.length; i++) {
                 if ("segments".equals(parts[i])) {
                     segmentsIndex = i;
-                    logger.info("[Iceberg Plugin] Found 'segments' at index {}", i);
                     break;
                 }
             }
 
             if (segmentsIndex < 2) {
-                logger.warn("[Iceberg Plugin] Could not find 'segments' anchor or not enough parts before it: {}", s3Path);
+                logger.warn("[Iceberg Plugin] Could not find 'segments' anchor or not enough parts before it: {}", sourcePath);
                 return new PartitionValues("unknown", 0);
             }
 
-            // UUID is 2 parts before "segments": bucket/base_path/UUID/shard_id/segments/...
             String indexUuid = parts[segmentsIndex - 2];
-            logger.info("[Iceberg Plugin] Extracted index_uuid from part[{}]: {}", segmentsIndex - 2, indexUuid);
-
-            // Shard ID is 1 part before "segments"
             String shardIdPart = parts[segmentsIndex - 1];
-            logger.info("[Iceberg Plugin] Attempting to parse shard_id from part[{}]: '{}'", segmentsIndex - 1, shardIdPart);
 
-            Integer shardId = null;
+            int shardId;
             try {
                 shardId = Integer.parseInt(shardIdPart);
-                logger.info("[Iceberg Plugin] Successfully parsed shard_id: {}", shardId);
             } catch (NumberFormatException e) {
                 logger.warn("[Iceberg Plugin] Failed to parse shard_id from '{}': {}", shardIdPart, e.getMessage());
                 return new PartitionValues(indexUuid, 0);
             }
 
-            logger.info("[Iceberg Plugin] Successfully extracted partition values: index_uuid={}, shard_id={}",
-                       indexUuid, shardId);
+            logger.info("[Iceberg Plugin] Extracted partition values: index_uuid={}, shard_id={}", indexUuid, shardId);
             return new PartitionValues(indexUuid, shardId);
 
         } catch (Exception e) {
             logger.error("[Iceberg Plugin] Failed to extract partition values from {}: {}",
-                        s3Path, e.getMessage(), e);
+                        sourcePath, e.getMessage(), e);
             return new PartitionValues("unknown", 0);
         }
     }
@@ -801,7 +798,7 @@ public class IcebergService {
         try {
             // Get file credentials to use for STS authentication
             Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
-            
+
             // Build credentials provider from file
             software.amazon.awssdk.auth.credentials.AwsCredentialsProvider credentialsProvider;
             if (fileCreds.containsKey("access_key") && fileCreds.containsKey("secret_key")) {
@@ -823,7 +820,7 @@ public class IcebergService {
             } else {
                 throw new RuntimeException("File credentials not available for STS client");
             }
-            
+
             // Check if we're already using the target role
             software.amazon.awssdk.services.sts.StsClient stsClient = software.amazon.awssdk.services.sts.StsClient.builder()
                 .region(software.amazon.awssdk.regions.Region.of(region))
@@ -971,16 +968,16 @@ public class IcebergService {
     private org.apache.iceberg.aws.s3.S3FileIO createSourceFileIO(IndexMetadata indexMetadata) {
         String sourceRegion = getSourceBucketRegion(indexMetadata);
         logger.info("[Iceberg Plugin] Creating source FileIO with region: {}", sourceRegion);
-        
+
         // Get credentials from file (loaded by S3TablesIcebergManager)
         Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
-        
+
         if (!fileCreds.containsKey("access_key") || !fileCreds.containsKey("secret_key")) {
             throw new RuntimeException("Iceberg credentials not found in file. " +
                 "Please ensure credentials file exists at configured path with required keys: " +
                 "aws_access_key_id, aws_secret_access_key");
         }
-        
+
         // Create credentials from file
         software.amazon.awssdk.auth.credentials.AwsCredentials credentials;
         if (fileCreds.containsKey("session_token")) {
@@ -997,20 +994,20 @@ public class IcebergService {
             );
             logger.info("[Iceberg Plugin] Using basic credentials from file");
         }
-        
+
         logger.info("[Iceberg Plugin] Using credentials with accessKeyId: {}...",
                    credentials.accessKeyId().substring(0, Math.min(4, credentials.accessKeyId().length())));
-        
+
         // Create S3 client with file credentials
         software.amazon.awssdk.services.s3.S3Client s3Client = software.amazon.awssdk.services.s3.S3Client.builder()
             .region(software.amazon.awssdk.regions.Region.of(sourceRegion))
             .credentialsProvider(software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(credentials))
             .build();
-        
+
         // Create custom S3FileIO that uses our pre-configured S3 client
         org.apache.iceberg.aws.s3.S3FileIO sourceFileIO = new org.apache.iceberg.aws.s3.S3FileIO(() -> s3Client);
         sourceFileIO.initialize(new HashMap<>());
-        
+
         return sourceFileIO;
     }
 
@@ -1027,10 +1024,10 @@ public class IcebergService {
             org.opensearch.repositories.Repository repository = repositoriesServiceSupplier.get().repository(remoteStoreRepo);
             org.opensearch.repositories.blobstore.BlobStoreRepository blobRepo =
                 (org.opensearch.repositories.blobstore.BlobStoreRepository) repository;
-            
+
             org.opensearch.cluster.metadata.RepositoryMetadata repoMetadata = blobRepo.getMetadata();
             Settings repoSettings = repoMetadata.settings();
-            
+
             String region = repoSettings.get("region", "us-west-2");
             logger.info("[Iceberg Plugin] Detected source bucket region from repository: {}", region);
             return region;

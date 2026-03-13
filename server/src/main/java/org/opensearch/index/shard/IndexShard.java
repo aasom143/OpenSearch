@@ -5341,6 +5341,9 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
 
     private void updateReplicationCheckpoint() {
         try (CompositeEngine.ReleasableRef<CatalogSnapshot> catalogSnapshotRef = getCatalogSnapshotFromEngine()) {
+            if (catalogSnapshotRef == null) {
+                return;
+            }
             final ReplicationCheckpoint checkpoint = computeReplicationCheckpoint(catalogSnapshotRef.getRef());
             replicationTracker.setLatestReplicationCheckpoint(checkpoint);
             logger.trace("Updated replication checkpoint from CatalogSnapshot: shard={}, checkpoint={}", shardId, checkpoint);

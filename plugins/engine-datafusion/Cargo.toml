@@ -16,6 +16,15 @@ arrow-schema = "57.0.0"
 arrow-buffer = "57.0.0"
 downcast-rs = "1.2"
 
+# Iceberg integration
+iceberg = "0.8.0"
+iceberg-datafusion = "0.8.0"
+iceberg-catalog-glue = "0.8.0"
+iceberg-catalog-s3tables = "0.8.0"
+iceberg-s3tables-catalog = "0.9.0"
+
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-sts = "1.50"
 
 # JNI dependencies
 jni = "0.21"

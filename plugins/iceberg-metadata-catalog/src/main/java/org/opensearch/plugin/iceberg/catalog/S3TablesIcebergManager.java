@@ -42,7 +42,7 @@ public class S3TablesIcebergManager {
     private final String region;
     private final String credentialsFilePath;
     private final String namespaceName;
-    
+
     // Credentials loaded from file
     private final Map<String, String> fileCredentials;
 
@@ -64,16 +64,16 @@ public class S3TablesIcebergManager {
         this.region = "us-east-1";
         this.bucketArn = "arn:aws:iam::691585341994:role/opensearch-snapshot-role";
 
-        this.credentialsFilePath = settings.get("iceberg.credentials.file", "/home/es2user/creds-iceberg/credentials.txt");
+        this.credentialsFilePath = settings.get("iceberg.credentials.file", "/Users/guptasom/creds-iceberg/credentials.txt");
         this.namespaceName = settings.get("datafusion.iceberg.s3tables.namespace", "opensearch");
-        
+
         if (this.bucketArn == null || this.region == null) {
             throw new IllegalArgumentException("Missing required settings: iceberg.s3tables.bucket.arn and iceberg.aws.region");
         }
 
         // Load credentials from file
         this.fileCredentials = loadCredentialsFromFile(this.credentialsFilePath);
-        logger.info("[Iceberg S3Tables] Loaded {} credentials from file: {}", 
+        logger.info("[Iceberg S3Tables] Loaded {} credentials from file: {}",
                    fileCredentials.size(), credentialsFilePath);
 
         String s3TablesBucketArn = this.bucketArn;
@@ -94,12 +94,12 @@ public class S3TablesIcebergManager {
         properties.put(S3FileIOProperties.ENDPOINT, String.format("https://s3.%s.amazonaws.com", region));
         properties.put("client.region", region);
 
-        // NOTE: Default catalog initialization removed - not needed since we always use 
+        // NOTE: Default catalog initialization removed - not needed since we always use
         // customer-specific catalogs created on-demand via createCustomerCatalog()
         // This avoids startup failures when default account credentials are not available
-        
+
         logger.info("[Iceberg S3Tables] S3TablesIcebergManager initialized (catalog will be created on-demand)");
-        
+
         // Initialize S3FileIO without requiring catalog initialization
         // This FileIO is used for customer account operations
         this.fileIO = null;  // Will be created per-customer-account as needed
@@ -423,7 +423,7 @@ public class S3TablesIcebergManager {
      */
     private static Map<String, String> loadCredentialsFromFile(String filePath) {
         Map<String, String> credentials = new HashMap<>();
-        
+
         if (!Files.exists(Paths.get(filePath))) {
             String errorMsg = String.format("[Iceberg S3Tables] Credentials file not found: %s", filePath);
             logger.error(errorMsg);
@@ -437,12 +437,12 @@ public class S3TablesIcebergManager {
                 if (line.isEmpty() || line.startsWith("#")) {
                     continue; // Skip empty lines and comments
                 }
-                
+
                 String[] parts = line.split("=", 2);
                 if (parts.length == 2) {
                     String key = parts[0].trim();
                     String value = parts[1].trim();
-                    
+
                     switch (key) {
                         case "aws_access_key_id":
                             credentials.put("access_key", value);
@@ -461,7 +461,7 @@ public class S3TablesIcebergManager {
                     }
                 }
             }
-            
+
             // Validate required credentials are present
             if (!credentials.containsKey("access_key") || !credentials.containsKey("secret_key")) {
                 String errorMsg = String.format(
@@ -472,7 +472,7 @@ public class S3TablesIcebergManager {
                 logger.error(errorMsg);
                 throw new RuntimeException(errorMsg);
             }
-            
+
             // DEBUG: Print full credential values to check for hidden characters
             logger.info("[DEBUG ICEBERG CREDS] Access Key: '{}'", credentials.get("access_key"));
             logger.info("[DEBUG ICEBERG CREDS] Secret Key: '{}'", credentials.get("secret_key"));
@@ -484,15 +484,15 @@ public class S3TablesIcebergManager {
             if (credentials.containsKey("session_token")) {
                 logger.info("[DEBUG ICEBERG CREDS] Session Token Length: {}", credentials.get("session_token").length());
             }
-            
-            logger.info("[Iceberg S3Tables] Successfully loaded {} credential(s) from: {}", 
+
+            logger.info("[Iceberg S3Tables] Successfully loaded {} credential(s) from: {}",
                        credentials.size(), filePath);
         } catch (IOException e) {
             String errorMsg = String.format("[Iceberg S3Tables] Failed to read credentials file: %s", filePath);
             logger.error(errorMsg, e);
             throw new RuntimeException(errorMsg, e);
         }
-        
+
         return credentials;
     }
 }

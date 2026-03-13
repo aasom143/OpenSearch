@@ -86,13 +86,11 @@ testClusters {
     setting 'iceberg.aws.region', 'us-west-2'
     setting 'iceberg.catalog.type', 's3tables'
     
-    // S3 remote store configuration (OpenSearch 3.x)
-    // Note: Remote store for segments/translog is enabled via node attributes, not cluster settings
+    // Local filesystem remote store configuration
+    setting 'path.repo', "${buildDir}/testclusters/runTask-remote-store"
     setting 'cluster.remote_store.index.path.type', 'fixed'
-    setting 'node.attr.remote_store.repository.test-rs-repo.type', 's3'
-    setting 'node.attr.remote_store.repository.test-rs-repo.settings.bucket', 'srirasac-iceberg-test'
-    setting 'node.attr.remote_store.repository.test-rs-repo.settings.base_path', 'repository'
-    setting 'node.attr.remote_store.repository.test-rs-repo.settings.region', 'us-west-2'
+    setting 'node.attr.remote_store.repository.test-rs-repo.type', 'fs'
+    setting 'node.attr.remote_store.repository.test-rs-repo.settings.location', "${buildDir}/testclusters/runTask-remote-store"
     setting 'node.attr.remote_store.segment.repository', 'test-rs-repo'
     setting 'node.attr.remote_store.translog.repository', 'test-rs-repo'
     setting 'node.attr.remote_store.state.repository', 'test-rs-repo'

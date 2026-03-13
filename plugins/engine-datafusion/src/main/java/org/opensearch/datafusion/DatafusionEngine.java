@@ -133,8 +133,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         String indexName = request.shardId().getIndexName();
 
         // Resolve S3 Table name from mapping if configured, otherwise use index name
-        String s3TableIndex = resolveS3TableName(indexName);
-        DatafusionQuery query = new DatafusionQuery(s3TableIndex, request.source().queryPlanIR(), new ArrayList<>());
+        String s3TableIndex = resolveS3TableName(indexName, clusterService);
+        DatafusionQuery query = new DatafusionQuery(indexName, request.source().queryPlanIR(), new ArrayList<>());
 
         int shardId = request.shardId().id();
         String shardIdStr = String.valueOf(shardId);
@@ -185,7 +185,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         // Load service account credentials from file for STS assume-role in Rust.
         // Instance profile credentials may not be available, so we pass file-based
         // credentials that the Rust code can use to call STS.
-        String credsFilePath = "/home/es2user/creds-iceberg/credentials.txt";
+        String credsFilePath = "/Users/guptasom/creds-iceberg/credentials.txt";
         try {
             java.util.Map<String, String> fileCreds = loadCredentialsFile(credsFilePath);
             if (fileCreds.containsKey("aws_access_key_id")) {
@@ -208,7 +208,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             databaseName,
             partitionColumn,
             shardIdStr,
-            s3Options
+            s3Options,
+            s3TableIndex
         );
 
         logger.info("[FLOW] Configured downloaded partition: localDir={}, partition={}={}, table={}",
@@ -229,7 +230,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
      * Setting format: datafusion.coldIndex.s3Table.mapping = "index1:s3TableIndex1, index2:s3TableIndex2"
      * Returns mapped name if found, otherwise returns the original index name.
      */
-    private String resolveS3TableName(String indexName) {
+    private String resolveS3TableName(String indexName, ClusterService clusterService) {
         String mapping = clusterService.getClusterSettings().get(
             Setting.simpleString("datafusion.coldIndex.s3Table.mapping", Setting.Property.NodeScope, Setting.Property.Dynamic)
         );
