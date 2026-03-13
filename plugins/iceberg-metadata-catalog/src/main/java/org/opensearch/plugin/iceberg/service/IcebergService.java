@@ -178,16 +178,23 @@ public class IcebergService {
         }
         logger.info("[Iceberg Plugin] Found {} files in Iceberg catalog", catalogFiles.size());
 
-        // 5. Compute diff
+ // 5. Compute diff - FIX: compare destination paths to destination paths
+        // activeFiles keys are SOURCE paths; catalogFiles contains DESTINATION paths.
+        // They can never match directly. Transform source -> dest before comparison.
         Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+        Set<String> activeFilesInDestFormat = new HashSet<>();
+
         for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-            if (!catalogFiles.contains(entry.getKey())) {
-                filesToAdd.put(entry.getKey(), entry.getValue());
+            String sourcePath = entry.getKey();
+            String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+            activeFilesInDestFormat.add(destPath);
+            if (!catalogFiles.contains(destPath)) {
+                filesToAdd.put(sourcePath, entry.getValue());
             }
         }
 
         Set<String> filesToRemove = new HashSet<>(catalogFiles);
-        filesToRemove.removeAll(activeFiles.keySet());  // Files in catalog but not in remote store
+        filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest
 
         int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -293,16 +300,23 @@ public class IcebergService {
                 }
             }
 
-            // Compute diff for this shard
+            // Compute diff for this shard - FIX: compare destination paths to destination paths
+            // activeFiles keys are SOURCE paths; catalogFiles contains DESTINATION paths.
+            // They can never match directly. Transform source -> dest before comparison.
             Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+            Set<String> activeFilesInDestFormat = new HashSet<>();
+
             for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-                if (!catalogFiles.contains(entry.getKey())) {
-                    filesToAdd.put(entry.getKey(), entry.getValue());
+                String sourcePath = entry.getKey();
+                String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+                activeFilesInDestFormat.add(destPath);
+                if (!catalogFiles.contains(destPath)) {
+                    filesToAdd.put(sourcePath, entry.getValue());
                 }
             }
 
             Set<String> filesToRemove = new HashSet<>(catalogFiles);
-            filesToRemove.removeAll(activeFiles.keySet());
+            filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest
 
             int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -655,6 +669,14 @@ public class IcebergService {
                            String sourcePath, String destPath) throws IOException {
         try {
             logger.info("[Iceberg Plugin] Copying: {} -> {}", sourcePath, destPath);
+
+            // FIX SAFEGUARD: S3 Tables enforces conditional writes - returns 412 if file already
+            // exists. The diff logic above prevents re-copying, but this is an extra safety net.
+            org.apache.iceberg.io.InputFile destCheck = destFileIO.newInputFile(destPath);
+            if (destCheck.exists()) {
+                logger.info("[Iceberg Plugin] Destination file already exists, skipping copy: {}", destPath);
+                return;
+            }
 
             org.apache.iceberg.io.InputFile inputFile = sourceFileIO.newInputFile(sourcePath);
             org.apache.iceberg.io.OutputFile outputFile = destFileIO.newOutputFile(destPath);
