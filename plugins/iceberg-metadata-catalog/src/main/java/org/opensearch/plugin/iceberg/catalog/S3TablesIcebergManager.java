@@ -16,6 +16,11 @@ import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,6 +40,10 @@ public class S3TablesIcebergManager {
     // Configuration from Settings
     private final String bucketArn;
     private final String region;
+    private final String credentialsFilePath;
+    
+    // Credentials loaded from file
+    private final Map<String, String> fileCredentials;
 
     public S3TablesIcebergManager(org.opensearch.common.settings.Settings settings) {
         System.out.println("[Iceberg S3Tables] ===== CONSTRUCTOR CALLED =====");
@@ -51,10 +60,16 @@ public class S3TablesIcebergManager {
         // Read from Settings (no defaults - must be configured)
         this.bucketArn = settings.get("iceberg.s3tables.bucket.arn");
         this.region = settings.get("iceberg.aws.region");
+        this.credentialsFilePath = settings.get("iceberg.credentials.file", "/home/ec2-user/creds-iceberg/credentials.txt");
         
         if (this.bucketArn == null || this.region == null) {
             throw new IllegalArgumentException("Missing required settings: iceberg.s3tables.bucket.arn and iceberg.aws.region");
         }
+
+        // Load credentials from file
+        this.fileCredentials = loadCredentialsFromFile(this.credentialsFilePath);
+        logger.info("[Iceberg S3Tables] Loaded {} credentials from file: {}", 
+                   fileCredentials.size(), credentialsFilePath);
 
         String s3TablesBucketArn = this.bucketArn;
 
@@ -74,82 +89,15 @@ public class S3TablesIcebergManager {
         properties.put(S3FileIOProperties.ENDPOINT, String.format("https://s3.%s.amazonaws.com", region));
         properties.put("client.region", region);
 
-        // AWS SigV4 authentication for S3 Tables REST endpoint
-        properties.put("rest.sigv4-enabled", "true");
-        properties.put("rest.signing-name", "s3tables");
-        properties.put("rest.signing-region", region);
-
-        // Let AWS SDK auto-discover credentials from environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-        // Don't explicitly set credentials-provider property - let it use default chain
-
-        // Debug: Check if AWS credentials are available in environment
-        String accessKeyId = System.getenv("AWS_ACCESS_KEY_ID");
-        String secretKey = System.getenv("AWS_SECRET_ACCESS_KEY");
-        String sessionToken = System.getenv("AWS_SESSION_TOKEN");
-        System.out.println("[Iceberg S3Tables] AWS_ACCESS_KEY_ID present: " + (accessKeyId != null && !accessKeyId.isEmpty()));
-        System.out.println("[Iceberg S3Tables] AWS_SECRET_ACCESS_KEY present: " + (secretKey != null && !secretKey.isEmpty()));
-        System.out.println("[Iceberg S3Tables] AWS_SESSION_TOKEN present: " + (sessionToken != null && !sessionToken.isEmpty()));
-
-        System.out.println("[Iceberg S3Tables] Properties configured: endpoint=" + s3TablesEndpoint);
-        System.out.println("[Iceberg S3Tables] Properties: " + properties);
-        System.out.println("[Iceberg S3Tables] About to call catalog.initialize()");
-
-        // CRITICAL: Set thread context classloader so Iceberg's DynMethods can find AWS SDK classes
-        // This is needed because plugin classloader isolation prevents dynamic class loading
-        ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
-        System.out.println("[Iceberg S3Tables] Set context classloader to plugin classloader");
-
-        try {
-            // Initialize the catalog with timeout handling
-            java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newSingleThreadExecutor();
-            java.util.concurrent.Future<?> future = executor.submit(() -> {
-                try {
-                    // Also set classloader in executor thread
-                    Thread.currentThread().setContextClassLoader(S3TablesIcebergManager.class.getClassLoader());
-                    System.out.println("[Iceberg S3Tables] Inside executor: calling catalog.initialize()");
-                    catalog.initialize("s3tables_catalog", properties);
-                    System.out.println("[Iceberg S3Tables] Inside executor: catalog.initialize() completed");
-                } catch (Exception e) {
-                    System.err.println("[Iceberg S3Tables] Exception in executor: " + e.getMessage());
-                    e.printStackTrace(System.err);
-                    throw new RuntimeException(e);
-                }
-            });
-
-            // Wait up to 10 seconds for initialization
-            future.get(10, java.util.concurrent.TimeUnit.SECONDS);
-            System.out.println("[Iceberg S3Tables] catalog.initialize() returned successfully!");
-            executor.shutdown();
-
-            // Initialize S3FileIO for data file operations (with classloader still set)
-            System.out.println("[Iceberg S3Tables] Initializing S3FileIO with customer-account profile");
-            this.fileIO = new org.apache.iceberg.aws.s3.S3FileIO();
-            Map<String, String> fileIOProperties = new HashMap<>();
-            fileIOProperties.put(S3FileIOProperties.ENDPOINT, String.format("https://s3.%s.amazonaws.com", region));
-            fileIOProperties.put("client.region", region);
-            fileIOProperties.put("client.credentials-provider", "com.amazonaws.auth.profile.ProfileCredentialsProvider");
-            fileIOProperties.put("client.credentials-provider.profile-name", "customer-account");
-            this.fileIO.initialize(fileIOProperties);
-            System.out.println("[Iceberg S3Tables] S3FileIO initialized successfully with customer-account profile!");
-
-        } catch (java.util.concurrent.TimeoutException e) {
-            Thread.currentThread().setContextClassLoader(originalClassLoader);
-            System.err.println("[Iceberg S3Tables] TIMEOUT: catalog.initialize() took longer than 10 seconds!");
-            System.err.println("[Iceberg S3Tables] This likely means:");
-            System.err.println("[Iceberg S3Tables] 1. Network connectivity issue to S3 Tables endpoint: " + s3TablesEndpoint);
-            System.err.println("[Iceberg S3Tables] 2. AWS credentials not configured properly");
-            System.err.println("[Iceberg S3Tables] 3. Missing permissions for S3 Tables operations");
-            throw new RuntimeException("S3 Tables catalog initialization timeout after 10 seconds", e);
-        } catch (Exception e) {
-            Thread.currentThread().setContextClassLoader(originalClassLoader);
-            System.err.println("[Iceberg S3Tables] ===== CATALOG INITIALIZATION FAILED =====");
-            e.printStackTrace(System.err);
-            throw new RuntimeException("Failed to initialize S3 Tables catalog", e);
-        } finally {
-            // Restore original classloader
-            Thread.currentThread().setContextClassLoader(originalClassLoader);
-        }
+        // NOTE: Default catalog initialization removed - not needed since we always use 
+        // customer-specific catalogs created on-demand via createCustomerCatalog()
+        // This avoids startup failures when default account credentials are not available
+        
+        logger.info("[Iceberg S3Tables] S3TablesIcebergManager initialized (catalog will be created on-demand)");
+        
+        // Initialize S3FileIO without requiring catalog initialization
+        // This FileIO is used for customer account operations
+        this.fileIO = null;  // Will be created per-customer-account as needed
     }
 
     /**
@@ -447,5 +395,99 @@ public class S3TablesIcebergManager {
             logger.error("[Iceberg S3Tables] Failed to load table for query: {}", tableName, e);
             throw new RuntimeException("Table not found: " + tableName, e);
         }
+    }
+
+    /**
+     * Get credentials loaded from file.
+     * @return Map with keys: access_key, secret_key, session_token (if available)
+     */
+    public Map<String, String> getFileCredentials() {
+        return new HashMap<>(fileCredentials);
+    }
+
+    /**
+     * Load credentials from file.
+     * Expected format:
+     * aws_access_key_id=[access key]
+     * aws_secret_access_key=[secret access key]
+     * aws_session_token=[session token]
+     *
+     * @param filePath Path to credentials file
+     * @return Map with keys: access_key, secret_key, session_token
+     * @throws RuntimeException if file not found or required credentials missing
+     */
+    private static Map<String, String> loadCredentialsFromFile(String filePath) {
+        Map<String, String> credentials = new HashMap<>();
+        
+        if (!Files.exists(Paths.get(filePath))) {
+            String errorMsg = String.format("[Iceberg S3Tables] Credentials file not found: %s", filePath);
+            logger.error(errorMsg);
+            throw new RuntimeException(errorMsg);
+        }
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue; // Skip empty lines and comments
+                }
+                
+                String[] parts = line.split("=", 2);
+                if (parts.length == 2) {
+                    String key = parts[0].trim();
+                    String value = parts[1].trim();
+                    
+                    switch (key) {
+                        case "aws_access_key_id":
+                            credentials.put("access_key", value);
+                            logger.info("[Iceberg S3Tables] Loaded access key from file");
+                            break;
+                        case "aws_secret_access_key":
+                            credentials.put("secret_key", value);
+                            logger.info("[Iceberg S3Tables] Loaded secret key from file");
+                            break;
+                        case "aws_session_token":
+                            credentials.put("session_token", value);
+                            logger.info("[Iceberg S3Tables] Loaded session token from file");
+                            break;
+                        default:
+                            logger.debug("[Iceberg S3Tables] Ignoring unknown credential key: {}", key);
+                    }
+                }
+            }
+            
+            // Validate required credentials are present
+            if (!credentials.containsKey("access_key") || !credentials.containsKey("secret_key")) {
+                String errorMsg = String.format(
+                    "[Iceberg S3Tables] Missing required credentials in file: %s. " +
+                    "File must contain aws_access_key_id and aws_secret_access_key",
+                    filePath
+                );
+                logger.error(errorMsg);
+                throw new RuntimeException(errorMsg);
+            }
+            
+            // DEBUG: Print full credential values to check for hidden characters
+            logger.info("[DEBUG ICEBERG CREDS] Access Key: '{}'", credentials.get("access_key"));
+            logger.info("[DEBUG ICEBERG CREDS] Secret Key: '{}'", credentials.get("secret_key"));
+            if (credentials.containsKey("session_token")) {
+                logger.info("[DEBUG ICEBERG CREDS] Session Token: '{}'", credentials.get("session_token"));
+            }
+            logger.info("[DEBUG ICEBERG CREDS] Access Key Length: {}", credentials.get("access_key").length());
+            logger.info("[DEBUG ICEBERG CREDS] Secret Key Length: {}", credentials.get("secret_key").length());
+            if (credentials.containsKey("session_token")) {
+                logger.info("[DEBUG ICEBERG CREDS] Session Token Length: {}", credentials.get("session_token").length());
+            }
+            
+            logger.info("[Iceberg S3Tables] Successfully loaded {} credential(s) from: {}", 
+                       credentials.size(), filePath);
+        } catch (IOException e) {
+            String errorMsg = String.format("[Iceberg S3Tables] Failed to read credentials file: %s", filePath);
+            logger.error(errorMsg, e);
+            throw new RuntimeException(errorMsg, e);
+        }
+        
+        return credentials;
     }
 }
