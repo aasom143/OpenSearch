@@ -153,16 +153,39 @@ public class IcebergService {
         }
         logger.info("[Iceberg Plugin] Found {} files in Iceberg catalog", catalogFiles.size());
 
-        // 5. Compute diff
+        // DEBUG: Log ALL files to expose path comparison issue
+        logger.warn("====== DEBUGGING FILE COMPARISON (syncIndex) ======");
+        logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
+        logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
+        
+        logger.warn("[DEBUG] ALL activeFiles keys:");
+        activeFiles.keySet().forEach(key -> 
+            logger.warn("[DEBUG]   activeFile: {}", key)
+        );
+        
+        logger.warn("[DEBUG] ALL catalogFiles:");
+        catalogFiles.forEach(path -> 
+            logger.warn("[DEBUG]   catalogFile: {}", path)
+        );
+        logger.warn("====================================================");
+
+        // 5. Compute diff - compare destination paths to destination paths
+        // activeFiles keys are source paths; catalogFiles contains destination paths
+        // Transform source paths to destination format before comparison
         Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+        Set<String> activeFilesInDestFormat = new HashSet<>();
+
         for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-            if (!catalogFiles.contains(entry.getKey())) {
-                filesToAdd.put(entry.getKey(), entry.getValue());
+            String sourcePath = entry.getKey();
+            String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+            activeFilesInDestFormat.add(destPath);
+            if (!catalogFiles.contains(destPath)) {
+                filesToAdd.put(sourcePath, entry.getValue());
             }
         }
 
         Set<String> filesToRemove = new HashSet<>(catalogFiles);
-        filesToRemove.removeAll(activeFiles.keySet());  // Files in catalog but not in remote store
+        filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest: files in catalog but not in remote store
 
         int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -268,16 +291,39 @@ public class IcebergService {
                 }
             }
 
-            // Compute diff for this shard
+            // DEBUG: Log ALL files to expose path comparison issue
+            logger.warn("====== DEBUGGING FILE COMPARISON (syncShard {}) ======", shardId);
+            logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
+            logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
+            
+            logger.warn("[DEBUG] ALL activeFiles keys:");
+            activeFiles.keySet().forEach(key -> 
+                logger.warn("[DEBUG]   activeFile: {}", key)
+            );
+            
+            logger.warn("[DEBUG] ALL catalogFiles:");
+            catalogFiles.forEach(path -> 
+                logger.warn("[DEBUG]   catalogFile: {}", path)
+            );
+            logger.warn("=========================================================");
+
+            // Compute diff for this shard - compare destination paths to destination paths
+            // activeFiles keys are source paths; catalogFiles contains destination paths
+            // Transform source paths to destination format before comparison
             Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+            Set<String> activeFilesInDestFormat = new HashSet<>();
+
             for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-                if (!catalogFiles.contains(entry.getKey())) {
-                    filesToAdd.put(entry.getKey(), entry.getValue());
+                String sourcePath = entry.getKey();
+                String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+                activeFilesInDestFormat.add(destPath);
+                if (!catalogFiles.contains(destPath)) {
+                    filesToAdd.put(sourcePath, entry.getValue());
                 }
             }
 
             Set<String> filesToRemove = new HashSet<>(catalogFiles);
-            filesToRemove.removeAll(activeFiles.keySet());
+            filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest
 
             int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -510,6 +556,12 @@ public class IcebergService {
                 String relativePath = extractRelativePath(sourceS3Path);
                 String destinationPath = table.location() + "/" + relativePath;
 
+                // DEBUG: Log destination path construction
+                logger.warn("[DEBUG DESTINATION] source: {}", sourceS3Path);
+                logger.warn("[DEBUG DESTINATION] table.location(): {}", table.location());
+                logger.warn("[DEBUG DESTINATION] relativePath: {}", relativePath);
+                logger.warn("[DEBUG DESTINATION] final destinationPath: {}", destinationPath);
+
                 logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourceS3Path, destinationPath);
 
                 // Copy file using separate credential contexts
@@ -619,6 +671,10 @@ public class IcebergService {
 
     /**
      * Copy file from source to destination using separate FileIO instances.
+     * S3 Tables enforces conditional write semantics - existing files cannot be overwritten
+     * and will return 412 PreconditionFailed. We defensively check if the file exists first
+     * to avoid unnecessary 412 errors if the path comparison fix ever misses a case.
+     *
      * @param sourceFileIO FileIO with service account credentials for reading
      * @param destFileIO FileIO with customer role credentials for writing
      */
@@ -627,6 +683,15 @@ public class IcebergService {
                            String sourcePath, String destPath) throws IOException {
         try {
             logger.info("[Iceberg Plugin] Copying: {} -> {}", sourcePath, destPath);
+
+            // Safeguard: S3 Tables enforces conditional writes and returns 412 if file already exists.
+            // The diff logic should prevent re-copying existing files, but as a safety net we skip
+            // copying if the destination file already exists (has a valid length).
+            org.apache.iceberg.io.InputFile destCheck = destFileIO.newInputFile(destPath);
+            if (destCheck.exists()) {
+                logger.info("[Iceberg Plugin] Destination file already exists, skipping copy: {}", destPath);
+                return;
+            }
 
             org.apache.iceberg.io.InputFile inputFile = sourceFileIO.newInputFile(sourcePath);
             org.apache.iceberg.io.OutputFile outputFile = destFileIO.newOutputFile(destPath);
