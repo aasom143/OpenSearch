@@ -59,14 +59,11 @@ public class S3TablesIcebergManager {
         // NOTE: This is called during static initialization, settings not available yet
         // We'll initialize catalog lazily when first accessed with proper settings
         // Read from Settings (no defaults - must be configured)
-        //this.bucketArn = settings.get("iceberg.s3tables.bucket.arn");
-        //this.region = settings.get("iceberg.aws.region");
-        this.region = "us-east-1";
-        this.bucketArn = "arn:aws:iam::691585341994:role/opensearch-snapshot-role";
 
         this.credentialsFilePath = settings.get("iceberg.credentials.file", "/Users/guptasom/creds-iceberg/credentials.txt");
         this.namespaceName = settings.get("datafusion.iceberg.s3tables.namespace", "opensearch");
-
+        this.bucketArn = settings.get("iceberg.s3tables.bucket.arn");
+        this.region = settings.get("iceberg.aws.region");
         if (this.bucketArn == null || this.region == null) {
             throw new IllegalArgumentException("Missing required settings: iceberg.s3tables.bucket.arn and iceberg.aws.region");
         }

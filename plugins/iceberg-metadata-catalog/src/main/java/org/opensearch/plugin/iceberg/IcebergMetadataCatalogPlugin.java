@@ -68,7 +68,7 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             environment.settings()
         );
         this.clusterService = clusterService;
-        
+
         return Collections.singletonList(icebergService);
     }
 
@@ -86,7 +86,7 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             new RestSyncIcebergAction(clusterService)
         );
     }
-    
+
     @Override
     public List<ActionHandler<?, ?>> getActions() {
         return Collections.singletonList(
@@ -108,6 +108,7 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             IcebergService.S3TABLES_BUCKET_SETTING,
             IcebergService.S3TABLES_REGION_SETTING,
             IcebergService.S3TABLES_NAMESPACE_SETTING
+            IcebergService.CREDENTIALS_FILE_PATH_SETTING
         );
     }
 }

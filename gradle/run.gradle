@@ -63,20 +63,8 @@ testClusters {
       println "WARNING: ~/.aws/credentials not found"
     }
     
-    // AWS credentials as environment variables for Iceberg AWS SDK
-    if (awsCredentialsFile.exists()) {
-      def credentials = awsCredentialsFile.text
-      def accessKey = (credentials =~ /aws_access_key_id\s*=\s*(.+)/)[0][1].trim()
-      def secretKey = (credentials =~ /aws_secret_access_key\s*=\s*(.+)/)[0][1].trim()
-      environment 'AWS_ACCESS_KEY_ID', accessKey
-      environment 'AWS_SECRET_ACCESS_KEY', secretKey
-      
-      def sessionTokenMatch = (credentials =~ /aws_session_token\s*=\s*(.+)/)
-      if (sessionTokenMatch) {
-        def sessionToken = sessionTokenMatch[0][1].trim()
-        environment 'AWS_SESSION_TOKEN', sessionToken
-      }
-    }
+    // AWS credentials for Iceberg are now loaded from iceberg.credentials.file setting
+    // Not using environment variables to avoid conflicts with ~/.aws/credentials
     
     // AWS region
     environment 'AWS_REGION', 'us-west-2'
@@ -85,6 +73,7 @@ testClusters {
     setting 'iceberg.s3tables.bucket.arn', 'arn:aws:s3tables:us-west-2:339712837375:bucket/srirasac-test'
     setting 'iceberg.aws.region', 'us-west-2'
     setting 'iceberg.catalog.type', 's3tables'
+    setting 'iceberg.credentials.file', '/Users/srirasac/iceberg-creds/credentials.txt'
     
     // Local filesystem remote store configuration
     setting 'path.repo', "${buildDir}/testclusters/runTask-remote-store"
