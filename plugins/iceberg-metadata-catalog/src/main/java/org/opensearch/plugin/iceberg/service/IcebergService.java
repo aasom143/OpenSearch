@@ -67,6 +67,19 @@ public class IcebergService {
         Setting.Property.NodeScope
     );
 
+    /**
+     * Full path to the Iceberg credentials file.
+     * File should contain credentials in format:
+     * aws_access_key_id=[access key]
+     * aws_secret_access_key=[secret access key]
+     * aws_session_token=[session token]
+     */
+    public static final Setting<String> CREDENTIALS_FILE_PATH_SETTING = Setting.simpleString(
+        "iceberg.credentials.file",
+        "/home/ec2-user/creds-iceberg/credentials.txt",
+        Setting.Property.NodeScope
+    );
+
     private final ClusterService clusterService;
     private final Supplier<RepositoriesService> repositoriesServiceSupplier;
     private final ThreadPool threadPool;
@@ -140,16 +153,39 @@ public class IcebergService {
         }
         logger.info("[Iceberg Plugin] Found {} files in Iceberg catalog", catalogFiles.size());
 
-        // 5. Compute diff
+        // DEBUG: Log ALL files to expose path comparison issue
+        logger.warn("====== DEBUGGING FILE COMPARISON (syncIndex) ======");
+        logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
+        logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
+        
+        logger.warn("[DEBUG] ALL activeFiles keys:");
+        activeFiles.keySet().forEach(key -> 
+            logger.warn("[DEBUG]   activeFile: {}", key)
+        );
+        
+        logger.warn("[DEBUG] ALL catalogFiles:");
+        catalogFiles.forEach(path -> 
+            logger.warn("[DEBUG]   catalogFile: {}", path)
+        );
+        logger.warn("====================================================");
+
+        // 5. Compute diff - compare destination paths to destination paths
+        // activeFiles keys are source paths; catalogFiles contains destination paths
+        // Transform source paths to destination format before comparison
         Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+        Set<String> activeFilesInDestFormat = new HashSet<>();
+
         for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-            if (!catalogFiles.contains(entry.getKey())) {
-                filesToAdd.put(entry.getKey(), entry.getValue());
+            String sourcePath = entry.getKey();
+            String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+            activeFilesInDestFormat.add(destPath);
+            if (!catalogFiles.contains(destPath)) {
+                filesToAdd.put(sourcePath, entry.getValue());
             }
         }
 
         Set<String> filesToRemove = new HashSet<>(catalogFiles);
-        filesToRemove.removeAll(activeFiles.keySet());  // Files in catalog but not in remote store
+        filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest: files in catalog but not in remote store
 
         int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -244,27 +280,52 @@ public class IcebergService {
                 throw new IllegalStateException("Failed to get Iceberg table for: " + indexName);
             }
 
-            // Get current files in catalog for comparison (classloader already set!)
+            // Get current files in catalog for THIS shard only (filter by shard_id partition)
             Set<String> catalogFiles = new HashSet<>();
             if (table.currentSnapshot() != null) {
                 try (org.apache.iceberg.io.CloseableIterable<org.apache.iceberg.FileScanTask> tasks =
-                        table.newScan().planFiles()) {
+                        table.newScan()
+                            .filter(org.apache.iceberg.expressions.Expressions.equal("shard_id", shardNum))
+                            .planFiles()) {
                     for (org.apache.iceberg.FileScanTask task : tasks) {
                         catalogFiles.add(task.file().path().toString());
                     }
                 }
             }
 
-            // Compute diff for this shard
+            // DEBUG: Log ALL files to expose path comparison issue
+            logger.warn("====== DEBUGGING FILE COMPARISON (syncShard {}) ======", shardId);
+            logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
+            logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
+            
+            logger.warn("[DEBUG] ALL activeFiles keys:");
+            activeFiles.keySet().forEach(key -> 
+                logger.warn("[DEBUG]   activeFile: {}", key)
+            );
+            
+            logger.warn("[DEBUG] ALL catalogFiles:");
+            catalogFiles.forEach(path -> 
+                logger.warn("[DEBUG]   catalogFile: {}", path)
+            );
+            logger.warn("=========================================================");
+
+            // Compute diff for this shard - compare destination paths to destination paths
+            // activeFiles keys are source paths; catalogFiles contains destination paths
+            // Transform source paths to destination format before comparison
             Map<String, UploadedSegmentMetadata> filesToAdd = new HashMap<>();
+            Set<String> activeFilesInDestFormat = new HashSet<>();
+
             for (Map.Entry<String, UploadedSegmentMetadata> entry : activeFiles.entrySet()) {
-                if (!catalogFiles.contains(entry.getKey())) {
-                    filesToAdd.put(entry.getKey(), entry.getValue());
+                String sourcePath = entry.getKey();
+                String destPath = table.location() + "/" + extractRelativePath(sourcePath);
+                activeFilesInDestFormat.add(destPath);
+                if (!catalogFiles.contains(destPath)) {
+                    filesToAdd.put(sourcePath, entry.getValue());
                 }
             }
 
             Set<String> filesToRemove = new HashSet<>(catalogFiles);
-            filesToRemove.removeAll(activeFiles.keySet());
+            filesToRemove.removeAll(activeFilesInDestFormat);  // dest vs dest
 
             int filesKept = activeFiles.size() - filesToAdd.size();
 
@@ -489,6 +550,10 @@ public class IcebergService {
             // Use table's FileIO which has CUSTOMER ROLE credentials for writing to warehouse
             org.apache.iceberg.io.FileIO destFileIO = table.io();
 
+            // Batch all files into a single commit to minimize conflicts
+            AppendFiles batchAppend = table.newAppend();
+            int filesCopied = 0;
+
             for (Map.Entry<String, UploadedSegmentMetadata> entry : filesToAdd.entrySet()) {
                 String sourceS3Path = entry.getKey();
                 UploadedSegmentMetadata metadata = entry.getValue();
@@ -496,6 +561,12 @@ public class IcebergService {
                 PartitionValues partitionValues = extractPartitionValues(sourceS3Path);
                 String relativePath = extractRelativePath(sourceS3Path);
                 String destinationPath = table.location() + "/" + relativePath;
+
+                // DEBUG: Log destination path construction
+                logger.warn("[DEBUG DESTINATION] source: {}", sourceS3Path);
+                logger.warn("[DEBUG DESTINATION] table.location(): {}", table.location());
+                logger.warn("[DEBUG DESTINATION] relativePath: {}", relativePath);
+                logger.warn("[DEBUG DESTINATION] final destinationPath: {}", destinationPath);
 
                 logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourceS3Path, destinationPath);
 
@@ -521,8 +592,16 @@ public class IcebergService {
                     builder.withPartitionPath(partitionPath);
                 }
 
-                table.newAppend().appendFile(builder.build()).commit();
-                logger.info("[Iceberg Plugin] File copied and registered successfully");
+                // Accumulate files in batch instead of committing per file
+                batchAppend.appendFile(builder.build());
+                filesCopied++;
+                logger.info("[Iceberg Plugin] File copied and staged for batch commit");
+            }
+
+            // Single commit for all files - drastically reduces commit conflicts
+            if (filesCopied > 0) {
+                batchAppend.commit();
+                logger.info("[Iceberg Plugin] Batch committed {} files successfully", filesCopied);
             }
         } catch (Exception e) {
             logger.error("[Iceberg Plugin] Failed to copy files: {}", e.getMessage(), e);
@@ -606,6 +685,10 @@ public class IcebergService {
 
     /**
      * Copy file from source to destination using separate FileIO instances.
+     * S3 Tables enforces conditional write semantics - existing files cannot be overwritten
+     * and will return 412 PreconditionFailed. We defensively check if the file exists first
+     * to avoid unnecessary 412 errors if the path comparison fix ever misses a case.
+     *
      * @param sourceFileIO FileIO with service account credentials for reading
      * @param destFileIO FileIO with customer role credentials for writing
      */
@@ -614,6 +697,15 @@ public class IcebergService {
                            String sourcePath, String destPath) throws IOException {
         try {
             logger.info("[Iceberg Plugin] Copying: {} -> {}", sourcePath, destPath);
+
+            // Safeguard: S3 Tables enforces conditional writes and returns 412 if file already exists.
+            // The diff logic should prevent re-copying existing files, but as a safety net we skip
+            // copying if the destination file already exists (has a valid length).
+            org.apache.iceberg.io.InputFile destCheck = destFileIO.newInputFile(destPath);
+            if (destCheck.exists()) {
+                logger.info("[Iceberg Plugin] Destination file already exists, skipping copy: {}", destPath);
+                return;
+            }
 
             org.apache.iceberg.io.InputFile inputFile = sourceFileIO.newInputFile(sourcePath);
             org.apache.iceberg.io.OutputFile outputFile = destFileIO.newOutputFile(destPath);
@@ -736,9 +828,35 @@ public class IcebergService {
 
         RESTCatalog customerCatalog = null;
         try {
+            // Get file credentials to use for STS authentication
+            Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
+            
+            // Build credentials provider from file
+            software.amazon.awssdk.auth.credentials.AwsCredentialsProvider credentialsProvider;
+            if (fileCreds.containsKey("access_key") && fileCreds.containsKey("secret_key")) {
+                software.amazon.awssdk.auth.credentials.AwsCredentials credentials;
+                if (fileCreds.containsKey("session_token")) {
+                    credentials = software.amazon.awssdk.auth.credentials.AwsSessionCredentials.create(
+                        fileCreds.get("access_key"),
+                        fileCreds.get("secret_key"),
+                        fileCreds.get("session_token")
+                    );
+                } else {
+                    credentials = software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create(
+                        fileCreds.get("access_key"),
+                        fileCreds.get("secret_key")
+                    );
+                }
+                credentialsProvider = software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(credentials);
+                logger.info("[Iceberg S3Tables] Using file credentials for STS client");
+            } else {
+                throw new RuntimeException("File credentials not available for STS client");
+            }
+            
             // Check if we're already using the target role
             software.amazon.awssdk.services.sts.StsClient stsClient = software.amazon.awssdk.services.sts.StsClient.builder()
                 .region(software.amazon.awssdk.regions.Region.of(region))
+                .credentialsProvider(credentialsProvider)
                 .build();
 
             software.amazon.awssdk.services.sts.model.GetCallerIdentityResponse callerIdentity =
@@ -875,22 +993,42 @@ public class IcebergService {
     }
 
     /**
-     * Create source FileIO with service account credentials.
-     * Must be called BEFORE role assumption to capture service account credentials.
+     * Create source FileIO with credentials from file.
      */
     private org.apache.iceberg.aws.s3.S3FileIO createSourceFileIO() {
         String sourceRegion = getSourceBucketRegion();
         logger.info("[Iceberg Plugin] Creating source FileIO with region: {}", sourceRegion);
         
-        // Capture current credentials BEFORE they get overwritten by role assumption
-        software.amazon.awssdk.auth.credentials.AwsCredentialsProvider credentialsProvider =
-            software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider.create();
-        software.amazon.awssdk.auth.credentials.AwsCredentials credentials = credentialsProvider.resolveCredentials();
+        // Get credentials from file (loaded by S3TablesIcebergManager)
+        Map<String, String> fileCreds = s3TablesManager.getFileCredentials();
         
-        logger.info("[Iceberg Plugin] Captured service account credentials: accessKeyId={}",
-                   credentials.accessKeyId().substring(0, 4) + "...");
+        if (!fileCreds.containsKey("access_key") || !fileCreds.containsKey("secret_key")) {
+            throw new RuntimeException("Iceberg credentials not found in file. " +
+                "Please ensure credentials file exists at configured path with required keys: " +
+                "aws_access_key_id, aws_secret_access_key");
+        }
         
-        // Create S3 client with captured credentials
+        // Create credentials from file
+        software.amazon.awssdk.auth.credentials.AwsCredentials credentials;
+        if (fileCreds.containsKey("session_token")) {
+            credentials = software.amazon.awssdk.auth.credentials.AwsSessionCredentials.create(
+                fileCreds.get("access_key"),
+                fileCreds.get("secret_key"),
+                fileCreds.get("session_token")
+            );
+            logger.info("[Iceberg Plugin] Using session credentials from file");
+        } else {
+            credentials = software.amazon.awssdk.auth.credentials.AwsBasicCredentials.create(
+                fileCreds.get("access_key"),
+                fileCreds.get("secret_key")
+            );
+            logger.info("[Iceberg Plugin] Using basic credentials from file");
+        }
+        
+        logger.info("[Iceberg Plugin] Using credentials with accessKeyId: {}...",
+                   credentials.accessKeyId().substring(0, Math.min(4, credentials.accessKeyId().length())));
+        
+        // Create S3 client with file credentials
         software.amazon.awssdk.services.s3.S3Client s3Client = software.amazon.awssdk.services.s3.S3Client.builder()
             .region(software.amazon.awssdk.regions.Region.of(sourceRegion))
             .credentialsProvider(software.amazon.awssdk.auth.credentials.StaticCredentialsProvider.create(credentials))

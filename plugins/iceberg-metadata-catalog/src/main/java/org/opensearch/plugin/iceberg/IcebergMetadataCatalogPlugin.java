@@ -100,7 +100,8 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
         return List.of(
             IcebergService.CATALOG_TYPE_SETTING,
             IcebergService.S3_TABLES_BUCKET_ARN_SETTING,
-            IcebergService.AWS_REGION_SETTING
+            IcebergService.AWS_REGION_SETTING,
+            IcebergService.CREDENTIALS_FILE_PATH_SETTING
         );
     }
 }
