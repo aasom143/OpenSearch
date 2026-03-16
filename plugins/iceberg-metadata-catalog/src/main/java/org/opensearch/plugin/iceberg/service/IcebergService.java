@@ -280,11 +280,13 @@ public class IcebergService {
                 throw new IllegalStateException("Failed to get Iceberg table for: " + indexName);
             }
 
-            // Get current files in catalog for comparison (classloader already set!)
+            // Get current files in catalog for THIS shard only (filter by shard_id partition)
             Set<String> catalogFiles = new HashSet<>();
             if (table.currentSnapshot() != null) {
                 try (org.apache.iceberg.io.CloseableIterable<org.apache.iceberg.FileScanTask> tasks =
-                        table.newScan().planFiles()) {
+                        table.newScan()
+                            .filter(org.apache.iceberg.expressions.Expressions.equal("shard_id", shardNum))
+                            .planFiles()) {
                     for (org.apache.iceberg.FileScanTask task : tasks) {
                         catalogFiles.add(task.file().path().toString());
                     }
@@ -548,6 +550,10 @@ public class IcebergService {
             // Use table's FileIO which has CUSTOMER ROLE credentials for writing to warehouse
             org.apache.iceberg.io.FileIO destFileIO = table.io();
 
+            // Batch all files into a single commit to minimize conflicts
+            AppendFiles batchAppend = table.newAppend();
+            int filesCopied = 0;
+
             for (Map.Entry<String, UploadedSegmentMetadata> entry : filesToAdd.entrySet()) {
                 String sourceS3Path = entry.getKey();
                 UploadedSegmentMetadata metadata = entry.getValue();
@@ -586,8 +592,16 @@ public class IcebergService {
                     builder.withPartitionPath(partitionPath);
                 }
 
-                table.newAppend().appendFile(builder.build()).commit();
-                logger.info("[Iceberg Plugin] File copied and registered successfully");
+                // Accumulate files in batch instead of committing per file
+                batchAppend.appendFile(builder.build());
+                filesCopied++;
+                logger.info("[Iceberg Plugin] File copied and staged for batch commit");
+            }
+
+            // Single commit for all files - drastically reduces commit conflicts
+            if (filesCopied > 0) {
+                batchAppend.commit();
+                logger.info("[Iceberg Plugin] Batch committed {} files successfully", filesCopied);
             }
         } catch (Exception e) {
             logger.error("[Iceberg Plugin] Failed to copy files: {}", e.getMessage(), e);
