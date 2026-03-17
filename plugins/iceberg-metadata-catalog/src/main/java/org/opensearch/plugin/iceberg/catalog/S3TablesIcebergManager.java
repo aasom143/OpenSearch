@@ -47,11 +47,7 @@ public class S3TablesIcebergManager {
     private final Map<String, String> fileCredentials;
 
     public S3TablesIcebergManager(org.opensearch.common.settings.Settings settings) {
-        System.out.println("[Iceberg S3Tables] ===== CONSTRUCTOR CALLED =====");
-        System.out.println("[Iceberg S3Tables] Creating RESTCatalog instance");
         this.catalog = new RESTCatalog();
-        System.out.println("[Iceberg S3Tables] RESTCatalog instance created");
-        System.out.println("[Iceberg S3Tables] Creating properties map");
 
         Map<String, String> properties = new HashMap<>();
 
@@ -75,9 +71,7 @@ public class S3TablesIcebergManager {
 
         String s3TablesBucketArn = this.bucketArn;
 
-        System.out.println("[Iceberg S3Tables] Got bucket ARN: " + s3TablesBucketArn);
 
-        System.out.println("[Iceberg S3Tables] Extracted region: " + region);
 
         // S3 Tables REST endpoint - CRITICAL: Must include /iceberg suffix
         String s3TablesEndpoint = String.format("https://s3tables.%s.amazonaws.com/iceberg", region);

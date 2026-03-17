@@ -47,7 +47,6 @@ mod partial_agg_optimizer;
 mod query_executor;
 mod project_row_id_analyzer;
 pub mod logger;
-pub mod iceberg_integration;
 pub mod s3_partition_downloader;
 
 // Import logger macros from shared crate
@@ -154,7 +153,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_initTokio
     });
 
     TOKIO_RUNTIME_MANAGER.get_or_init(|| {
-        log_info!("[FLOW] Runtime manager initialized with {} CPU threads", cpu_threads);
+        log_info!("Runtime manager initialized with {} CPU threads", cpu_threads);
         Arc::new(RuntimeManager::new(cpu_threads as usize))
     });
 }
@@ -252,7 +251,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createGlo
     spill_dir: JString,
     spill_limit: jlong
 ) -> jlong {
-    log_info!("[FLOW] createGlobalRuntime: memoryLimit={}, spillLimit={}", memory_pool_limit, spill_limit);
     let spill_dir: String = match env.get_string(&spill_dir) {
         Ok(path) => path.into(),
         Err(e) => {
@@ -301,7 +299,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createGlo
     };
 
     let ptr = Box::into_raw(Box::new(runtime)) as jlong;
-    log_info!("[FLOW] Global runtime created: ptr={}", ptr);
     ptr
 }
 
@@ -365,7 +362,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createDat
     table_path: JString,
     files: JObjectArray,
 ) -> jlong {
-    log_info!("[FLOW] createDatafusionReader called");
     let table_path: String = match env.get_string(&table_path) {
         Ok(path) => path.into(),
         Err(e) => {
@@ -388,7 +384,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createDat
         }
     };
 
-    log_info!("[FLOW] Creating reader: tablePath={}, fileCount={}, files={:?}", table_path, files.len(), files);
     // TODO: This works since files are named similarly ending with incremental generation count, preferably move this up to DatafusionReaderManager to keep file order
     files.sort();
     let files_metadata = match create_file_meta_from_filenames(&table_path, files.clone()) {
@@ -413,18 +408,9 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_createDat
         }
     };
 
-    log_info!("[FLOW] File metadata created: count={}", files_metadata.len());
-    for (idx, meta) in files_metadata.iter().enumerate() {
-        let total_rows: i64 = meta.row_group_row_counts().iter().sum();
-        log_info!("[FLOW]   File[{}]: path={}, rowBase={}, totalRows={}, rowGroups={:?}",
-            idx, meta.object_meta().location, *meta.row_base(), total_rows, *meta.row_group_row_counts());
-    }
-
     let shard_view = ShardView::new(table_url, files_metadata);
 
-    let ptr = Box::into_raw(Box::new(shard_view)) as jlong;
-    log_info!("[FLOW] DatafusionReader created: ptr={}, fileCount={}", ptr, files.len());
-    ptr
+    Box::into_raw(Box::new(shard_view)) as jlong
 }
 
 #[no_mangle]
@@ -536,7 +522,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     runtime_ptr: jlong,
     listener: JObject,
 ) {
-    log_info!("[FLOW] executeQueryPhaseAsync: shardViewPtr={}, runtimePtr={}", shard_view_ptr, runtime_ptr);
     let manager = match TOKIO_RUNTIME_MANAGER.get() {
         Some(m) => m,
         None => {
@@ -558,7 +543,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
         }
     };
 
-    log_info!("[FLOW] Query phase: tableName={}, explainEnabled={}", table_name, is_query_plan_explain_enabled != 0);
     let is_query_plan_explain_enabled: bool = is_query_plan_explain_enabled !=0;
 
     let plan_bytes_obj = unsafe { JByteArray::from_raw(substrait_bytes) };
@@ -586,74 +570,14 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     let cpu_executor = manager.cpu_executor();
 
     // Note: shard_view_ptr is still passed from Java but will be ignored
-    // We're using hardcoded Iceberg S3 path instead
     let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
 
     io_runtime.block_on(async move {
 
-        // HARDCODED: Using Iceberg metadata from S3 instead of local file listings
-        // TODO: Make this configurable via Java parameters
-        // let hardcoded_s3_metadata_path = "s3://guptasom-iceberg-test/os-warehouse/opensearch/index-guptasom-1/metadata/custom_metadata.json".to_string();
-
-        // HARDCODED: S3 options with region
-        // NOTE: Due to iceberg-datafusion limitation, these options are NOT actually used
-        // We're setting environment variables programmatically as a workaround
         let mut s3_options = HashMap::new();
         s3_options.insert("aws.region".to_string(), "us-west-2".to_string());
 
-        // WORKAROUND: Set environment variables programmatically
-        // This ensures the region is available even if not set externally
         std::env::set_var("AWS_REGION", "us-west-2");
-
-        // log_info!("[FLOW] Using hardcoded Iceberg S3 path: {}", hardcoded_s3_metadata_path);
-        log_info!("[FLOW] Set AWS_REGION environment variable programmatically: us-west-2");
-        log_info!("[FLOW] Note: ShardView parameters are being ignored for now");
-
-//         let result = query_executor::execute_query_with_iceberg_from_s3(
-//             hardcoded_s3_metadata_path,
-//             table_name,
-//             plan_bytes_vec,
-//             is_query_plan_explain_enabled,
-//             runtime,
-//             cpu_executor,
-//             Some(s3_options),  // Pass region configuration (currently not used by iceberg-datafusion)
-//         ).await;
-
-//         // Local files (existing approach)
-//         execute_query_with_cross_rt_stream(
-//             TableSource::LocalFiles { table_path, files_meta },
-//             table_name,
-//             plan_bytes,
-//             false,
-//             runtime,
-//             executor,
-//         ).await?;
-        // Iceberg S3 metadata file execution
-//         let result = execute_query_with_cross_rt_stream(
-//                 TableSource::IcebergS3 {
-//                     s3_metadata_path: hardcoded_s3_metadata_path,
-//                     s3_options: Some(s3_options),
-//                 },
-//                 table_name,
-//                 plan_bytes_vec,
-//                 is_query_plan_explain_enabled,
-//                 runtime,
-//                 cpu_executor,
-//             ).await;
-
-        // Iceberg from Glue (your use case!)
-//         let result = execute_query_with_cross_rt_stream(
-//             TableSource::IcebergGlue {
-//                 database_name: "opensearch".to_string(),
-//                 warehouse_location: "s3://guptasom-iceberg-test/os-warehouse".to_string(),
-//                 glue_options: None,
-//             },
-//             table_name,
-//             plan_bytes_vec,
-//             false,
-//             runtime,
-//             cpu_executor,
-//         ).await;
 
         // Extract shard_id from table_name
         // Expected format: {index_name}_{shard_id} where shard_id is 0, 1, 2, etc.
@@ -661,8 +585,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
             .next()
             .and_then(|s| s.parse::<u32>().ok())
             .map(|id| id.to_string());
-
-        log_info!("[FLOW] Extracted shard_id from table_name '{}': {:?}", table_name, shard_id);
 
         let result = execute_query_with_cross_rt_stream(
             TableSource::IcebergS3Tables {
@@ -680,7 +602,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
 
         match result {
             Ok(stream_ptr) => {
-                log_info!("[FLOW] Query execution completed: streamPtr={}", stream_ptr);
                 with_jni_env(|env| {
                     set_action_listener_ok_global(env, &listener_ref, stream_ptr);
                 });
@@ -726,7 +647,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_fetchSegm
 
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let files_meta = shard_view.files_metadata();
-    log_info!("[FLOW] fetchSegmentStats: fileCount={}", files_meta.len());
 
     io_runtime.block_on(async move {
         let file_stats = util::fetch_segment_statistics(files_meta).await;
@@ -755,7 +675,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamNex
     stream: jlong,
     listener: JObject,
 ) {
-    log_info!("[FLOW] streamNext called: streamPtr={}", stream);
     let manager = match TOKIO_RUNTIME_MANAGER.get() {
         Some(m) => m,
         None => {
@@ -864,7 +783,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
     runtime_ptr: jlong,
     callback: JObject,
 ) -> jlong {
-    log_info!("[FLOW] executeFetchPhase: shardViewPtr={}, runtimePtr={}", shard_view_ptr, runtime_ptr);
     let shard_view = unsafe { &*(shard_view_ptr as *const ShardView) };
     let runtime = unsafe { &*(runtime_ptr as *const DataFusionRuntime) };
 
@@ -900,7 +818,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeFe
     // Copy Java array into Rust buffer
     match env.get_long_array_region(values, 0, &mut row_ids[..]) {
         Ok(_) => {
-            log_info!("[FLOW] Fetch phase: rowIdCount={}", row_ids.len());
+            log_debug!("Received array: {:?}", row_ids);
         }
         Err(e) => {
             let _ = env.throw_new(
@@ -956,38 +874,7 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_streamClo
 }
 
 /// JNI function to execute query with downloaded S3 partition files.
-/// Execute a query with S3 partition direct access (no download).
-///
-/// This function creates a ListingTable that reads directly from S3 partition files.
-/// DataFusion's object store integration handles S3 access transparently.
-///
-/// # Parameters
-/// * `local_dir` - UNUSED (kept for API compatibility)
-/// * `table_bucket_arn` - S3 Tables bucket ARN
-/// * `database_name` - Database/namespace name
-/// * `table_name` - Table name (also used for registration in DataFusion context)
-/// * `partition_column` - Partition column name (e.g., "shard_id")
-/// * `partition_value` - Partition value to filter (e.g., "0")
-/// * `substrait_bytes` - Serialized Substrait query plan
-/// * `is_query_plan_explain_enabled` - Enable query plan explanation
-/// * `runtime_ptr` - Pointer to DataFusion runtime
-/// * `listener` - Java ActionListener for async result callback
-#[no_mangle]
-/// JNI function to execute query with downloaded S3 partition files.
 /// Downloads partition files from S3 Tables to local directory, then queries using ListingTable.
-///
-/// # Parameters
-/// * `local_dir` - Local directory to download files to
-/// * `table_bucket_arn` - S3 Tables bucket ARN
-/// * `database_name` - Database/namespace name
-/// * `table_name` - Table name (also used for registration in DataFusion context)
-/// * `partition_column` - Partition column name (e.g., "shard_id")
-/// * `partition_value` - Partition value to filter (e.g., "0")
-/// * `s3_options` - Java Map containing S3 credentials (access key, secret key, session token, region)
-/// * `substrait_bytes` - Serialized Substrait query plan
-/// * `is_query_plan_explain_enabled` - Enable query plan explanation
-/// * `runtime_ptr` - Pointer to DataFusion runtime
-/// * `listener` - Java ActionListener for async result callback
 #[no_mangle]
 pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQueryWithDownloadedPartitionAsync(
     mut env: JNIEnv,
@@ -1004,8 +891,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
     runtime_ptr: jlong,
     listener: JObject,
 ) {
-    log_info!("[FLOW] executeQueryWithDownloadedPartitionAsync: runtimePtr={}", runtime_ptr);
-
     let manager = match TOKIO_RUNTIME_MANAGER.get() {
         Some(m) => m,
         None => {
@@ -1077,11 +962,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
         }
     };
 
-    log_info!(
-        "[FLOW] Downloaded partition query: table={}.{}, partition={}={}, local_dir={}",
-        database_name, table_name, partition_column, partition_value, local_dir
-    );
-
     // Extract s3Options from Java Map if provided
     let mut s3_options = HashMap::new();
     if !s3_options_map.is_null() {
@@ -1093,8 +973,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
             let value_str: String = env.get_string(&JString::from(value)).expect("Failed to get value").into();
             s3_options.insert(key_str, value_str);
         }
-
-        log_info!("[FLOW] Received {} s3Options from Java", s3_options.len());
     }
 
     let is_query_plan_explain_enabled: bool = is_query_plan_explain_enabled != 0;
@@ -1143,8 +1021,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
 
         match download_result {
             Ok(files) => {
-                log_info!("[FLOW] Downloaded {} files to {}", files.len(), local_dir);
-
                 // Now execute query with downloaded files
                 let result = execute_query_with_cross_rt_stream(
                     TableSource::DownloadedPartition {
@@ -1159,7 +1035,6 @@ pub extern "system" fn Java_org_opensearch_datafusion_jni_NativeBridge_executeQu
 
                 match result {
                     Ok(stream_ptr) => {
-                        log_info!("[FLOW] Downloaded partition query execution completed: streamPtr={}", stream_ptr);
                         with_jni_env(|env| {
                             set_action_listener_ok_global(env, &listener_ref, stream_ptr);
                         });

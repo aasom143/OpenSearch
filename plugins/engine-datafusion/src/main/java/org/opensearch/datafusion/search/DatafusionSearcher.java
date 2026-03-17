@@ -42,7 +42,6 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public long search(DatafusionQuery datafusionQuery, Long runtimePtr) {
-        logger.info("[FLOW] DatafusionSearcher.search (fetch phase): isFetchPhase={}", datafusionQuery.isFetchPhase());
         if (datafusionQuery.isFetchPhase()) {
             long[] row_ids = datafusionQuery.getQueryPhaseRowIds()
                 .stream()
@@ -51,7 +50,6 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             String[] includeFields = Objects.isNull(datafusionQuery.getIncludeFields()) ? new String[]{} : datafusionQuery.getIncludeFields().toArray(String[]::new);
             String[] excludeFields = Objects.isNull(datafusionQuery.getExcludeFields()) ? new String[]{} : datafusionQuery.getExcludeFields().toArray(String[]::new);
 
-            logger.info("[FLOW] Calling JNI executeFetchPhase: rowIdCount={}", row_ids.length);
             return NativeBridge.executeFetchPhase(reader.getReaderPtr(), row_ids, includeFields, excludeFields, runtimePtr);
         }
         throw new RuntimeException("Can be only called for fetch phase");
@@ -59,14 +57,9 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
     @Override
     public CompletableFuture<Long> searchAsync(DatafusionQuery datafusionQuery, Long runtimePtr) {
-        logger.info("[FLOW] DatafusionSearcher.searchAsync (query phase): indexName={}", datafusionQuery.getIndexName());
         
         // Check if we should use downloaded partition approach
         if (datafusionQuery.useDownloadedPartition()) {
-            logger.info("[FLOW] Using downloaded partition approach: localDir={}, partition={}={}",
-                datafusionQuery.getLocalDownloadDir(),
-                datafusionQuery.getPartitionColumn(),
-                datafusionQuery.getPartitionValue());
             
             return searchAsyncWithDownloadedPartition(
                 datafusionQuery.getLocalDownloadDir(),
@@ -87,7 +80,6 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
         NativeBridge.executeQueryPhaseAsync(reader.getReaderPtr(), datafusionQuery.getIndexName(), datafusionQuery.getSubstraitBytes(), datafusionQuery.getQueryPlanExplainEnabled(), runtimePtr, new ActionListener<Long>() {
             @Override
             public void onResponse(Long streamPointer) {
-                logger.info("[FLOW] Query phase async response: streamPointer={}", streamPointer);
                 if (streamPointer == 0) {
                     result.complete(0L);
                 } else {
@@ -97,7 +89,6 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
 
             @Override
             public void onFailure(Exception e) {
-                logger.error("[FLOW] Query phase async failure", e);
                 result.completeExceptionally(e);
             }
         });
@@ -132,27 +123,13 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
         boolean isQueryPlanExplainEnabled,
         Long runtimePtr
     ) {
-        logger.info("[TRACE] DatafusionSearcher.searchAsyncWithDownloadedPartition() called");
-        logger.info("[TRACE] - localDir: {}", localDir);
-        logger.info("[TRACE] - tableBucketArn: {}", tableBucketArn);
-        logger.info("[TRACE] - databaseName: {}", databaseName);
-        logger.info("[TRACE] - tableName: {}", tableName);
-        logger.info("[TRACE] - partitionColumn: {}", partitionColumn);
-        logger.info("[TRACE] - partitionValue: {}", partitionValue);
-        logger.info("[TRACE] - s3Options: {}", s3Options != null ? s3Options.toString() : "null");
         if (s3Options != null) {
-            logger.info("[TRACE] - s3Options keys: {}", s3Options.keySet());
             for (java.util.Map.Entry<String, String> entry : s3Options.entrySet()) {
-                logger.info("[TRACE] - s3Options[{}] = {}", entry.getKey(), entry.getValue());
             }
         }
-        logger.info("[TRACE] - substraitBytes: {} bytes", substraitBytes != null ? substraitBytes.length : "null");
-        logger.info("[TRACE] - isQueryPlanExplainEnabled: {}", isQueryPlanExplainEnabled);
-        logger.info("[TRACE] - runtimePtr: {}", runtimePtr);
 
         CompletableFuture<Long> result = new CompletableFuture<>();
 
-        logger.info("[TRACE] About to call NativeBridge.executeQueryWithDownloadedPartitionAsync");
         NativeBridge.executeQueryWithDownloadedPartitionAsync(
             localDir,
             tableBucketArn,
@@ -167,13 +144,11 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionQuery, Recor
             new ActionListener<Long>() {
                 @Override
                 public void onResponse(Long streamPointer) {
-                    logger.info("[FLOW] Downloaded partition query async response: streamPointer={}", streamPointer);
                     result.complete(streamPointer != null ? streamPointer : 0L);
                 }
 
                 @Override
                 public void onFailure(Exception e) {
-                    logger.error("[FLOW] Downloaded partition query async failure", e);
                     result.completeExceptionally(e);
                 }
             }

@@ -178,22 +178,6 @@ public class IcebergService {
         }
         logger.info("[Iceberg Plugin] Found {} files in Iceberg catalog", catalogFiles.size());
 
-        // DEBUG: Log ALL files to expose path comparison issue
-        logger.warn("====== DEBUGGING FILE COMPARISON (syncIndex) ======");
-        logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
-        logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
-
-        logger.warn("[DEBUG] ALL activeFiles keys:");
-        activeFiles.keySet().forEach(key ->
-            logger.warn("[DEBUG]   activeFile: {}", key)
-        );
-
-        logger.warn("[DEBUG] ALL catalogFiles:");
-        catalogFiles.forEach(path ->
-            logger.warn("[DEBUG]   catalogFile: {}", path)
-        );
-        logger.warn("====================================================");
-
         // 5. Compute diff - compare destination paths to destination paths
         // activeFiles keys are source paths; catalogFiles contains destination paths
         // Transform source paths to destination format before comparison
@@ -318,22 +302,6 @@ public class IcebergService {
                     }
                 }
             }
-
-            // DEBUG: Log ALL files to expose path comparison issue
-            logger.warn("====== DEBUGGING FILE COMPARISON (syncShard {}) ======", shardId);
-            logger.warn("[DEBUG] activeFiles count: {}", activeFiles.size());
-            logger.warn("[DEBUG] catalogFiles count: {}", catalogFiles.size());
-
-            logger.warn("[DEBUG] ALL activeFiles keys:");
-            activeFiles.keySet().forEach(key ->
-                logger.warn("[DEBUG]   activeFile: {}", key)
-            );
-
-            logger.warn("[DEBUG] ALL catalogFiles:");
-            catalogFiles.forEach(path ->
-                logger.warn("[DEBUG]   catalogFile: {}", path)
-            );
-            logger.warn("=========================================================");
 
             // Compute diff for this shard - compare destination paths to destination paths
             // activeFiles keys are source paths; catalogFiles contains destination paths
@@ -593,13 +561,7 @@ public class IcebergService {
                 String relativePath = extractRelativePath(sourcePath);
                 String destinationPath = table.location() + "/" + relativePath;
 
-                // DEBUG: Log destination path construction
-                logger.warn("[DEBUG DESTINATION] source: {}", sourceS3Path);
-                logger.warn("[DEBUG DESTINATION] table.location(): {}", table.location());
-                logger.warn("[DEBUG DESTINATION] relativePath: {}", relativePath);
-                logger.warn("[DEBUG DESTINATION] final destinationPath: {}", destinationPath);
-
-                logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourceS3Path, destinationPath);
+                logger.info("[Iceberg Plugin] Copying file: {} -> {}", sourcePath, destinationPath);
 
                 if (sourcePath.startsWith("file://")) {
                     copyLocalFile(sourcePath, destFileIO, destinationPath);

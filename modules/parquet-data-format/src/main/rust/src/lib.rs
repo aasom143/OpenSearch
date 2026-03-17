@@ -374,7 +374,6 @@ pub extern "system" fn Java_com_parquet_parquetdataformat_bridge_RustBridge_getF
                 Ok(java_obj) => java_obj.into_raw(),
                 Err(e) => {
                     let error_msg = format!("[RUST] ERROR: Failed to create Java metadata object: {:?}\n", e);
-                    println!("{}", error_msg.trim());
                     log_error!("{}", error_msg);
                     // Throw IOException to Java
                     let _ = env.throw_new("java/io/IOException", "Failed to create metadata object");
@@ -384,7 +383,6 @@ pub extern "system" fn Java_com_parquet_parquetdataformat_bridge_RustBridge_getF
         }
         Err(e) => {
             let error_msg = format!("[RUST] ERROR: Failed to read file metadata: {:?}\n", e);
-            println!("{}", error_msg.trim());
             log_error!("{}", error_msg);
             // Throw IOException to Java
             let _ = env.throw_new("java/io/IOException", &format!("Failed to read file metadata: {}", e));

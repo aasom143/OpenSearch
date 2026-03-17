@@ -108,7 +108,6 @@ public class IcebergMetadataCatalogPlugin extends Plugin implements ActionPlugin
             IcebergService.S3TABLES_BUCKET_SETTING,
             IcebergService.S3TABLES_REGION_SETTING,
             IcebergService.S3TABLES_NAMESPACE_SETTING
-            IcebergService.CREDENTIALS_FILE_PATH_SETTING
         );
     }
 }

@@ -16,7 +16,6 @@ use std::sync::Arc;
 use datafusion::error::DataFusionError;
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use crate::{CustomFileMeta, FileStats};
-use vectorized_exec_spi::log_info;
 
 
 /// Set error message from a result using a Consumer<String> Java callback
@@ -131,12 +130,10 @@ pub fn create_file_meta_from_filenames(
     base_path: &str,
     filenames: Vec<String>,
 ) -> Result<Vec<CustomFileMeta>, DataFusionError> {
-    log_info!("[FLOW] create_file_meta_from_filenames: basePath={}, fileCount={}", base_path, filenames.len());
     let mut row_base: i64 = 0;
     filenames
         .into_iter()
-        .enumerate()
-        .map(|(idx, filename)| {
+        .map(|filename| {
             let filename = filename.as_str();
 
             // Handle both full paths and relative filenames
@@ -148,7 +145,6 @@ pub fn create_file_meta_from_filenames(
                 format!("{}/{}", base_path.trim_end_matches('/'), filename)
             };
 
-            log_info!("[FLOW]   Processing file[{}]: {}", idx, full_path);
             let file_size = fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
             let file_result = fs::File::open(&full_path.clone());
             if file_result.is_err() {
@@ -166,10 +162,6 @@ pub fn create_file_meta_from_filenames(
                 .iter()
                 .map(|row_group| row_group.num_rows())
                 .collect();
-
-            let total_rows: i64 = row_group_row_counts.iter().sum();
-            log_info!("[FLOW]     File[{}]: rowBase={}, totalRows={}, rowGroups={:?}, size={}bytes", 
-                idx, row_base, total_rows, row_group_row_counts, file_size);
 
             let modified = fs::metadata(&full_path)
                 .and_then(|m| m.modified())
@@ -189,7 +181,6 @@ pub fn create_file_meta_from_filenames(
             );
             //TODO: ensure ordering of files
             row_base += row_group_row_counts.iter().sum::<i64>();
-            log_info!("[FLOW]     Next rowBase will be: {}", row_base);
             Ok(file_meta)
         })
         .collect()

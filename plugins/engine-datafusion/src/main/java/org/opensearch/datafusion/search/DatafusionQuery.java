@@ -107,17 +107,8 @@ public class DatafusionQuery {
         Map<String, String> s3Options,
         String resolvedS3TableName
     ) {
-        logger.info("[TRACE] DatafusionQuery.configureDownloadedPartition() called");
-        logger.info("[TRACE] - localDownloadDir: {}", localDownloadDir);
-        logger.info("[TRACE] - tableBucketArn: {}", tableBucketArn);
-        logger.info("[TRACE] - databaseName: {}", databaseName);
-        logger.info("[TRACE] - partitionColumn: {}", partitionColumn);
-        logger.info("[TRACE] - partitionValue: {}", partitionValue);
-        logger.info("[TRACE] - s3Options: {}", s3Options != null ? s3Options.toString() : "null");
         if (s3Options != null) {
-            logger.info("[TRACE] - s3Options keys: {}", s3Options.keySet());
             for (Map.Entry<String, String> entry : s3Options.entrySet()) {
-                logger.info("[TRACE] - s3Options[{}] = {}", entry.getKey(), entry.getValue());
             }
         }
         
@@ -131,7 +122,6 @@ public class DatafusionQuery {
         this.s3Options.put("s3_table_name", resolvedS3TableName.toLowerCase().replace("-", "_"));
         this.icebergTableName = this.indexName;
         
-        logger.info("[TRACE] DatafusionQuery.configureDownloadedPartition() completed");
     }
 
     public boolean useDownloadedPartition() {

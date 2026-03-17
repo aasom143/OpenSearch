@@ -25,7 +25,6 @@ public class RustBridgeTests extends OpenSearchTestCase {
     public void testGetFileMetadata() throws IOException {
         try {
             String filePath = getTestFilePath("large_file1.parquet");
-            System.out.println("DEBUG" + filePath);
             ParquetFileMetadata metadata = RustBridge.getFileMetadata(filePath);
 
             assertNotNull("Metadata should not be null", metadata);
@@ -45,7 +44,6 @@ public class RustBridgeTests extends OpenSearchTestCase {
     public void testGetFileMetadataWithNonExistentFile() {
         try {
             String filePath = "non_existent_file.parquet";
-            logger.info("[DEBUG] " + filePath);
             IOException exception = expectThrows(IOException.class, () -> {
                 RustBridge.getFileMetadata(filePath);
             });
@@ -65,7 +63,6 @@ public class RustBridgeTests extends OpenSearchTestCase {
         try {
             // Create a temporary invalid file
             java.nio.file.Path tempFile = java.nio.file.Files.createTempFile("invalid", ".parquet");
-            logger.info("[DEBUG] " + tempFile);
             java.nio.file.Files.write(tempFile, "This is not a valid parquet file".getBytes());
 
             try {

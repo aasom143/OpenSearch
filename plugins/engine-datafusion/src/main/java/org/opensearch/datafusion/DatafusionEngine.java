@@ -99,8 +99,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     private final RootAllocator rootAllocator;
 
     public DatafusionEngine(DataFormat dataFormat, Collection<FileMetadata> formatCatalogSnapshot, DataFusionService dataFusionService, ShardPath shardPath) throws IOException {
-        logger.info("[FLOW] DatafusionEngine constructor: format={}, shardPath={}, fileCount={}",
-            dataFormat.getName(), shardPath.getShardId(), formatCatalogSnapshot.size());
         this.dataFormat = dataFormat;
         this.datafusionReaderManager = new DatafusionReaderManager(
             shardPath.getDataPath().resolve(dataFormat.getName()).toString(), formatCatalogSnapshot, dataFormat.getName()
@@ -111,22 +109,13 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         if (this.cacheManager != null) {
             datafusionReaderManager.setOnFilesAdded(files -> {
                 // Handle new files added during refresh
-                logger.info("[FLOW] Files added to cache: count={}", files.size());
                 cacheManager.addFilesToCacheManager(files);
             });
         }
-        logger.info("[FLOW] DatafusionEngine initialized successfully");
     }
 
     @Override
     public DatafusionContext createContext(ReaderContext readerContext, ShardSearchRequest request, SearchShardTarget searchShardTarget, SearchShardTask task, BigArrays bigArrays, SearchContext originalContext, ClusterService clusterService) throws IOException {
-        logger.info("[TRACE] DatafusionEngine.createContext() ENTRY");
-        logger.info("[TRACE] Parameters: readerContext={}, request={}, searchShardTarget={}, task={}, originalContext={}",
-            readerContext != null ? "present" : "null",
-            request != null ? "present" : "null",
-            searchShardTarget != null ? "present" : "null",
-            task != null ? "present" : "null",
-            originalContext != null ? "present" : "null");
 
         DatafusionContext datafusionContext = new DatafusionContext(readerContext, request, searchShardTarget, task, this, bigArrays, originalContext, clusterService);
 
@@ -139,13 +128,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         int shardId = request.shardId().id();
         String shardIdStr = String.valueOf(shardId);
 
-        logger.info("[TRACE] ShardSearchRequest details:");
-        logger.info("[TRACE] - shardId: {}", request.shardId());
-        logger.info("[TRACE] - source: {}", request.source() != null ? "present" : "null");
         if (request.source() != null) {
             SearchSourceBuilder source = request.source();
-            logger.info("[TRACE] - SearchSourceBuilder.toString(): {}", source.toString());
-            logger.info("[TRACE] - queryPlanIR: {} bytes", source.queryPlanIR() != null ? source.queryPlanIR().length : "null");
         }
 
         String localDir = "/tmp/s3_partition_" + indexName + "_" + shardIdStr;
@@ -175,8 +159,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         String tableBucketArn = String.format(java.util.Locale.ROOT, "arn:aws:s3tables:%s:%s:bucket/%s",
             region, extractAccountId(roleArn), s3Bucket);
 
-        logger.info("[FLOW] Retrieved from cluster settings: roleArn={}, s3Bucket={}, region={}, namespace={}",
-            roleArn, s3Bucket, region, databaseName);
 
         Map<String, String> s3Options = new HashMap<>();
         s3Options.put("role_arn", roleArn);
@@ -197,9 +179,7 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             if (fileCreds.containsKey("aws_session_token")) {
                 s3Options.put("aws_session_token", fileCreds.get("aws_session_token"));
             }
-            logger.info("[FLOW] Loaded service credentials from file for Rust STS call");
         } catch (Exception e) {
-            logger.warn("[FLOW] Could not load credentials file {}: {}", credsFilePath, e.getMessage());
         }
 
         query.configureDownloadedPartition(
@@ -212,8 +192,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             s3TableIndex
         );
 
-        logger.info("[FLOW] Configured downloaded partition: localDir={}, partition={}={}, table={}",
-            localDir, partitionColumn, shardIdStr, indexName);
 
         datafusionContext.datafusionQuery(query);
 
@@ -238,7 +216,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
             for (String entry : mapping.split(",")) {
                 String[] kv = entry.trim().split(":", 2);
                 if (kv.length == 2 && kv[0].trim().equals(indexName)) {
-                    logger.info("[FLOW] Resolved S3 table mapping: {} -> {}", indexName, kv[1].trim());
                     return kv[1].trim();
                 }
             }
@@ -412,7 +389,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 
             collector.collect(new RecordBatchIterator(stream));
 
-//            logger.info("Final Results:");
 //            for (Map.Entry<String, Object[]> entry : finalRes.entrySet()) {
 //                logger.info("{}: {}", entry.getKey(), java.util.Arrays.toString(entry.getValue()));
 //            }
@@ -422,7 +398,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 //            printMemoryPoolAllocation(datafusionService.getRuntimePointer());
 
 
-//            logger.info("Final Results:");
 //            for (Map.Entry<String, Object[]> entry : finalRes.entrySet()) {
 //                logger.info("{}: {}", entry.getKey(), java.util.Arrays.toString(entry.getValue()));
 //            }
@@ -445,8 +420,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
 
     @Override
     public void executeQueryPhaseAsync(DatafusionContext context, Executor executor, ActionListener<Map<String, Object[]>> listener) {
-        logger.info("[FLOW] executeQueryPhaseAsync started: shardId={}, indexName={}",
-            context.indexShard().shardId(), context.request().shardId().getIndexName());
         try {
             DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
             context.getDatafusionQuery().setQueryPlanExplainEnabled(context.evaluateSearchQueryExplainMode());
@@ -455,10 +428,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                 Map<String, Object[]> finalRes = new HashMap<>();
                 List<Long> rowIdResult = new ArrayList<>();
                 if(streamPointer == null) {
-                    logger.error("[FLOW] Query phase failed with error", error);
                     throw new RuntimeException(error);
                 }
-                logger.info("[FLOW] Query phase stream created, streamPointer={}", streamPointer);
                 RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
                 RecordBatchStream stream = new RecordBatchStream(streamPointer, datafusionService.getRuntimePointer() , allocator);
                 SearchResultsCollector<RecordBatchStream> collector = new SearchResultsCollector<RecordBatchStream>() {
@@ -486,17 +457,12 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                     }
                 };
                 loadNextBatch(stream, executor, collector, finalRes, allocator, listener, context, rowIdResult);
-                logger.info("Final Results:");
-                for (Map.Entry<String, Object[]> entry : finalRes.entrySet()) {
-                    logger.info("{}: {}", entry.getKey(), java.util.Arrays.toString(entry.getValue()));
-                }
             });
 
 //            logger.info("Memory Pool Allocation Post Query ShardID:{}", context.getQueryShardContext().getShardId());
 //            printMemoryPoolAllocation(datafusionService.getRuntimePointer());
 
 
-//            logger.info("Final Results:");
 //            for (Map.Entry<String, Object[]> entry : finalRes.entrySet()) {
 //                logger.info("{}: {}", entry.getKey(), java.util.Arrays.toString(entry.getValue()));
 //            }
@@ -534,9 +500,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                 context.queryResult().topDocs(new TopDocsAndMaxScore(new TopDocs(new TotalHits(rowIdResult.size(),
                     TotalHits.Relation.EQUAL_TO), rowIdResult.stream().map(d-> new ScoreDoc(d.intValue(),
                     Float.NaN, context.indexShard().shardId().getId())).toList().toArray(ScoreDoc[]::new)) , Float.NaN), new DocValueFormat[0]);
-                logger.info("[FLOW] Query phase completed: totalHits={}, absoluteRowIds={}",
-                    rowIdResult.size(),
-                    rowIdResult.size() <= 20 ? rowIdResult : rowIdResult.subList(0, 20) + "...");
                 listener.onResponse(finalRes);
             }
         }, error -> {
@@ -563,13 +526,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
     public void executeFetchPhase(DatafusionContext context) throws IOException {
 
         List<Long> rowIds = Arrays.stream(context.docIdsToLoad()).mapToObj(Long::valueOf).toList();
-        logger.info("[FLOW] executeFetchPhase started: shardId={}, rowIdCount={}, absoluteRowIds={}",
-            context.indexShard().shardId(),
-            rowIds.size(),
-            rowIds.size() <= 20 ? rowIds : rowIds.subList(0, 20) + "...");
         if (rowIds.isEmpty()) {
             // no individual hits to process, so we shortcut
-            logger.info("[FLOW] No row IDs to fetch, returning empty hits");
             context.fetchResult()
                 .hits(new SearchHits(new SearchHit[0], context.queryResult().getTotalHits(), context.queryResult().getMaxScore()));
             return;
@@ -599,10 +557,8 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
         excludeFields.add(SeqNoFieldMapper.PRIMARY_TERM_NAME);
 
         context.getDatafusionQuery().setSource(includeFields, excludeFields);
-        logger.info("[FLOW] Fetch phase: includeFields={}, excludeFields={}", includeFields, excludeFields);
         DatafusionSearcher datafusionSearcher = context.getEngineSearcher();
         long streamPointer = datafusionSearcher.search(context.getDatafusionQuery(), datafusionService.getRuntimePointer());
-        logger.info("[FLOW] Fetch phase stream created: streamPointer={}", streamPointer);
         RecordBatchStream stream = new RecordBatchStream(streamPointer, datafusionService.getRuntimePointer(), rootAllocator);
 
         Map<Long, Integer> rowIdToIndex = new HashMap<>();
@@ -673,7 +629,6 @@ public class DatafusionEngine extends SearchExecEngine<DatafusionContext, Datafu
                 }
             }
             context.fetchResult().hits(new SearchHits(hits, new TotalHits(totalHits, TotalHits.Relation.EQUAL_TO), context.queryResult().getMaxScore()));
-            logger.info("[FLOW] Fetch phase completed: totalHits={}", totalHits);
         };
 
         try {
