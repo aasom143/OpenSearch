@@ -27,6 +27,7 @@ import org.opensearch.analytics.planner.rel.OpenSearchStageInputScan;
 import org.opensearch.analytics.planner.rel.OpenSearchTableScan;
 import org.opensearch.analytics.planner.rel.OperatorAnnotation;
 import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
+import org.opensearch.analytics.spi.BackendCapabilityProvider;
 import org.opensearch.analytics.spi.DelegatedExpression;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationPossibleFunction;
@@ -182,6 +183,12 @@ public class FragmentConversionDriver {
     static final class IntraOperatorDelegationBytes {
         private final CapabilityRegistry registry;
         private List<DelegatedExpression> delegatedExpressions;
+        /**
+         * Tracks the first correctness-delegated expression per accepting backend.
+         * When a second predicate for the same backend arrives, the two are combined
+         * into a single BooleanQuery via {@link BackendCapabilityProvider#combineDelegatedPredicates}.
+         */
+        private java.util.Map<String, DelegatedExpression> firstCorrectnessPerBackend;
 
         IntraOperatorDelegationBytes(CapabilityRegistry registry) {
             this.registry = registry;
@@ -270,19 +277,60 @@ public class FragmentConversionDriver {
                     );
                 }
                 byte[] serialized = serializer.serialize(originalCall, fieldStorage);
-                LOGGER.debug(
-                    "Delegated annotation [id={}]: {} from operator [{}] to [{}], serialized {} bytes",
-                    annotation.getAnnotationId(),
-                    function,
-                    operatorBackend,
-                    annotationBackend,
-                    serialized.length
-                );
-                if (delegatedExpressions == null) {
-                    delegatedExpressions = new ArrayList<>();
+
+                // Combine same-backend correctness-delegated predicates into a single
+                // BooleanQuery. The first predicate for a backend is stored; subsequent
+                // ones are combined with it and their placeholder becomes TRUE (subsumed).
+                if (firstCorrectnessPerBackend == null) {
+                    firstCorrectnessPerBackend = new java.util.HashMap<>();
                 }
-                delegatedExpressions.add(new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized));
-                return annotation.makePlaceholder(rexBuilder);
+                DelegatedExpression existing = firstCorrectnessPerBackend.get(annotationBackend);
+                if (existing == null) {
+                    // First predicate for this backend — store normally.
+                    LOGGER.debug(
+                        "Delegated annotation [id={}]: {} from operator [{}] to [{}], serialized {} bytes",
+                        annotation.getAnnotationId(),
+                        function,
+                        operatorBackend,
+                        annotationBackend,
+                        serialized.length
+                    );
+                    if (delegatedExpressions == null) {
+                        delegatedExpressions = new ArrayList<>();
+                    }
+                    DelegatedExpression expr = new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized);
+                    delegatedExpressions.add(expr);
+                    firstCorrectnessPerBackend.put(annotationBackend, expr);
+                    return annotation.makePlaceholder(rexBuilder);
+                } else {
+                    // Subsequent predicate for same backend — combine with the first.
+                    BackendCapabilityProvider capProvider = registry.getBackend(annotationBackend).getCapabilityProvider();
+                    byte[] combined = capProvider.combineDelegatedPredicates(
+                        java.util.List.of(existing.getExpressionBytes(), serialized)
+                    );
+                    if (combined == null) {
+                        // Backend doesn't support combining — fall back to individual delegation.
+                        LOGGER.debug(
+                            "Delegated annotation [id={}]: {} (no combine support, individual delegation)",
+                            annotation.getAnnotationId(), function
+                        );
+                        DelegatedExpression expr = new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized);
+                        delegatedExpressions.add(expr);
+                        return annotation.makePlaceholder(rexBuilder);
+                    }
+                    // Update the first expression's bytes with the combined result.
+                    existing.updateExpressionBytes(combined);
+                    LOGGER.debug(
+                        "Delegated annotation [id={}]: {} combined with annotation [id={}] on backend [{}], combined {} bytes",
+                        annotation.getAnnotationId(),
+                        function,
+                        existing.getAnnotationId(),
+                        annotationBackend,
+                        combined.length
+                    );
+                    // This predicate is subsumed — return TRUE literal so it's a no-op in the plan.
+                    return rexBuilder.makeLiteral(true);
+                }
             };
         }
 

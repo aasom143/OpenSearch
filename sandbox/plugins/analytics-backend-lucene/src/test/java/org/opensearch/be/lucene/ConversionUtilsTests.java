@@ -500,4 +500,66 @@ public class ConversionUtilsTests extends OpenSearchTestCase {
         assertEquals("Should only extract the valid MAP param", 1, params.size());
         assertEquals("whitespace", params.get("analyzer"));
     }
+
+    // ---- combineToBoolMust tests ----
+
+    public void testCombineToBoolMustSingleElement() {
+        byte[] matchBytes = ConversionUtils.serializeQueryBuilder(
+            new org.opensearch.index.query.MatchQueryBuilder("title", "google")
+        );
+        byte[] result = ConversionUtils.combineToBoolMust(List.of(matchBytes));
+        // Single element should return the same bytes unchanged
+        assertArrayEquals(matchBytes, result);
+    }
+
+    public void testCombineToBoolMustTwoPredicates() throws Exception {
+        byte[] matchTitle = ConversionUtils.serializeQueryBuilder(
+            new org.opensearch.index.query.MatchQueryBuilder("title", "google")
+        );
+        byte[] matchReferer = ConversionUtils.serializeQueryBuilder(
+            new org.opensearch.index.query.MatchQueryBuilder("referer", "http")
+        );
+
+        byte[] combined = ConversionUtils.combineToBoolMust(List.of(matchTitle, matchReferer));
+        assertNotNull(combined);
+
+        // Deserialize and verify it's a BoolQuery with 2 MUST clauses
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+        org.opensearch.core.common.io.stream.StreamInput rawInput =
+            org.opensearch.core.common.io.stream.StreamInput.wrap(combined);
+        org.opensearch.core.common.io.stream.StreamInput input =
+            new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(rawInput, registry);
+        org.opensearch.index.query.QueryBuilder qb = input.readNamedWriteable(org.opensearch.index.query.QueryBuilder.class);
+
+        assertTrue("Combined should be BoolQueryBuilder", qb instanceof org.opensearch.index.query.BoolQueryBuilder);
+        org.opensearch.index.query.BoolQueryBuilder boolQb = (org.opensearch.index.query.BoolQueryBuilder) qb;
+        assertEquals("Should have 2 must clauses", 2, boolQb.must().size());
+        assertTrue("First must should be MatchQueryBuilder", boolQb.must().get(0) instanceof org.opensearch.index.query.MatchQueryBuilder);
+        assertTrue("Second must should be MatchQueryBuilder", boolQb.must().get(1) instanceof org.opensearch.index.query.MatchQueryBuilder);
+
+        org.opensearch.index.query.MatchQueryBuilder first = (org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(0);
+        org.opensearch.index.query.MatchQueryBuilder second = (org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(1);
+        assertEquals("title", first.fieldName());
+        assertEquals("google", first.value());
+        assertEquals("referer", second.fieldName());
+        assertEquals("http", second.value());
+    }
+
+    public void testCombineToBoolMustThreePredicates() throws Exception {
+        byte[] q1 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f1", "a"));
+        byte[] q2 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f2", "b"));
+        byte[] q3 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f3", "c"));
+
+        byte[] combined = ConversionUtils.combineToBoolMust(List.of(q1, q2, q3));
+
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+        org.opensearch.core.common.io.stream.StreamInput input =
+            new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(
+                org.opensearch.core.common.io.stream.StreamInput.wrap(combined), registry
+            );
+        org.opensearch.index.query.QueryBuilder qb = input.readNamedWriteable(org.opensearch.index.query.QueryBuilder.class);
+
+        org.opensearch.index.query.BoolQueryBuilder boolQb = (org.opensearch.index.query.BoolQueryBuilder) qb;
+        assertEquals("Should have 3 must clauses", 3, boolQb.must().size());
+    }
 }

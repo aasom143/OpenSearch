@@ -144,6 +144,11 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
             public Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 return QuerySerializerRegistry.getSerializers();
             }
+
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
+                return ConversionUtils.combineToBoolMust(serializedPredicates);
+            }
         };
     }
 

@@ -25,7 +25,7 @@ public class DelegatedExpression implements Writeable {
 
     private final int annotationId;
     private final String acceptingBackendId;
-    private final byte[] expressionBytes;
+    private byte[] expressionBytes;
 
     public DelegatedExpression(int annotationId, String acceptingBackendId, byte[] expressionBytes) {
         this.annotationId = annotationId;
@@ -56,5 +56,13 @@ public class DelegatedExpression implements Writeable {
 
     public byte[] getExpressionBytes() {
         return expressionBytes;
+    }
+
+    /**
+     * Replaces the serialized bytes with combined bytes (e.g., after merging
+     * multiple same-backend predicates into a single BooleanQuery).
+     */
+    public void updateExpressionBytes(byte[] combined) {
+        this.expressionBytes = combined;
     }
 }

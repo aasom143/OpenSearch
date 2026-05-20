@@ -103,4 +103,21 @@ public interface BackendCapabilityProvider {
     default Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
         return Map.of();
     }
+
+    /**
+     * Combines multiple individually-serialized delegated predicates into a single
+     * AND-combined query. Called when multiple same-backend predicates are siblings
+     * under AND — the backend can intersect them natively (e.g., Lucene BooleanQuery
+     * with MUST clauses) rather than requiring multiple round-trips.
+     *
+     * <p>Default returns {@code null} indicating combining is not supported, in which
+     * case each predicate remains a separate DelegatedExpression.
+     *
+     * @param serializedPredicates individually serialized predicate bytes (each from
+     *                             {@link DelegatedPredicateSerializer#serialize})
+     * @return combined serialized bytes representing AND of all inputs, or {@code null}
+     */
+    default byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
+        return null;
+    }
 }

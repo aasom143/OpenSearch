@@ -230,6 +230,52 @@ public class FilterDelegationIT extends AnalyticsRestTestCase {
         assertEquals(50L, ((Number) rows.get(0).get(0)).longValue());
     }
 
+    /**
+     * Multi-match AND combining: two MATCH predicates on different fields under AND
+     * are combined into a single BooleanQuery (MUST+MUST) by the coordinator. Both
+     * predicates must be enforced — the result should be the intersection, not just
+     * the first match predicate's result.
+     *
+     * <p>Data: 10 docs with message="hello world" tag="hello", 10 docs with
+     * message="goodbye world" tag="goodbye". Query: match(message,'hello') AND
+     * match(tag,'goodbye') → 0 results (no doc has both).
+     */
+    public void testMultiMatchAndCombining_BothPredicatesEnforced() throws Exception {
+        createIndex();
+        indexDocs();
+
+        // match(message,'hello') matches 10 docs, match(tag,'goodbye') matches 10 docs,
+        // but no doc satisfies BOTH → count should be 0.
+        String ppl = "source = " + INDEX_NAME
+            + " | where match(message, 'hello') and match(tag, 'goodbye') | stats count() as c";
+        Map<String, Object> result = executePPL(ppl);
+
+        @SuppressWarnings("unchecked")
+        List<List<Object>> rows = (List<List<Object>>) result.get("rows");
+        assertNotNull(rows);
+        assertEquals("AND of non-overlapping matches should return 0", 0L, ((Number) rows.get(0).get(0)).longValue());
+    }
+
+    /**
+     * Multi-match AND combining with overlapping results: both MATCH predicates match
+     * the same set of documents. Verifies the combined BooleanQuery returns the correct
+     * intersection count.
+     */
+    public void testMultiMatchAndCombining_OverlappingResults() throws Exception {
+        createIndex();
+        indexDocs();
+
+        // match(message,'hello') AND match(tag,'hello') → both match the same 10 docs.
+        String ppl = "source = " + INDEX_NAME
+            + " | where match(message, 'hello') and match(tag, 'hello') | stats count() as c";
+        Map<String, Object> result = executePPL(ppl);
+
+        @SuppressWarnings("unchecked")
+        List<List<Object>> rows = (List<List<Object>>) result.get("rows");
+        assertNotNull(rows);
+        assertEquals("AND of overlapping matches should return 10", 10L, ((Number) rows.get(0).get(0)).longValue());
+    }
+
     private void createIndex() throws Exception {
         try {
             client().performRequest(new Request("DELETE", "/" + INDEX_NAME));

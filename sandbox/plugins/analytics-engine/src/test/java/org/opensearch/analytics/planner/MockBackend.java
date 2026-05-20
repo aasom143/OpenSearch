@@ -104,6 +104,11 @@ abstract class MockBackend implements AnalyticsSearchBackendPlugin {
             public Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 return self.delegatedPredicateSerializers();
             }
+
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
+                return self.combineDelegatedPredicates(serializedPredicates);
+            }
         };
     }
 
@@ -150,6 +155,10 @@ abstract class MockBackend implements AnalyticsSearchBackendPlugin {
 
     protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
         return Map.of();
+    }
+
+    protected byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
+        return null;
     }
 
     @Override

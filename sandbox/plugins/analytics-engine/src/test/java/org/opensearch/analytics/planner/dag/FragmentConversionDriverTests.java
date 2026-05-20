@@ -710,6 +710,70 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         );
     }
 
+    /** AND(delegated, delegated) with combining support — combined into single DelegatedExpression. */
+    public void testAndTwoDelegatedWithCombining() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        // Override the mock Lucene backend to support combining
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+
+            @Override
+            public byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates) {
+                // Simple combining: concatenate with separator for test verification
+                StringBuilder sb = new StringBuilder("combined:");
+                for (byte[] b : serializedPredicates) {
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                }
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", fields, backends);
+        RexNode condition = makeAnd(
+            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"),
+            makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")
+        );
+        LogicalFilter filter = LogicalFilter.create(stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        // Should produce 1 combined DelegatedExpression (not 2 individual ones)
+        assertEquals("Should have 1 combined delegated expression", 1, plan.delegatedExpressions().size());
+        // Serializer was called twice (once per predicate)
+        assertEquals("serializer call count", 2, serializer.callCount);
+        // The combined bytes should contain both predicates
+        String combinedStr = new String(plan.delegatedExpressions().getFirst().getExpressionBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue("Combined should contain MATCH_PHRASE", combinedStr.contains("MATCH_PHRASE"));
+        assertTrue("Combined should contain FUZZY", combinedStr.contains("FUZZY"));
+    }
+
     // ---- OR conditions ----
 
     /** OR(native, delegated) — equals on non-indexed amount stays native; MATCH_PHRASE replaced. */

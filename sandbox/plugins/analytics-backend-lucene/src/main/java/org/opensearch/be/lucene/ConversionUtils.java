@@ -244,4 +244,29 @@ public final class ConversionUtils {
         }
         return fields;
     }
+
+    /**
+     * Combines multiple serialized QueryBuilder bytes into a single BoolQueryBuilder
+     * with MUST clauses. Used to merge same-backend AND'd predicates into one query.
+     */
+    public static byte[] combineToBoolMust(List<byte[]> serializedPredicates) {
+        if (serializedPredicates.size() == 1) {
+            return serializedPredicates.getFirst();
+        }
+        org.opensearch.index.query.BoolQueryBuilder boolQuery = new org.opensearch.index.query.BoolQueryBuilder();
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+        for (byte[] bytes : serializedPredicates) {
+            try {
+                org.opensearch.core.common.io.stream.StreamInput rawInput =
+                    org.opensearch.core.common.io.stream.StreamInput.wrap(bytes);
+                org.opensearch.core.common.io.stream.StreamInput input =
+                    new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(rawInput, registry);
+                QueryBuilder qb = input.readNamedWriteable(QueryBuilder.class);
+                boolQuery.must(qb);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to deserialize query for combining", e);
+            }
+        }
+        return serializeQueryBuilder(boolQuery);
+    }
 }
