@@ -13,12 +13,14 @@ import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlKind;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.planner.CapabilityRegistry;
 import org.opensearch.analytics.planner.RelNodeUtils;
 import org.opensearch.analytics.planner.rel.AggregateMode;
 import org.opensearch.analytics.planner.rel.AnnotatedPredicate;
+import org.opensearch.analytics.planner.rel.AnnotationResolver;
 import org.opensearch.analytics.planner.rel.OpenSearchAggregate;
 import org.opensearch.analytics.planner.rel.OpenSearchExchangeReducer;
 import org.opensearch.analytics.planner.rel.OpenSearchFilter;
@@ -29,6 +31,7 @@ import org.opensearch.analytics.planner.rel.OperatorAnnotation;
 import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.analytics.spi.BackendCapabilityProvider;
 import org.opensearch.analytics.spi.DelegatedExpression;
+import org.opensearch.analytics.spi.DelegatedPredicateFunction;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationPossibleFunction;
 import org.opensearch.analytics.spi.FieldStorageInfo;
@@ -105,9 +108,19 @@ public class FragmentConversionDriver {
             byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
 
             // Assemble instruction list
+            List<DelegatedExpression> delegated = delegationBytes.getResult();
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
-            converted.add(plan.withConvertedBytes(bytes, delegationBytes.getResult()).withInstructions(instructions));
+            converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
+            LOGGER.info(
+                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{}",
+                plan.backendId(),
+                treeShape,
+                delegated.size(),
+                delegated.isEmpty()
+                    ? ""
+                    : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
+            );
         }
         stage.setPlanAlternatives(converted);
         // Store factory on coordinator-reduce stages (local execution, no serialization needed).
@@ -142,43 +155,15 @@ public class FragmentConversionDriver {
     }
 
     /**
-     * Lazily accumulates serialized delegated query bytes during fragment conversion.
-     * Only allocates the map when the first delegated annotation is encountered.
+     * Accumulates serialized delegated query bytes during fragment conversion.
      *
-     * <p>TODO: combine same-backend AnnotatedPredicate siblings into one serialized
-     * predicate per (operator, accepting backend) pair before {@link #resolverFor}
-     * runs. Today every AnnotatedPredicate is serialized in isolation, so a query
-     * like {@code match(message, 'a') AND match(message, 'b') AND match(message, 'c')}
-     * produces three separate {@link DelegatedExpression}s, three Lucene Weights, and
-     * three FFM collectDocs round-trips per RG. Lucene can intersect skip-lists
-     * across terms natively if we hand it a BooleanQuery, so a pre-strip pass
-     * should walk the AND/OR/NOT tree, group adjacent same-backend predicates that
-     * share an accepting backend, and ask the accepting backend to <em>combine</em>
-     * them into one serialized Lucene BooleanQuery (one DelegatedExpression, one
-     * Weight, one collectDocs per RG). Same shape applies to performance-delegation
-     * candidates grouped by their (operator, peer) backend pair. Needs a new
-     * {@code combine(List<RexCall>) -> byte[]} method on DelegatedPredicateSerializer
-     * (current contract serializes one expression at a time). DF-side same-backend
-     * grouping already happens naturally in Substrait — only the peer-bound side
-     * needs this work. See requirements.md:34-37 +
-     * features/shard-cost-function/analysis/filter-delegation-deep-dive/09-revamp-notes.md.
-     *
-     * <p>An attempt at this as a post-marking HEP rule
-     * ({@code CombineDelegatedPredicatesRule}, reverted) hit two design blockers:
-     * (1) Substrait wire representation for a fused {@code original = AND(call1,
-     * call2, ...)} leaf — the resolver below requires a {@code SqlFunction} operator,
-     * but AND is a connective; (2) Receiving-backend (Lucene) needs a way to turn the
-     * combined payload back into a single BooleanQuery / Weight without polluting
-     * {@code ScalarFunction} with AND. Resolve those before retrying.
-     *
-     * <p>Note: combining also subsumes the "multi-leaf performance consultation"
-     * follow-up — if N adjacent dual-viable leaves fuse into one
-     * {@code delegation_possible(AND(...), id)} marker, the Rust SingleCollector
-     * evaluator only needs to consult one peer per RG (the fused query) instead of
-     * iterating multiple delegation leaves. The Rust-side
-     * {@code performance_provider_locks} loop becomes trivially single-key. No
-     * separate multi-leaf change required once combining lands.
-     * Needs revisiting.
+     * <p>The resolver performs a single bottom-up traversal of the filter condition tree,
+     * classifying each node as delegated (targets a non-operator backend like Lucene) or
+     * native (evaluated by the driving backend). Same-backend delegated siblings under
+     * AND/OR/NOT are combined into a single BooleanQuery via
+     * {@link BackendCapabilityProvider#combineDelegatedPredicates}, producing one
+     * {@link DelegatedExpression} and one Lucene collector call per row group instead of
+     * multiple round-trips.
      */
     static final class IntraOperatorDelegationBytes {
         private final CapabilityRegistry registry;
@@ -195,98 +180,102 @@ public class FragmentConversionDriver {
         }
 
         /**
-         * Creates an annotation resolver scoped to a specific operator. Compares each
-         * annotation's viable backend against the operator's backend: native annotations
-         * are unwrapped, delegated ones are serialized and replaced with a placeholder.
+         * Creates an annotation resolver that does a single bottom-up traversal.
+         * Each node is classified as DELEGATED (pure same-backend) or RESOLVED (native/mixed).
+         * At mixed boundaries, all delegated siblings are combined into one BooleanQuery.
          */
         Function<OperatorAnnotation, RexNode> resolverFor(OpenSearchRelNode operator, RexBuilder rexBuilder) {
             String operatorBackend = operator.getViableBackends().getFirst();
             List<FieldStorageInfo> fieldStorage = operator.getOutputFieldStorage();
-            return annotation -> {
-                String annotationBackend = annotation.getViableBackends().getFirst();
-                if (annotationBackend.equals(operatorBackend)) {
-                    // Performance-delegation candidate: dual-viable predicate kept on the operator's backend,
-                    // but a peer can be opportunistically consulted at runtime. Wrap with delegation_possible
-                    // so the original predicate is preserved AND the peer can be reached via annotationId.
-                    if (annotation instanceof AnnotatedPredicate ap && !ap.getPerformanceDelegationBackends().isEmpty()) {
-                        // TODO: pick the best peer instead of the first when more than two backends are viable.
-                        String peerBackend = ap.getPerformanceDelegationBackends().getFirst();
-                        RexNode original = ap.unwrap();
-                        if (!(original instanceof RexCall originalCall)) {
-                            throw new IllegalStateException("Performance-delegation candidate must wrap a RexCall: " + original);
-                        }
-                        // Performance-delegated predicates are typically SqlBinaryOperators (=, <, >, etc.),
-                        // not SqlFunctions like MATCH_PHRASE. fromSqlOperatorWithFallback handles both.
-                        ScalarFunction function = ScalarFunction.fromSqlOperatorWithFallback(originalCall.getOperator());
-                        DelegatedPredicateSerializer serializer = registry.getBackend(peerBackend)
-                            .getCapabilityProvider()
-                            .delegatedPredicateSerializers()
-                            .get(function);
-                        if (serializer == null) {
-                            // Delegated backend declared filter capability for this op but doesn't
-                            // ship a serializer for it (e.g. Lucene declares LESS_THAN_OR_EQUAL but
-                            // only EqualsSerializer is wired today). Without a serializer we can't
-                            // emit a delegation_possible(...) marker, so fall back to native: just
-                            // unwrap as a regular predicate evaluated by the operator's own backend.
-                            // Same end result as a single-viable predicate — no perf delegation for
-                            // this leaf, correctness preserved. CapabilityRegistry startup validation
-                            // will eventually catch the capability/serializer mismatch at boot and reject
-                            // the plugin instead of silently degrading at query time.
-                            LOGGER.debug(
-                                "Performance-delegation skipped: no serializer for [{}] on delegated backend [{}]; falling back to native on operator [{}]",
-                                function,
-                                peerBackend,
-                                operatorBackend
-                            );
-                            return annotation.unwrap();
-                        }
-                        byte[] serialized = serializer.serialize(originalCall, fieldStorage);
-                        LOGGER.debug(
-                            "Performance-delegated annotation [id={}]: {} kept on operator [{}], wrapped for peer [{}], serialized {} bytes",
-                            ap.getAnnotationId(),
-                            function,
-                            operatorBackend,
-                            peerBackend,
-                            serialized.length
-                        );
-                        if (delegatedExpressions == null) {
-                            delegatedExpressions = new ArrayList<>();
-                        }
-                        delegatedExpressions.add(new DelegatedExpression(ap.getAnnotationId(), peerBackend, serialized));
-                        return DelegationPossibleFunction.makeCall(rexBuilder, originalCall, ap.getAnnotationId());
-                    }
-                    LOGGER.debug("Native annotation [id={}]: backend [{}] matches operator", annotation.getAnnotationId(), operatorBackend);
-                    return annotation.unwrap();
-                }
-                RexNode original = annotation.unwrap();
-                if (!(original instanceof RexCall originalCall) || !(originalCall.getOperator() instanceof SqlFunction sqlFunction)) {
-                    throw new IllegalStateException("Delegated expression must be a SqlFunction call: " + original);
-                }
-                ScalarFunction function = ScalarFunction.fromSqlFunction(sqlFunction);
-                DelegatedPredicateSerializer serializer = registry.getBackend(annotationBackend)
-                    .getCapabilityProvider()
-                    .delegatedPredicateSerializers()
-                    .get(function);
-                if (serializer == null) {
-                    throw new IllegalStateException(
-                        "No DelegatedPredicateSerializer for ["
-                            + function
-                            + "] on backend ["
-                            + annotationBackend
-                            + "]. CapabilityRegistry should have rejected this at startup."
-                    );
-                }
-                byte[] serialized = serializer.serialize(originalCall, fieldStorage);
+            return new AnnotationResolver() {
 
-                // Combine same-backend correctness-delegated predicates into a single
-                // BooleanQuery. The first predicate for a backend is stored; subsequent
-                // ones are combined with it and their placeholder becomes TRUE (subsumed).
-                if (firstCorrectnessPerBackend == null) {
-                    firstCorrectnessPerBackend = new java.util.HashMap<>();
+                @Override
+                public RexNode resolveTree(RexNode condition) {
+                    Classified result = classify(condition);
+                    if (result instanceof Delegated d) {
+                        if (delegatedExpressions == null) delegatedExpressions = new ArrayList<>();
+                        delegatedExpressions.add(new DelegatedExpression(d.firstAnnotationId(), d.backend(), d.combinedBytes()));
+                        return DelegatedPredicateFunction.makeCall(rexBuilder, d.firstAnnotationId());
+                    }
+                    return ((Resolved) result).node;
                 }
-                DelegatedExpression existing = firstCorrectnessPerBackend.get(annotationBackend);
-                if (existing == null) {
-                    // First predicate for this backend — store normally.
+
+                @Override
+                public RexNode apply(OperatorAnnotation annotation) {
+                    String annotationBackend = annotation.getViableBackends().getFirst();
+                    if (annotationBackend.equals(operatorBackend)) {
+                        // Performance-delegation candidate: dual-viable predicate kept on the operator's backend,
+                        // but a peer can be opportunistically consulted at runtime. Wrap with delegation_possible
+                        // so the original predicate is preserved AND the peer can be reached via annotationId.
+                        if (annotation instanceof AnnotatedPredicate ap && !ap.getPerformanceDelegationBackends().isEmpty()) {
+                            // TODO: pick the best peer instead of the first when more than two backends are viable.
+                            String peerBackend = ap.getPerformanceDelegationBackends().getFirst();
+                            RexNode original = ap.unwrap();
+                            if (!(original instanceof RexCall originalCall)) {
+                                throw new IllegalStateException("Performance-delegation candidate must wrap a RexCall: " + original);
+                            }
+                            // Performance-delegated predicates are typically SqlBinaryOperators (=, <, >, etc.),
+                            // not SqlFunctions like MATCH_PHRASE. fromSqlOperatorWithFallback handles both.
+                            ScalarFunction function = ScalarFunction.fromSqlOperatorWithFallback(originalCall.getOperator());
+                            DelegatedPredicateSerializer serializer = registry.getBackend(peerBackend)
+                                .getCapabilityProvider()
+                                .delegatedPredicateSerializers()
+                                .get(function);
+                            if (serializer == null) {
+                                // Delegated backend declared filter capability for this op but doesn't
+                                // ship a serializer for it (e.g. Lucene declares LESS_THAN_OR_EQUAL but
+                                // only EqualsSerializer is wired today). Without a serializer we can't
+                                // emit a delegation_possible(...) marker, so fall back to native: just
+                                // unwrap as a regular predicate evaluated by the operator's own backend.
+                                // Same end result as a single-viable predicate — no perf delegation for
+                                // this leaf, correctness preserved. CapabilityRegistry startup validation
+                                // will eventually catch the capability/serializer mismatch at boot and reject
+                                // the plugin instead of silently degrading at query time.
+                                LOGGER.debug(
+                                    "Performance-delegation skipped: no serializer for [{}] on delegated backend [{}]; falling back to native on operator [{}]",
+                                    function,
+                                    peerBackend,
+                                    operatorBackend
+                                );
+                                return annotation.unwrap();
+                            }
+                            byte[] serialized = serializer.serialize(originalCall, fieldStorage);
+                            LOGGER.debug(
+                                "Performance-delegated annotation [id={}]: {} kept on operator [{}], wrapped for peer [{}], serialized {} bytes",
+                                ap.getAnnotationId(),
+                                function,
+                                operatorBackend,
+                                peerBackend,
+                                serialized.length
+                            );
+                            if (delegatedExpressions == null) {
+                                delegatedExpressions = new ArrayList<>();
+                            }
+                            delegatedExpressions.add(new DelegatedExpression(ap.getAnnotationId(), peerBackend, serialized));
+                            return DelegationPossibleFunction.makeCall(rexBuilder, originalCall, ap.getAnnotationId());
+                        }
+                        LOGGER.debug("Native annotation [id={}]: backend [{}] matches operator", annotation.getAnnotationId(), operatorBackend);
+                        return annotation.unwrap();
+                    }
+                    RexNode original = annotation.unwrap();
+                    if (!(original instanceof RexCall originalCall) || !(originalCall.getOperator() instanceof SqlFunction sqlFunction)) {
+                        throw new IllegalStateException("Delegated expression must be a SqlFunction call: " + original);
+                    }
+                    ScalarFunction function = ScalarFunction.fromSqlFunction(sqlFunction);
+                    DelegatedPredicateSerializer serializer = registry.getBackend(annotationBackend)
+                        .getCapabilityProvider()
+                        .delegatedPredicateSerializers()
+                        .get(function);
+                    if (serializer == null) {
+                        throw new IllegalStateException(
+                            "No DelegatedPredicateSerializer for ["
+                                + function
+                                + "] on backend ["
+                                + annotationBackend
+                                + "]. CapabilityRegistry should have rejected this at startup."
+                        );
+                    }
+                    byte[] serialized = serializer.serialize(originalCall, fieldStorage);
                     LOGGER.debug(
                         "Delegated annotation [id={}]: {} from operator [{}] to [{}], serialized {} bytes",
                         annotation.getAnnotationId(),
@@ -298,44 +287,155 @@ public class FragmentConversionDriver {
                     if (delegatedExpressions == null) {
                         delegatedExpressions = new ArrayList<>();
                     }
-                    DelegatedExpression expr = new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized);
-                    delegatedExpressions.add(expr);
-                    firstCorrectnessPerBackend.put(annotationBackend, expr);
+                    delegatedExpressions.add(
+                        new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized)
+                    );
                     return annotation.makePlaceholder(rexBuilder);
-                } else {
-                    // Subsequent predicate for same backend — combine with the first.
-                    BackendCapabilityProvider capProvider = registry.getBackend(annotationBackend).getCapabilityProvider();
-                    byte[] combined = capProvider.combineDelegatedPredicates(
-                        java.util.List.of(existing.getExpressionBytes(), serialized)
-                    );
-                    if (combined == null) {
-                        // Backend doesn't support combining — fall back to individual delegation.
-                        LOGGER.debug(
-                            "Delegated annotation [id={}]: {} (no combine support, individual delegation)",
-                            annotation.getAnnotationId(), function
-                        );
-                        DelegatedExpression expr = new DelegatedExpression(annotation.getAnnotationId(), annotationBackend, serialized);
-                        delegatedExpressions.add(expr);
-                        return annotation.makePlaceholder(rexBuilder);
+                }
+
+                /** Bottom-up: classify each node as Delegated (carries combined bytes) or Resolved. */
+                private Classified classify(RexNode node) {
+                    if (node instanceof AnnotatedPredicate ap) {
+                        String backend = ap.getViableBackends().getFirst();
+                        if (!backend.equals(operatorBackend) && ap.getPerformanceDelegationBackends().isEmpty()) {
+                            byte[] serialized = serializeAnnotation(ap, backend);
+                            if (serialized != null) {
+                                return new Delegated(backend, serialized, ap.getAnnotationId());
+                            }
+                        }
+                        return new Resolved(apply(ap));
                     }
-                    // Update the first expression's bytes with the combined result.
-                    existing.updateExpressionBytes(combined);
-                    LOGGER.debug(
-                        "Delegated annotation [id={}]: {} combined with annotation [id={}] on backend [{}], combined {} bytes",
-                        annotation.getAnnotationId(),
-                        function,
-                        existing.getAnnotationId(),
-                        annotationBackend,
-                        combined.length
-                    );
-                    // This predicate is subsumed — return TRUE literal so it's a no-op in the plan.
-                    return rexBuilder.makeLiteral(true);
+
+                    if (node instanceof RexCall call) {
+                        SqlKind kind = call.getKind();
+                        if (kind != SqlKind.AND
+                            && kind != SqlKind.OR
+                            && kind != SqlKind.NOT) {
+                            return new Resolved(resolveCallChildren(call, rexBuilder));
+                        }
+
+                        // Single pass: classify children, separate delegated from resolved
+                        List<Delegated> delegatedChildren = new ArrayList<>();
+                        List<Object> ordered = new ArrayList<>(); // Delegated or RexNode
+                        String commonBackend = null;
+                        boolean multiBackend = false;
+
+                        for (RexNode operand : call.getOperands()) {
+                            Classified c = classify(operand);
+                            if (c instanceof Delegated d) {
+                                delegatedChildren.add(d);
+                                ordered.add(d);
+                                if (commonBackend == null) commonBackend = d.backend;
+                                else if (!commonBackend.equals(d.backend)) multiBackend = true;
+                            } else {
+                                ordered.add(((Resolved) c).node);
+                            }
+                        }
+
+                        // No delegated children or multi-backend — just rebuild with resolved
+                        if (delegatedChildren.isEmpty() || multiBackend) {
+                            return new Resolved(materializeIndividually(call, ordered, rexBuilder));
+                        }
+
+                        // Combine all delegated children into one
+                        List<byte[]> bytesList = delegatedChildren.stream().map(d -> d.combinedBytes).toList();
+                        int firstId = delegatedChildren.getFirst().firstAnnotationId;
+                        BackendCapabilityProvider cap = registry.getBackend(commonBackend).getCapabilityProvider();
+                        byte[] combined = cap.combineDelegatedPredicates(bytesList, kind);
+
+                        // Combining failed — materialize each individually
+                        if (combined == null) {
+                            return new Resolved(materializeIndividually(call, ordered, rexBuilder));
+                        }
+
+                        // All delegated, no native children — bubble up
+                        if (ordered.size() == delegatedChildren.size()) {
+                            return new Delegated(commonBackend, combined, firstId);
+                        }
+
+                        // Mixed — materialize combined placeholder + keep native children
+                        return new Resolved(materializeCombined(call, ordered, firstId, commonBackend, combined, rexBuilder));
+                    }
+
+                    return new Resolved(node);
+                }
+
+                private RexNode materializeIndividually(RexCall call, List<Object> ordered, RexBuilder rb) {
+                    List<RexNode> newOperands = new ArrayList<>();
+                    for (Object item : ordered) {
+                        if (item instanceof Delegated d) {
+                            if (delegatedExpressions == null) delegatedExpressions = new ArrayList<>();
+                            delegatedExpressions.add(new DelegatedExpression(d.firstAnnotationId, d.backend, d.combinedBytes));
+                            newOperands.add(DelegatedPredicateFunction.makeCall(rb, d.firstAnnotationId));
+                        } else {
+                            newOperands.add((RexNode) item);
+                        }
+                    }
+                    return call.clone(call.getType(), newOperands);
+                }
+
+                private RexNode materializeCombined(
+                    RexCall call, List<Object> ordered,
+                    int firstId, String backend, byte[] combined, RexBuilder rb
+                ) {
+                    if (delegatedExpressions == null) delegatedExpressions = new ArrayList<>();
+                    delegatedExpressions.add(new DelegatedExpression(firstId, backend, combined));
+
+                    List<RexNode> newOperands = new ArrayList<>();
+                    newOperands.add(DelegatedPredicateFunction.makeCall(rb, firstId));
+                    for (Object item : ordered) {
+                        if (!(item instanceof Delegated)) {
+                            newOperands.add((RexNode) item);
+                        }
+                    }
+                    return call.clone(call.getType(), newOperands);
+                }
+
+                private byte[] serializeAnnotation(AnnotatedPredicate ap, String backend) {
+                    RexNode original = ap.unwrap();
+                    if (!(original instanceof RexCall originalCall)
+                        || !(originalCall.getOperator() instanceof SqlFunction sqlFunction)) {
+                        return null;
+                    }
+                    ScalarFunction function = ScalarFunction.fromSqlFunction(sqlFunction);
+                    DelegatedPredicateSerializer serializer = registry.getBackend(backend)
+                        .getCapabilityProvider().delegatedPredicateSerializers().get(function);
+                    if (serializer == null) return null;
+                    return serializer.serialize(originalCall, fieldStorage);
+                }
+
+                private RexNode resolveCallChildren(RexCall call, RexBuilder rb) {
+                    List<RexNode> newOperands = new ArrayList<>();
+                    boolean changed = false;
+                    for (RexNode operand : call.getOperands()) {
+                        Classified c = classify(operand);
+                        RexNode resolved;
+                        if (c instanceof Delegated d) {
+                            if (delegatedExpressions == null) delegatedExpressions = new ArrayList<>();
+                            delegatedExpressions.add(new DelegatedExpression(d.firstAnnotationId, d.backend, d.combinedBytes));
+                            resolved = DelegatedPredicateFunction.makeCall(rb, d.firstAnnotationId);
+                        } else {
+                            resolved = ((Resolved) c).node;
+                        }
+                        newOperands.add(resolved);
+                        if (resolved != operand) changed = true;
+                    }
+                    return changed ? call.clone(call.getType(), newOperands) : call;
                 }
             };
         }
 
         List<DelegatedExpression> getResult() {
             return delegatedExpressions != null ? delegatedExpressions : List.of();
+        }
+
+        /** Tagged result from bottom-up classification. */
+        interface Classified {}
+
+        record Delegated(String backend, byte[] combinedBytes, int firstAnnotationId) implements Classified {
+        }
+
+        record Resolved(RexNode node) implements Classified {
         }
     }
 

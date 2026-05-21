@@ -8,6 +8,8 @@
 
 package org.opensearch.analytics.spi;
 
+import org.apache.calcite.sql.SqlKind;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -106,18 +108,18 @@ public interface BackendCapabilityProvider {
 
     /**
      * Combines multiple individually-serialized delegated predicates into a single
-     * AND-combined query. Called when multiple same-backend predicates are siblings
-     * under AND — the backend can intersect them natively (e.g., Lucene BooleanQuery
-     * with MUST clauses) rather than requiring multiple round-trips.
+     * query using the given boolean operator. Called incrementally as the planner
+     * walks the filter tree bottom-up — each input byte[] is either a leaf query
+     * or an already-combined query from a child level.
      *
      * <p>Default returns {@code null} indicating combining is not supported, in which
      * case each predicate remains a separate DelegatedExpression.
      *
-     * @param serializedPredicates individually serialized predicate bytes (each from
-     *                             {@link DelegatedPredicateSerializer#serialize})
-     * @return combined serialized bytes representing AND of all inputs, or {@code null}
+     * @param serializedPredicates list of serialized query bytes to combine
+     * @param kind the boolean relationship: AND → MUST, OR → SHOULD, NOT → MUST_NOT
+     * @return combined serialized bytes, or {@code null} if not supported
      */
-    default byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
+    default byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
         return null;
     }
 }

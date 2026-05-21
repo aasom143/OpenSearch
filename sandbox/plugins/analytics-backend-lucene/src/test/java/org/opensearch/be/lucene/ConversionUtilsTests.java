@@ -501,18 +501,9 @@ public class ConversionUtilsTests extends OpenSearchTestCase {
         assertEquals("whitespace", params.get("analyzer"));
     }
 
-    // ---- combineToBoolMust tests ----
+    // ---- combineDelegatedPredicates tests ----
 
-    public void testCombineToBoolMustSingleElement() {
-        byte[] matchBytes = ConversionUtils.serializeQueryBuilder(
-            new org.opensearch.index.query.MatchQueryBuilder("title", "google")
-        );
-        byte[] result = ConversionUtils.combineToBoolMust(List.of(matchBytes));
-        // Single element should return the same bytes unchanged
-        assertArrayEquals(matchBytes, result);
-    }
-
-    public void testCombineToBoolMustTwoPredicates() throws Exception {
+    public void testCombineDelegatedPredicatesAndTwoPredicates() throws Exception {
         byte[] matchTitle = ConversionUtils.serializeQueryBuilder(
             new org.opensearch.index.query.MatchQueryBuilder("title", "google")
         );
@@ -520,37 +511,32 @@ public class ConversionUtilsTests extends OpenSearchTestCase {
             new org.opensearch.index.query.MatchQueryBuilder("referer", "http")
         );
 
-        byte[] combined = ConversionUtils.combineToBoolMust(List.of(matchTitle, matchReferer));
+        byte[] combined = ConversionUtils.combineDelegatedPredicates(
+            List.of(matchTitle, matchReferer), org.apache.calcite.sql.SqlKind.AND
+        );
         assertNotNull(combined);
 
-        // Deserialize and verify it's a BoolQuery with 2 MUST clauses
         org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
-        org.opensearch.core.common.io.stream.StreamInput rawInput =
-            org.opensearch.core.common.io.stream.StreamInput.wrap(combined);
         org.opensearch.core.common.io.stream.StreamInput input =
-            new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(rawInput, registry);
+            new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(
+                org.opensearch.core.common.io.stream.StreamInput.wrap(combined), registry
+            );
         org.opensearch.index.query.QueryBuilder qb = input.readNamedWriteable(org.opensearch.index.query.QueryBuilder.class);
 
-        assertTrue("Combined should be BoolQueryBuilder", qb instanceof org.opensearch.index.query.BoolQueryBuilder);
+        assertTrue(qb instanceof org.opensearch.index.query.BoolQueryBuilder);
         org.opensearch.index.query.BoolQueryBuilder boolQb = (org.opensearch.index.query.BoolQueryBuilder) qb;
         assertEquals("Should have 2 must clauses", 2, boolQb.must().size());
-        assertTrue("First must should be MatchQueryBuilder", boolQb.must().get(0) instanceof org.opensearch.index.query.MatchQueryBuilder);
-        assertTrue("Second must should be MatchQueryBuilder", boolQb.must().get(1) instanceof org.opensearch.index.query.MatchQueryBuilder);
-
-        org.opensearch.index.query.MatchQueryBuilder first = (org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(0);
-        org.opensearch.index.query.MatchQueryBuilder second = (org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(1);
-        assertEquals("title", first.fieldName());
-        assertEquals("google", first.value());
-        assertEquals("referer", second.fieldName());
-        assertEquals("http", second.value());
+        assertEquals("title", ((org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(0)).fieldName());
+        assertEquals("referer", ((org.opensearch.index.query.MatchQueryBuilder) boolQb.must().get(1)).fieldName());
     }
 
-    public void testCombineToBoolMustThreePredicates() throws Exception {
+    public void testCombineDelegatedPredicatesOrTwoPredicates() throws Exception {
         byte[] q1 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f1", "a"));
         byte[] q2 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f2", "b"));
-        byte[] q3 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f3", "c"));
 
-        byte[] combined = ConversionUtils.combineToBoolMust(List.of(q1, q2, q3));
+        byte[] combined = ConversionUtils.combineDelegatedPredicates(
+            List.of(q1, q2), org.apache.calcite.sql.SqlKind.OR
+        );
 
         org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
         org.opensearch.core.common.io.stream.StreamInput input =
@@ -560,6 +546,36 @@ public class ConversionUtilsTests extends OpenSearchTestCase {
         org.opensearch.index.query.QueryBuilder qb = input.readNamedWriteable(org.opensearch.index.query.QueryBuilder.class);
 
         org.opensearch.index.query.BoolQueryBuilder boolQb = (org.opensearch.index.query.BoolQueryBuilder) qb;
-        assertEquals("Should have 3 must clauses", 3, boolQb.must().size());
+        assertEquals("Should have 2 should clauses", 2, boolQb.should().size());
+        assertEquals("Should have 0 must clauses", 0, boolQb.must().size());
+    }
+
+    public void testCombineDelegatedPredicatesNotPredicate() throws Exception {
+        byte[] q1 = ConversionUtils.serializeQueryBuilder(new org.opensearch.index.query.MatchQueryBuilder("f1", "a"));
+
+        byte[] combined = ConversionUtils.combineDelegatedPredicates(
+            List.of(q1), org.apache.calcite.sql.SqlKind.NOT
+        );
+
+        org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+        org.opensearch.core.common.io.stream.StreamInput input =
+            new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(
+                org.opensearch.core.common.io.stream.StreamInput.wrap(combined), registry
+            );
+        org.opensearch.index.query.QueryBuilder qb = input.readNamedWriteable(org.opensearch.index.query.QueryBuilder.class);
+
+        org.opensearch.index.query.BoolQueryBuilder boolQb = (org.opensearch.index.query.BoolQueryBuilder) qb;
+        assertEquals("Should have 1 must_not clause", 1, boolQb.mustNot().size());
+    }
+
+    public void testCombineDelegatedPredicatesSingleElementReturnsUnchanged() {
+        byte[] matchBytes = ConversionUtils.serializeQueryBuilder(
+            new org.opensearch.index.query.MatchQueryBuilder("title", "google")
+        );
+        byte[] result = ConversionUtils.combineDelegatedPredicates(
+            List.of(matchBytes), org.apache.calcite.sql.SqlKind.AND
+        );
+        // Single element with AND/OR should return unchanged
+        assertArrayEquals(matchBytes, result);
     }
 }

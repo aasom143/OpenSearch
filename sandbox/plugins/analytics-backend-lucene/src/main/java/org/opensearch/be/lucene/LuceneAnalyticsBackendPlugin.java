@@ -30,6 +30,7 @@ import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 
 import java.util.HashSet;
+import org.apache.calcite.sql.SqlKind;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -146,8 +147,8 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
             }
 
             @Override
-            public byte[] combineDelegatedPredicates(java.util.List<byte[]> serializedPredicates) {
-                return ConversionUtils.combineToBoolMust(serializedPredicates);
+            public byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
+                return ConversionUtils.combineDelegatedPredicates(serializedPredicates, kind);
             }
         };
     }

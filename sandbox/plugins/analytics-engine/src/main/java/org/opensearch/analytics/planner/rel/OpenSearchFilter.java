@@ -129,6 +129,11 @@ public class OpenSearchFilter extends Filter implements OpenSearchRelNode {
     }
 
     private RexNode resolveCondition(RexNode node, Function<OperatorAnnotation, RexNode> annotationResolver) {
+        // Single-pass resolver handles the entire tree at once.
+        if (annotationResolver instanceof AnnotationResolver ar) {
+            return ar.resolveTree(node);
+        }
+        // Fallback for simple resolvers (e.g., OperatorAnnotation::unwrap).
         if (node instanceof AnnotatedPredicate predicate) return annotationResolver.apply(predicate);
         if (node instanceof RexCall call) {
             List<RexNode> newOperands = new ArrayList<>();

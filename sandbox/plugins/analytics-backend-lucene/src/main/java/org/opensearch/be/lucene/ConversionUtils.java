@@ -12,9 +12,14 @@ import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.sql.SqlKind;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput;
+import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 
 import java.io.IOException;
@@ -246,27 +251,35 @@ public final class ConversionUtils {
     }
 
     /**
-     * Combines multiple serialized QueryBuilder bytes into a single BoolQueryBuilder
-     * with MUST clauses. Used to merge same-backend AND'd predicates into one query.
+     * Combines serialized QueryBuilder bytes into a single BoolQueryBuilder using
+     * the given SqlKind to determine clause type (MUST/SHOULD/MUST_NOT).
      */
-    public static byte[] combineToBoolMust(List<byte[]> serializedPredicates) {
-        if (serializedPredicates.size() == 1) {
+    public static byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
+        if (serializedPredicates.size() == 1 && kind != SqlKind.NOT) {
             return serializedPredicates.getFirst();
         }
-        org.opensearch.index.query.BoolQueryBuilder boolQuery = new org.opensearch.index.query.BoolQueryBuilder();
-        org.opensearch.core.common.io.stream.NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
         for (byte[] bytes : serializedPredicates) {
-            try {
-                org.opensearch.core.common.io.stream.StreamInput rawInput =
-                    org.opensearch.core.common.io.stream.StreamInput.wrap(bytes);
-                org.opensearch.core.common.io.stream.StreamInput input =
-                    new org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput(rawInput, registry);
-                QueryBuilder qb = input.readNamedWriteable(QueryBuilder.class);
-                boolQuery.must(qb);
-            } catch (IOException e) {
-                throw new IllegalStateException("Failed to deserialize query for combining", e);
+            QueryBuilder qb = deserializeQuery(bytes);
+            switch (kind) {
+                case AND -> boolQuery.must(qb);
+                case OR -> boolQuery.should(qb);
+                case NOT -> boolQuery.mustNot(qb);
+                default -> throw new IllegalArgumentException("Unsupported kind: " + kind);
             }
         }
         return serializeQueryBuilder(boolQuery);
+    }
+
+    private static QueryBuilder deserializeQuery(byte[] bytes) {
+        try {
+            NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+            StreamInput rawInput = StreamInput.wrap(bytes);
+            StreamInput input =
+                new NamedWriteableAwareStreamInput(rawInput, registry);
+            return input.readNamedWriteable(QueryBuilder.class);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to deserialize query for combining", e);
+        }
     }
 }

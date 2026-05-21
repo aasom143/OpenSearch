@@ -741,10 +741,9 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
             }
 
             @Override
-            public byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates) {
-                // Simple combining: concatenate with separator for test verification
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
                 StringBuilder sb = new StringBuilder("combined:");
-                for (byte[] b : serializedPredicates) {
+                for (byte[] b : predicates) {
                     sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
                 }
                 return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -753,11 +752,11 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
         Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
         var context = buildContext("parquet", fields, backends);
-        RexNode condition = makeAnd(
-            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"),
-            makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")
+        RexNode condition = makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"), makeFullTextCall(FUZZY_FUNCTION, 0, "wrld"));
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })),
+            condition
         );
-        LogicalFilter filter = LogicalFilter.create(stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
         RelNode cboOutput = runPlanner(filter, context);
         QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
         PlanForker.forkAll(dag, context.getCapabilityRegistry());
@@ -769,10 +768,288 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         // Serializer was called twice (once per predicate)
         assertEquals("serializer call count", 2, serializer.callCount);
         // The combined bytes should contain both predicates
-        String combinedStr = new String(plan.delegatedExpressions().getFirst().getExpressionBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String combinedStr = new String(
+            plan.delegatedExpressions().getFirst().getExpressionBytes(),
+            java.nio.charset.StandardCharsets.UTF_8
+        );
         assertTrue("Combined should contain MATCH_PHRASE", combinedStr.contains("MATCH_PHRASE"));
         assertTrue("Combined should contain FUZZY", combinedStr.contains("FUZZY"));
     }
+
+    /** OR(delegated, delegated) with combining support — combined into single DelegatedExpression with OR structure. */
+    public void testOrTwoDelegatedWithCombining() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        // Override the mock Lucene backend to support combining
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                assertEquals("Should be OR", org.apache.calcite.sql.SqlKind.OR, kind);
+                assertEquals("Should have 2 predicates", 2, predicates.size());
+                StringBuilder sb = new StringBuilder("or_combined:");
+                for (byte[] b : predicates) {
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                }
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", fields, backends);
+        RexNode condition = rexBuilder.makeCall(
+            org.apache.calcite.sql.fun.SqlStdOperatorTable.OR,
+            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"),
+            makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")
+        );
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })),
+            condition
+        );
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        // OR siblings targeting same backend should be combined into 1 DelegatedExpression
+        assertEquals("Should have 1 combined delegated expression", 1, plan.delegatedExpressions().size());
+        assertEquals("serializer call count", 2, serializer.callCount);
+        String combinedStr = new String(
+            plan.delegatedExpressions().getFirst().getExpressionBytes(),
+            java.nio.charset.StandardCharsets.UTF_8
+        );
+        assertTrue("Combined should contain MATCH_PHRASE", combinedStr.contains("MATCH_PHRASE"));
+        assertTrue("Combined should contain FUZZY", combinedStr.contains("FUZZY"));
+    }
+
+    // ---- Complex combining cases ----
+
+    /** OR(AND(delegated, delegated), delegated) — pure Lucene nested structure → 1 combined. */
+    public void testOrOfAndDelegated_PureLucene() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                StringBuilder sb = new StringBuilder("combined(" + kind + "):");
+                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", fields, backends);
+        // OR(AND(match_phrase, fuzzy), match_phrase)
+        RexNode condition = rexBuilder.makeCall(
+            org.apache.calcite.sql.fun.SqlStdOperatorTable.OR,
+            makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"), makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")),
+            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru")
+        );
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        assertEquals("Pure Lucene nested OR(AND,leaf) should produce 1 expression", 1, plan.delegatedExpressions().size());
+        assertEquals("serializer call count", 3, serializer.callCount);
+    }
+
+    /** OR(AND(a,b), AND(c,d)) — pure Lucene two AND groups under OR → 1 combined. */
+    public void testOrOfTwoAndGroups_PureLucene() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                StringBuilder sb = new StringBuilder("combined(" + kind + "):");
+                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", fields, backends);
+        // OR(AND(match_phrase, fuzzy), AND(match_phrase, fuzzy))
+        RexNode condition = rexBuilder.makeCall(
+            org.apache.calcite.sql.fun.SqlStdOperatorTable.OR,
+            makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"), makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")),
+            makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru"), makeFullTextCall(FUZZY_FUNCTION, 0, "typo"))
+        );
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        assertEquals("OR(AND,AND) pure Lucene should produce 1 expression", 1, plan.delegatedExpressions().size());
+        assertEquals("serializer call count", 4, serializer.callCount);
+    }
+
+    /** AND(OR(AND(a,b), c), d) — pure Lucene deep nesting → 1 combined. */
+    public void testAndOrAndNested_PureLucene() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                StringBuilder sb = new StringBuilder("combined(" + kind + "):");
+                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of("message", Map.of("type", "keyword", "index", true));
+        var context = buildContext("parquet", fields, backends);
+        // AND(OR(AND(match_phrase, fuzzy), match_phrase), fuzzy)
+        RexNode orClause = rexBuilder.makeCall(
+            org.apache.calcite.sql.fun.SqlStdOperatorTable.OR,
+            makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"), makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")),
+            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru")
+        );
+        RexNode condition = makeAnd(orClause, makeFullTextCall(FUZZY_FUNCTION, 0, "http"));
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        assertEquals("AND(OR(AND,leaf),leaf) pure Lucene should produce 1 expression", 1, plan.delegatedExpressions().size());
+        assertEquals("serializer call count", 4, serializer.callCount);
+    }
+
+    /** AND(OR(AND(a,b), c), d, native) — mixed: Lucene subtree combined + native preserved. */
+    public void testMixedAndOrAndWithNative() {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                return map;
+            }
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                StringBuilder sb = new StringBuilder("combined(" + kind + "):");
+                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        // message=keyword(indexed), amount=integer(NOT indexed → native only)
+        Map<String, Map<String, Object>> fields = Map.of(
+            "message", Map.of("type", "keyword", "index", true),
+            "amount", Map.of("type", "integer", "index", false)
+        );
+        var context = buildContext("parquet", fields, backends);
+        // AND(OR(AND(match_phrase, fuzzy), match_phrase), fuzzy, amount=200)
+        RexNode orClause = rexBuilder.makeCall(
+            org.apache.calcite.sql.fun.SqlStdOperatorTable.OR,
+            makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "hello"), makeFullTextCall(FUZZY_FUNCTION, 0, "wrld")),
+            makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru")
+        );
+        RexNode condition = makeAnd(orClause, makeFullTextCall(FUZZY_FUNCTION, 0, "http"), makeEquals(1, SqlTypeName.INTEGER, 200));
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(mockTable("test_index", new String[] { "message", "amount" },
+                new SqlTypeName[] { SqlTypeName.VARCHAR, SqlTypeName.INTEGER })), condition);
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+
+        // All 4 Lucene predicates combined into 1, native amount=200 stays separate
+        assertEquals("Mixed: Lucene combined into 1 expression", 1, plan.delegatedExpressions().size());
+        assertEquals("serializer call count", 4, serializer.callCount);
+        // Verify the stripped plan still has AND (placeholder + native)
+        assertTrue("AND should be preserved", RelOptUtil.toString(dfConvertor.shardScanFragment).contains("AND"));
+    }
+
 
     // ---- OR conditions ----
 
