@@ -32,6 +32,7 @@ import org.opensearch.analytics.spi.ShardScanInstructionNode;
 import org.opensearch.analytics.spi.ShardScanWithDelegationInstructionNode;
 import org.opensearch.analytics.spi.WindowCapability;
 
+import org.apache.calcite.sql.SqlKind;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -104,6 +105,11 @@ abstract class MockBackend implements AnalyticsSearchBackendPlugin {
             public Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 return self.delegatedPredicateSerializers();
             }
+
+            @Override
+            public byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
+                return self.combineDelegatedPredicates(serializedPredicates, kind);
+            }
         };
     }
 
@@ -150,6 +156,10 @@ abstract class MockBackend implements AnalyticsSearchBackendPlugin {
 
     protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
         return Map.of();
+    }
+
+    protected byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
+        return null;
     }
 
     @Override

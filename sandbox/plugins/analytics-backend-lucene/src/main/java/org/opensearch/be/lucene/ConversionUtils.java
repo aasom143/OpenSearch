@@ -15,6 +15,10 @@ import org.apache.calcite.rex.RexNode;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput;
+import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.index.query.BoolQueryBuilder;
 import org.opensearch.index.query.QueryBuilder;
 
 import java.io.IOException;
@@ -243,5 +247,40 @@ public final class ConversionUtils {
             throw new IllegalArgumentException("Cannot extract field names from operand " + operandIndex + ": " + operand);
         }
         return fields;
+    }
+
+    /** Boolean clause type for combining delegated predicates. */
+    public enum BoolClauseType { MUST, SHOULD, MUST_NOT }
+
+    /**
+     * Combines serialized QueryBuilder bytes into a single BoolQueryBuilder using
+     * the given clause type (MUST/SHOULD/MUST_NOT).
+     */
+    public static byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, BoolClauseType clauseType) {
+        if (serializedPredicates.size() == 1 && clauseType != BoolClauseType.MUST_NOT) {
+            return serializedPredicates.getFirst();
+        }
+        BoolQueryBuilder boolQuery = new BoolQueryBuilder();
+        for (byte[] bytes : serializedPredicates) {
+            QueryBuilder qb = deserializeQuery(bytes);
+            switch (clauseType) {
+                case MUST -> boolQuery.must(qb);
+                case SHOULD -> boolQuery.should(qb);
+                case MUST_NOT -> boolQuery.mustNot(qb);
+            }
+        }
+        return serializeQueryBuilder(boolQuery);
+    }
+
+    private static QueryBuilder deserializeQuery(byte[] bytes) {
+        try {
+            NamedWriteableRegistry registry = QueryBuilderRegistry.get();
+            StreamInput rawInput = StreamInput.wrap(bytes);
+            StreamInput input =
+                new NamedWriteableAwareStreamInput(rawInput, registry);
+            return input.readNamedWriteable(QueryBuilder.class);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to deserialize query for combining", e);
+        }
     }
 }

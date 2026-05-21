@@ -30,6 +30,7 @@ import org.opensearch.tasks.CancellableTask;
 import org.opensearch.tasks.Task;
 
 import java.util.HashSet;
+import org.apache.calcite.sql.SqlKind;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -143,6 +144,17 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
             @Override
             public Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 return QuerySerializerRegistry.getSerializers();
+            }
+
+            @Override
+            public byte[] combineDelegatedPredicates(List<byte[]> serializedPredicates, SqlKind kind) {
+                ConversionUtils.BoolClauseType clauseType = switch (kind) {
+                    case AND -> ConversionUtils.BoolClauseType.MUST;
+                    case OR -> ConversionUtils.BoolClauseType.SHOULD;
+                    case NOT -> ConversionUtils.BoolClauseType.MUST_NOT;
+                    default -> throw new IllegalArgumentException("Unsupported kind: " + kind);
+                };
+                return ConversionUtils.combineDelegatedPredicates(serializedPredicates, clauseType);
             }
         };
     }
