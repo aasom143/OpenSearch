@@ -854,13 +854,21 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         RecordingSerializer serializer = new RecordingSerializer();
         MockDataFusionBackend df = new MockDataFusionBackend() {
             @Override
-            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
-            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
         };
         MockLuceneBackend lucene = new MockLuceneBackend() {
             @Override
-            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
             protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
@@ -868,10 +876,12 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
                 map.put(ScalarFunction.FUZZY, serializer);
                 return map;
             }
+
             @Override
             public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
                 StringBuilder sb = new StringBuilder("combined(" + kind + "):");
-                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                for (byte[] b : predicates)
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
                 return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
         };
@@ -885,7 +895,9 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
             makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru")
         );
         LogicalFilter filter = LogicalFilter.create(
-            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })),
+            condition
+        );
         RelNode cboOutput = runPlanner(filter, context);
         QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
         PlanForker.forkAll(dag, context.getCapabilityRegistry());
@@ -902,13 +914,21 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         RecordingSerializer serializer = new RecordingSerializer();
         MockDataFusionBackend df = new MockDataFusionBackend() {
             @Override
-            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
-            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
         };
         MockLuceneBackend lucene = new MockLuceneBackend() {
             @Override
-            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
             protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
@@ -916,10 +936,12 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
                 map.put(ScalarFunction.FUZZY, serializer);
                 return map;
             }
+
             @Override
             public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
                 StringBuilder sb = new StringBuilder("combined(" + kind + "):");
-                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                for (byte[] b : predicates)
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
                 return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
         };
@@ -933,7 +955,9 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
             makeAnd(makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, "ru"), makeFullTextCall(FUZZY_FUNCTION, 0, "typo"))
         );
         LogicalFilter filter = LogicalFilter.create(
-            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })),
+            condition
+        );
         RelNode cboOutput = runPlanner(filter, context);
         QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
         PlanForker.forkAll(dag, context.getCapabilityRegistry());
@@ -950,13 +974,21 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         RecordingSerializer serializer = new RecordingSerializer();
         MockDataFusionBackend df = new MockDataFusionBackend() {
             @Override
-            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
-            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
         };
         MockLuceneBackend lucene = new MockLuceneBackend() {
             @Override
-            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
             protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
@@ -964,10 +996,12 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
                 map.put(ScalarFunction.FUZZY, serializer);
                 return map;
             }
+
             @Override
             public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
                 StringBuilder sb = new StringBuilder("combined(" + kind + "):");
-                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                for (byte[] b : predicates)
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
                 return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
         };
@@ -982,7 +1016,9 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         );
         RexNode condition = makeAnd(orClause, makeFullTextCall(FUZZY_FUNCTION, 0, "http"));
         LogicalFilter filter = LogicalFilter.create(
-            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })), condition);
+            stubScan(mockTable("test_index", new String[] { "message" }, new SqlTypeName[] { SqlTypeName.VARCHAR })),
+            condition
+        );
         RelNode cboOutput = runPlanner(filter, context);
         QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
         PlanForker.forkAll(dag, context.getCapabilityRegistry());
@@ -999,13 +1035,21 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         RecordingSerializer serializer = new RecordingSerializer();
         MockDataFusionBackend df = new MockDataFusionBackend() {
             @Override
-            protected Set<DelegationType> supportedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
-            public FragmentConvertor getFragmentConvertor() { return dfConvertor; }
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
         };
         MockLuceneBackend lucene = new MockLuceneBackend() {
             @Override
-            protected Set<DelegationType> acceptedDelegations() { return Set.of(DelegationType.FILTER); }
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
             @Override
             protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
                 Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
@@ -1013,18 +1057,22 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
                 map.put(ScalarFunction.FUZZY, serializer);
                 return map;
             }
+
             @Override
             public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
                 StringBuilder sb = new StringBuilder("combined(" + kind + "):");
-                for (byte[] b : predicates) sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                for (byte[] b : predicates)
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
                 return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             }
         };
         var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
         // message=keyword(indexed), amount=integer(NOT indexed → native only)
         Map<String, Map<String, Object>> fields = Map.of(
-            "message", Map.of("type", "keyword", "index", true),
-            "amount", Map.of("type", "integer", "index", false)
+            "message",
+            Map.of("type", "keyword", "index", true),
+            "amount",
+            Map.of("type", "integer", "index", false)
         );
         var context = buildContext("parquet", fields, backends);
         // AND(OR(AND(match_phrase, fuzzy), match_phrase), fuzzy, amount=200)
@@ -1035,8 +1083,15 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         );
         RexNode condition = makeAnd(orClause, makeFullTextCall(FUZZY_FUNCTION, 0, "http"), makeEquals(1, SqlTypeName.INTEGER, 200));
         LogicalFilter filter = LogicalFilter.create(
-            stubScan(mockTable("test_index", new String[] { "message", "amount" },
-                new SqlTypeName[] { SqlTypeName.VARCHAR, SqlTypeName.INTEGER })), condition);
+            stubScan(
+                mockTable(
+                    "test_index",
+                    new String[] { "message", "amount" },
+                    new SqlTypeName[] { SqlTypeName.VARCHAR, SqlTypeName.INTEGER }
+                )
+            ),
+            condition
+        );
         RelNode cboOutput = runPlanner(filter, context);
         QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
         PlanForker.forkAll(dag, context.getCapabilityRegistry());
@@ -1050,6 +1105,259 @@ public class FragmentConversionDriverTests extends BasePlannerRulesTests {
         assertTrue("AND should be preserved", RelOptUtil.toString(dfConvertor.shardScanFragment).contains("AND"));
     }
 
+    // ---- Combining: shared helper ----
+
+    /** Result holder for combining tests. */
+    private record CombiningResult(StagePlan plan, RecordingConvertor convertor, RecordingSerializer serializer, List<String> combineLog) {
+    }
+
+    private static final SqlFunction WILDCARD_FN = new SqlFunction(
+        "WILDCARD",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.BOOLEAN,
+        null,
+        OperandTypes.ANY,
+        SqlFunctionCategory.USER_DEFINED_FUNCTION
+    );
+    private static final SqlFunction REGEXP_FN = new SqlFunction(
+        "REGEXP",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.BOOLEAN,
+        null,
+        OperandTypes.ANY,
+        SqlFunctionCategory.USER_DEFINED_FUNCTION
+    );
+
+    /**
+     * Builds and runs the combining pipeline for a filter condition.
+     * Uses 3 fields: message(keyword,indexed), amount(int,NOT indexed), count(int,NOT indexed).
+     * Lucene accepts delegation for MATCH_PHRASE, FUZZY, WILDCARD, REGEXP.
+     */
+    private CombiningResult runCombining(RexNode condition) {
+        RecordingConvertor dfConvertor = new RecordingConvertor();
+        RecordingSerializer serializer = new RecordingSerializer();
+        List<String> combineLog = new ArrayList<>();
+        MockDataFusionBackend df = new MockDataFusionBackend() {
+            @Override
+            protected Set<DelegationType> supportedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            public FragmentConvertor getFragmentConvertor() {
+                return dfConvertor;
+            }
+        };
+        MockLuceneBackend lucene = new MockLuceneBackend() {
+            @Override
+            protected Set<DelegationType> acceptedDelegations() {
+                return Set.of(DelegationType.FILTER);
+            }
+
+            @Override
+            protected Map<ScalarFunction, DelegatedPredicateSerializer> delegatedPredicateSerializers() {
+                Map<ScalarFunction, DelegatedPredicateSerializer> map = new HashMap<>(super.delegatedPredicateSerializers());
+                map.put(ScalarFunction.MATCH_PHRASE, serializer);
+                map.put(ScalarFunction.FUZZY, serializer);
+                map.put(ScalarFunction.WILDCARD, serializer);
+                map.put(ScalarFunction.REGEXP, serializer);
+                return map;
+            }
+
+            @Override
+            public byte[] combineDelegatedPredicates(java.util.List<byte[]> predicates, org.apache.calcite.sql.SqlKind kind) {
+                combineLog.add(kind + ":" + predicates.size());
+                StringBuilder sb = new StringBuilder("combined(" + kind + "):");
+                for (byte[] b : predicates)
+                    sb.append(new String(b, java.nio.charset.StandardCharsets.UTF_8)).append("+");
+                return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        };
+        var backends = List.<AnalyticsSearchBackendPlugin>of(df, lucene);
+        Map<String, Map<String, Object>> fields = Map.of(
+            "message",
+            Map.of("type", "keyword", "index", true),
+            "amount",
+            Map.of("type", "integer", "index", false),
+            "count",
+            Map.of("type", "integer", "index", false)
+        );
+        var context = buildContext("parquet", fields, backends);
+        LogicalFilter filter = LogicalFilter.create(
+            stubScan(
+                mockTable(
+                    "test_index",
+                    new String[] { "message", "amount", "count" },
+                    new SqlTypeName[] { SqlTypeName.VARCHAR, SqlTypeName.INTEGER, SqlTypeName.INTEGER }
+                )
+            ),
+            condition
+        );
+        RelNode cboOutput = runPlanner(filter, context);
+        QueryDAG dag = DAGBuilder.build(cboOutput, context.getCapabilityRegistry(), mockClusterService());
+        PlanForker.forkAll(dag, context.getCapabilityRegistry());
+        FragmentConversionDriver.convertAll(dag, context.getCapabilityRegistry());
+        StagePlan plan = leafStage(dag).getPlanAlternatives().getFirst();
+        return new CombiningResult(plan, dfConvertor, serializer, combineLog);
+    }
+
+    private RexNode matchPhrase(String query) {
+        return makeFullTextCall(MATCH_PHRASE_FUNCTION, 0, query);
+    }
+
+    private RexNode fuzzy(String query) {
+        return makeFullTextCall(FUZZY_FUNCTION, 0, query);
+    }
+
+    private RexNode wildcard(String pattern) {
+        return makeFullTextCall(WILDCARD_FN, 0, pattern);
+    }
+
+    private RexNode regexp(String pattern) {
+        return makeFullTextCall(REGEXP_FN, 0, pattern);
+    }
+
+    private RexNode amountEquals(int val) {
+        return makeEquals(1, SqlTypeName.INTEGER, val);
+    }
+
+    private RexNode countEquals(int val) {
+        return makeEquals(2, SqlTypeName.INTEGER, val);
+    }
+
+    private RexNode or(RexNode... ops) {
+        return rexBuilder.makeCall(org.apache.calcite.sql.fun.SqlStdOperatorTable.OR, ops);
+    }
+
+    private RexNode not(RexNode op) {
+        return rexBuilder.makeCall(org.apache.calcite.sql.fun.SqlStdOperatorTable.NOT, op);
+    }
+
+    private FilterTreeShape treeShapeOf(StagePlan plan) {
+        return ((ShardScanWithDelegationInstructionNode) plan.instructions()
+            .stream()
+            .filter(n -> n.type() == InstructionType.SETUP_SHARD_SCAN_WITH_DELEGATION)
+            .findFirst()
+            .orElseThrow()).getTreeShape();
+    }
+
+    // ---- Combining tests (OR/NOT/mixed) ----
+
+    /** match_phrase AND fuzzy OR amount=200 → OR(AND(lucene,lucene), native) — combined, INTERLEAVED. */
+    public void testCombine_OrOfAndLuceneWithNative() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld")), amountEquals(200)));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(2, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("AND:2"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(AND(match_phrase, fuzzy), AND(amount=100, count=200)) — one Lucene arm combined, one native arm. */
+    public void testCombine_OrOfAndLuceneWithAndNative() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld")), makeAnd(amountEquals(100), countEquals(200))));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(2, r.serializer.callCount);
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** AND(OR(match_phrase, amount=200), fuzzy) — match_phrase can't merge with fuzzy across OR → 2 expressions. */
+    public void testCombine_AndWithOrContainingMixed() {
+        var r = runCombining(makeAnd(or(matchPhrase("hello"), amountEquals(200)), fuzzy("wrld")));
+        assertEquals(2, r.plan.delegatedExpressions().size());
+        assertEquals(2, r.serializer.callCount);
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(AND(match_phrase, fuzzy), AND(wildcard, amount=200)) — left arm combined, right has wildcard separate. */
+    public void testCombine_OrOfPureLuceneAndMixedAnd() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld")), makeAnd(wildcard("h*llo"), amountEquals(200))));
+        assertEquals(2, r.plan.delegatedExpressions().size());
+        assertEquals(3, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("AND:2"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(AND(match_phrase, fuzzy, wildcard), amount=200) — all 3 Lucene AND-combined, then OR with native. */
+    public void testCombine_OrOfThreeLuceneAndNative() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld"), wildcard("h*llo")), amountEquals(200)));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(3, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("AND:3"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(AND(match_phrase, fuzzy), AND(wildcard, regexp)) — pure Lucene both sides, fully combined to 1. */
+    public void testCombine_OrOfTwoAndGroupsPureLucene() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld")), makeAnd(wildcard("h*llo"), regexp("h.llo"))));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(4, r.serializer.callCount);
+        assertEquals(2, r.combineLog.stream().filter(s -> s.equals("AND:2")).count());
+        assertTrue(r.combineLog.contains("OR:2"));
+    }
+
+    /** OR(match_phrase, amount=200, fuzzy) — flat interleaved OR. */
+    public void testCombine_OrFlatInterleaved() {
+        var r = runCombining(or(matchPhrase("hello"), amountEquals(200), fuzzy("wrld")));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(2, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("OR:2"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(match_phrase, amount=100, fuzzy, count=200, wildcard) — 3 Lucene combined, 2 native preserved. */
+    public void testCombine_OrFlatFivePredicates() {
+        var r = runCombining(or(matchPhrase("hello"), amountEquals(100), fuzzy("wrld"), countEquals(200), wildcard("h*")));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(3, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("OR:3"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** AND(match_phrase, OR(fuzzy, amount=100), wildcard) — fuzzy materialized inside OR, match_phrase+wildcard may combine at AND. */
+    public void testCombine_AndLuceneOrMixedLucene() {
+        var r = runCombining(makeAnd(matchPhrase("hello"), or(fuzzy("wrld"), amountEquals(100)), wildcard("h*")));
+        assertTrue("at least 1 expression", r.plan.delegatedExpressions().size() >= 1);
+        assertEquals(3, r.serializer.callCount);
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** NOT(match_phrase) OR amount=200 — NOT wraps delegated, OR with native, INTERLEAVED. */
+    public void testCombine_OrNotLuceneWithNative() {
+        var r = runCombining(or(not(matchPhrase("hello")), amountEquals(200)));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(1, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("NOT:1"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** (match_phrase AND fuzzy AND NOT(wildcard)) OR amount=200 — AND combines all 3, then OR with native. */
+    public void testCombine_OrOfAndWithNotAndNative() {
+        var r = runCombining(or(makeAnd(matchPhrase("hello"), fuzzy("wrld"), not(wildcard("h*"))), amountEquals(200)));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(3, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("NOT:1"));
+        assertTrue(r.combineLog.contains("AND:3"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** OR(NOT(match_phrase), NOT(fuzzy), amount=200) — both NOTs combine under OR, native stays. */
+    public void testCombine_OrTwoNotsWithNative() {
+        var r = runCombining(or(not(matchPhrase("hello")), not(fuzzy("wrld")), amountEquals(200)));
+        assertEquals(1, r.plan.delegatedExpressions().size());
+        assertEquals(2, r.serializer.callCount);
+        assertEquals(2, r.combineLog.stream().filter(s -> s.equals("NOT:1")).count());
+        assertTrue(r.combineLog.contains("OR:2"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
+
+    /** AND(OR(match_phrase, fuzzy), OR(wildcard, amount=200)) — first OR bubbles up, second is mixed. */
+    public void testCombine_AndOfTwoOrs_OnePureOneMixed() {
+        var r = runCombining(makeAnd(or(matchPhrase("hello"), fuzzy("wrld")), or(wildcard("h*"), amountEquals(200))));
+        assertEquals(2, r.plan.delegatedExpressions().size());
+        assertEquals(3, r.serializer.callCount);
+        assertTrue(r.combineLog.contains("OR:2"));
+        assertEquals(FilterTreeShape.INTERLEAVED_BOOLEAN_EXPRESSION, treeShapeOf(r.plan));
+    }
 
     // ---- OR conditions ----
 
