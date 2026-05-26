@@ -107,6 +107,9 @@ public class FragmentConversionDriver {
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
+            if (delegated.size() == 1){
+                treeShape = FilterTreeShape.CONJUNCTIVE;
+            }
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
