@@ -248,7 +248,7 @@ impl LocalSession {
 mod tests {
     use super::*;
 
-    use arrow_array::{Int64Array, RecordBatch};
+    use arrow_array::{Float64Array, Int64Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion_substrait::logical_plan::producer::to_substrait_plan;
@@ -342,20 +342,20 @@ mod tests {
             .await
             .expect("execute");
 
-        let mut total: i64 = 0;
+        let mut total: f64 = 0.0;
         while let Some(batch) = stream.next().await {
             let batch = batch.expect("batch ok");
             let col = batch
                 .column(0)
                 .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("i64 col");
+                .downcast_ref::<Float64Array>()
+                .expect("f64 col");
             for i in 0..col.len() {
                 total += col.value(i);
             }
         }
         producer.join().expect("producer thread");
-        assert_eq!(total, 45);
+        assert_eq!(total, 45.0);
     }
 
     #[tokio::test]
@@ -399,19 +399,19 @@ mod tests {
             .await
             .expect("execute");
 
-        let mut total: i64 = 0;
+        let mut total: f64 = 0.0;
         while let Some(batch) = stream.next().await {
             let batch = batch.expect("batch ok");
             let col = batch
                 .column(0)
                 .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("i64 col");
+                .downcast_ref::<Float64Array>()
+                .expect("f64 col");
             for i in 0..col.len() {
                 total += col.value(i);
             }
         }
-        assert_eq!(total, 45);
+        assert_eq!(total, 45.0);
     }
 
     #[tokio::test]
