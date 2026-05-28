@@ -104,9 +104,17 @@ public class FragmentConversionDriver {
             byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
 
             // Assemble instruction list
+            List<DelegatedExpression> delegated = delegationBytes.getResult();
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
-            converted.add(plan.withConvertedBytes(bytes, delegationBytes.getResult()).withInstructions(instructions));
+            converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
+            LOGGER.info(
+                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{}",
+                plan.backendId(),
+                treeShape,
+                delegated.size(),
+                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
+            );
         }
         stage.setPlanAlternatives(converted);
         // Store factory on coordinator-reduce stages (local execution, no serialization needed).
