@@ -31,6 +31,7 @@ use std::sync::Arc;
 use datafusion::arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Float64Array, Int64Array, UInt64Array,
 };
+use datafusion::arrow::array::BooleanBufferBuilder;
 use datafusion::arrow::buffer::NullBuffer;
 use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef};
@@ -263,7 +264,13 @@ impl Accumulator for NeumaierSumAccumulator {
 pub struct NeumaierGroupsAccumulator {
     sums: Vec<f64>,
     compensations: Vec<f64>,
-    null_state: Vec<bool>,
+    /// Bit-packed null tracking — 1 bit per group instead of 1 byte.
+    /// Matches the memory footprint of DataFusion's built-in NullState.
+    null_state: BooleanBufferBuilder,
+    /// Reused per-batch scratch: accumulates plain `+=` per row in the hot loop,
+    /// then merged into `sums`/`compensations` via Neumaier in the cold loop.
+    /// Reduces Neumaier calls from O(num_rows) to O(unique_groups_in_batch).
+    tmp_sum: Vec<f64>,
 }
 
 impl NeumaierGroupsAccumulator {
@@ -271,7 +278,8 @@ impl NeumaierGroupsAccumulator {
         Self {
             sums: Vec::new(),
             compensations: Vec::new(),
-            null_state: Vec::new(),
+            null_state: BooleanBufferBuilder::new(0),
+            tmp_sum: Vec::new(),
         }
     }
 
@@ -279,12 +287,17 @@ impl NeumaierGroupsAccumulator {
         if total_num_groups > self.sums.len() {
             self.sums.resize(total_num_groups, 0.0);
             self.compensations.resize(total_num_groups, 0.0);
-            self.null_state.resize(total_num_groups, false);
+            self.tmp_sum.resize(total_num_groups, 0.0);
+            // Extend the bitset with `false` bits for new groups
+            let extra = total_num_groups - self.null_state.len();
+            self.null_state.append_n(extra, false);
         }
     }
 
+    /// Neumaier-merge `value` into `sums[group]` and `compensations[group]`.
+    /// Does NOT touch `null_state` — caller is responsible for that.
     #[inline]
-    fn neumaier_add_to_group(&mut self, group: usize, value: f64) {
+    fn neumaier_merge_no_null(&mut self, group: usize, value: f64) {
         let sum = self.sums[group];
         let t = sum + value;
         if sum.abs() >= value.abs() {
@@ -293,7 +306,6 @@ impl NeumaierGroupsAccumulator {
             self.compensations[group] += (value - t) + sum;
         }
         self.sums[group] = t;
-        self.null_state[group] = true;
     }
 }
 
@@ -308,15 +320,22 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
         self.ensure_capacity(total_num_groups);
         let col = &values[0];
 
-        // Input is already widened: only Int64, UInt64, or Float64
+        // Two-pass approach to reduce per-row Neumaier overhead:
+        //   Pass 1 (hot loop): plain f64 += into tmp_sum, set null_state per row.
+        //   Pass 2 (cold loop): walk group_indices again, Neumaier-merge tmp_sum
+        //     into sums/compensations once per unique group, then zero tmp_sum.
+        // Cold loop bounded by len(group_indices) ≤ batch size (e.g., 8192),
+        // independent of total_num_groups.
         match col.data_type() {
             DataType::Float64 => {
                 let typed = col.as_any().downcast_ref::<Float64Array>().unwrap();
+                // Hot loop
                 for (i, &group) in group_indices.iter().enumerate() {
                     if opt_filter.map_or(false, |f| !f.value(i)) || typed.is_null(i) {
                         continue;
                     }
-                    self.neumaier_add_to_group(group, typed.value(i));
+                    self.tmp_sum[group] += typed.value(i);
+                    self.null_state.set_bit(group, true);
                 }
             }
             DataType::Int64 => {
@@ -325,7 +344,8 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
                     if opt_filter.map_or(false, |f| !f.value(i)) || typed.is_null(i) {
                         continue;
                     }
-                    self.neumaier_add_to_group(group, typed.value(i) as f64);
+                    self.tmp_sum[group] += typed.value(i) as f64;
+                    self.null_state.set_bit(group, true);
                 }
             }
             DataType::UInt64 => {
@@ -334,7 +354,8 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
                     if opt_filter.map_or(false, |f| !f.value(i)) || typed.is_null(i) {
                         continue;
                     }
-                    self.neumaier_add_to_group(group, typed.value(i) as f64);
+                    self.tmp_sum[group] += typed.value(i) as f64;
+                    self.null_state.set_bit(group, true);
                 }
             }
             _ => {
@@ -344,8 +365,20 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
                     if opt_filter.map_or(false, |f| !f.value(i)) || typed.is_null(i) {
                         continue;
                     }
-                    self.neumaier_add_to_group(group, typed.value(i));
+                    self.tmp_sum[group] += typed.value(i);
+                    self.null_state.set_bit(group, true);
                 }
+            }
+        }
+
+        // Pass 2 (cold loop): merge tmp_sum into sums via Neumaier, dedup by zeroing.
+        // Iterating group_indices instead of 0..total_num_groups bounds the loop
+        // to batch size (matters at high cardinality).
+        for &group in group_indices.iter() {
+            let v = self.tmp_sum[group];
+            if v != 0.0 {
+                self.neumaier_merge_no_null(group, v);
+                self.tmp_sum[group] = 0.0;
             }
         }
         Ok(())
@@ -364,65 +397,50 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
         let comps = values[1].as_any().downcast_ref::<Float64Array>().unwrap();
         let counts = values[2].as_any().downcast_ref::<UInt64Array>().unwrap();
 
+        // Hot loop: accumulate (sum + comp) per group into tmp_sum
         for (i, &group) in group_indices.iter().enumerate() {
             if opt_filter.map_or(false, |f| !f.value(i)) || sums.is_null(i) {
                 continue;
             }
-            self.neumaier_add_to_group(group, sums.value(i));
-            self.neumaier_add_to_group(group, comps.value(i));
+            self.tmp_sum[group] += sums.value(i) + comps.value(i);
             if counts.value(i) > 0 {
-                self.null_state[group] = true;
+                self.null_state.set_bit(group, true);
+            }
+        }
+
+        // Cold loop: Neumaier-merge per touched group
+        for &group in group_indices.iter() {
+            let v = self.tmp_sum[group];
+            if v != 0.0 {
+                self.neumaier_merge_no_null(group, v);
+                self.tmp_sum[group] = 0.0;
             }
         }
         Ok(())
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        let (sums, comps, nulls) = match emit_to {
-            EmitTo::All => {
-                let s = std::mem::take(&mut self.sums);
-                let c = std::mem::take(&mut self.compensations);
-                let n = std::mem::take(&mut self.null_state);
-                (s, c, n)
-            }
-            EmitTo::First(n) => {
-                let s = self.sums.drain(..n).collect::<Vec<_>>();
-                let c = self.compensations.drain(..n).collect::<Vec<_>>();
-                let ns = self.null_state.drain(..n).collect::<Vec<_>>();
-                (s, c, ns)
-            }
-        };
+        let (sums, comps, nulls) = self.take_state(emit_to);
 
         let values: Vec<Option<f64>> = sums
             .iter()
             .zip(comps.iter())
-            .zip(nulls.iter())
-            .map(|((s, c), &has_value)| if has_value { Some(s + c) } else { None })
+            .enumerate()
+            .map(|(i, (s, c))| if nulls.value(i) { Some(s + c) } else { None })
             .collect();
 
         Ok(Arc::new(Float64Array::from(values)))
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
-        let (sums, comps, nulls) = match emit_to {
-            EmitTo::All => {
-                let s = std::mem::take(&mut self.sums);
-                let c = std::mem::take(&mut self.compensations);
-                let n = std::mem::take(&mut self.null_state);
-                (s, c, n)
-            }
-            EmitTo::First(n) => {
-                let s = self.sums.drain(..n).collect::<Vec<_>>();
-                let c = self.compensations.drain(..n).collect::<Vec<_>>();
-                let ns = self.null_state.drain(..n).collect::<Vec<_>>();
-                (s, c, ns)
-            }
-        };
+        let (sums, comps, nulls) = self.take_state(emit_to);
 
-        let null_buffer = NullBuffer::from(nulls.clone());
+        let null_buffer = NullBuffer::new(nulls.clone());
         let sum_array = Float64Array::new(sums.into(), Some(null_buffer.clone()));
         let comp_array = Float64Array::new(comps.into(), Some(null_buffer.clone()));
-        let count_array: Vec<u64> = nulls.iter().map(|&v| if v { 1 } else { 0 }).collect();
+        let count_array: Vec<u64> = (0..nulls.len())
+            .map(|i| if nulls.value(i) { 1 } else { 0 })
+            .collect();
         let count_array = UInt64Array::from(count_array);
 
         Ok(vec![
@@ -433,7 +451,45 @@ impl GroupsAccumulator for NeumaierGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.sums.capacity() * 8 + self.compensations.capacity() * 8 + self.null_state.capacity()
+        self.sums.capacity() * 8
+            + self.compensations.capacity() * 8
+            + self.tmp_sum.capacity() * 8
+            + self.null_state.capacity() / 8 // bits → bytes
+    }
+}
+
+impl NeumaierGroupsAccumulator {
+    /// Takes the requested portion of state, leaving the accumulator ready
+    /// for further updates (for `EmitTo::First(n)`) or empty (for `EmitTo::All`).
+    fn take_state(
+        &mut self,
+        emit_to: EmitTo,
+    ) -> (Vec<f64>, Vec<f64>, datafusion::arrow::buffer::BooleanBuffer) {
+        match emit_to {
+            EmitTo::All => {
+                let s = std::mem::take(&mut self.sums);
+                let c = std::mem::take(&mut self.compensations);
+                let n = std::mem::replace(&mut self.null_state, BooleanBufferBuilder::new(0))
+                    .finish();
+                (s, c, n)
+            }
+            EmitTo::First(n) => {
+                let s = self.sums.drain(..n).collect::<Vec<_>>();
+                let c = self.compensations.drain(..n).collect::<Vec<_>>();
+                // Bitset doesn't have drain; rebuild the prefix and the suffix.
+                let total = self.null_state.len();
+                let mut head = BooleanBufferBuilder::new(n);
+                let mut tail = BooleanBufferBuilder::new(total - n);
+                for i in 0..n {
+                    head.append(self.null_state.get_bit(i));
+                }
+                for i in n..total {
+                    tail.append(self.null_state.get_bit(i));
+                }
+                self.null_state = tail;
+                (s, c, head.finish())
+            }
+        }
     }
 }
 

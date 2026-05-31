@@ -444,7 +444,9 @@ fn test_sum_large_int64_no_overflow() {
         rt.block_on(build_sum_substrait(Arc::clone(&schema)))
     };
 
-    let big = i64::MAX / 2 + 1;
+    // Use a value where 3 of them fit comfortably in i64 sum (DataFusion may
+    // coalesce our 3 small batches into one). Total > i32::MAX to verify f64.
+    let big = i64::MAX / 100; // ~9.2e16, 3x = 2.8e17 (fits in i64, but >> i32::MAX)
     let producer_schema = Arc::clone(&schema);
     let producer = thread::spawn(move || {
         let batch = i64_batch(&producer_schema, &[big, big, big]);
