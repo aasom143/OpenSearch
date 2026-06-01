@@ -11,8 +11,6 @@ package org.opensearch.analytics.planner.dag;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlKind;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.planner.rel.AnnotatedPredicate;
 import org.opensearch.analytics.planner.rel.OpenSearchFilter;
 import org.opensearch.analytics.spi.FilterTreeShape;
@@ -45,8 +43,6 @@ import org.opensearch.analytics.spi.FilterTreeShape;
  * @opensearch.internal
  */
 final class FilterTreeShapeDeriver {
-
-    private static final Logger LOGGER = LogManager.getLogger(FilterTreeShapeDeriver.class);
 
     private FilterTreeShapeDeriver() {}
 
@@ -100,24 +96,9 @@ final class FilterTreeShapeDeriver {
                 hasPerformanceDelegation |= childResult.hasPerformanceDelegation;
             }
 
-
             // Under OR/NOT, interleaving occurs when:
             // - delegated + native predicates coexist (won't all combine), OR
             // - correctness + performance delegated coexist (perf won't combine under OR/NOT)
-            LOGGER.info(
-                "[FilterTreeShapeDeriver][mixed-check] kind={} operandCount={} drivingBackend={} "
-                    + "isOrNot={} hasDelegated={} hasDrivingBackend={} hasPerformanceDelegation={} "
-                    + "hasMixed(before)={} willSetMixed={}",
-                call.getKind(),
-                call.getOperands().size(),
-                drivingBackendId,
-                isOrNot,
-                hasDelegated,
-                hasDrivingBackend,
-                hasPerformanceDelegation,
-                hasMixed,
-                isOrNot && hasDelegated && (hasDrivingBackend || hasPerformanceDelegation)
-            );
             if (isOrNot && hasDelegated && (hasDrivingBackend || hasPerformanceDelegation)) {
                 hasMixed = true;
             }

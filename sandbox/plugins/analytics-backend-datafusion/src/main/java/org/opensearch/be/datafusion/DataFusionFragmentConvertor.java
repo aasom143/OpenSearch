@@ -13,7 +13,6 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptSchema;
 import org.apache.calcite.plan.RelOptTable;
-import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelCollation;
 import org.apache.calcite.rel.RelDistribution;
@@ -468,12 +467,6 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         preprocessed = PplAggregateCallRewriter.rewrite(preprocessed);
         preprocessed = PplWindowCallRewriter.rewrite(preprocessed);
         preprocessed = ItemTypeRebuilder.rewrite(preprocessed);
-        // [coordinator → data-node] log the post-strip, post-preprocess RelNode going into
-        // the substrait visitor. This is the canonical "what we are about to encode" view —
-        // any discrepancy with what the data node decodes from the substrait bytes points
-        // to either substrait's wire encoding (e.g. N-ary OR → left-deep binary) or a
-        // datafusion-substrait consumer behavior.
-        LOGGER.info("[convertToSubstrait] input RelNode (pre-substrait):\n{}", RelOptUtil.toString(preprocessed));
         RelRoot root = RelRoot.of(preprocessed, SqlKind.SELECT);
         SubstraitRelVisitor visitor = createVisitor(preprocessed);
         Rel substraitRel;
@@ -494,11 +487,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
 
         io.substrait.proto.Plan protoPlan = new PlanProtoConverter().toProto(plan);
         byte[] bytes = protoPlan.toByteArray();
-        // [coordinator → data-node] log the exact wire content as protobuf text format.
-        // This is the literal sequence of bytes shipped to the data node — substrait's
-        // text representation reflects N-ary vs binary OR, function references, type
-        // mappings, etc. Verbose for big queries; toggle this logger to WARN to silence.
-        LOGGER.info("[convertToSubstrait] Substrait plan ({} bytes), proto:\n{}", bytes.length, protoPlan);
+        LOGGER.debug("Substrait plan: {} bytes", bytes.length);
         return bytes;
     }
 
