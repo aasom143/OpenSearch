@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use native_bridge_common::log_debug;
+use native_bridge_common::{log_debug, log_info};
 use datafusion::{
     physical_plan::displayable,
     physical_plan::execute_stream,
@@ -706,11 +706,50 @@ async unsafe fn execute_indexed_with_context_inner(
                     "classify_filter returned Tree but extraction is None".into(),
                 )
             })?;
+            // [DATA-NODE FLATTEN CONFIRMATION] Log the tree before normalization
+            // so we can verify push_not_down() + flatten() runs here on the data
+            // node (inside execute_indexed_with_context_inner, invoked via FFM
+            // from the Java search thread).
+            log_info!(
+                "[data-node][flatten] table='{}' classification=Tree BEFORE push_not_down().flatten(): {:?}",
+                table_name,
+                extraction.tree
+            );
             // Normalize: push NOTs to leaves (De Morgan) then flatten nested
             // same-kind connectives. Flatten after push_not_down so the
             // connective changes from De Morgan (e.g. NOT(AND(...)) -> OR(NOT...))
             // get absorbed into the surrounding Or if applicable.
-            let tree = extraction.tree.push_not_down().flatten();
+            let after_not = extraction.tree.push_not_down();
+            // Capture the pre-flatten debug rendering so we can detect whether
+            // flatten() actually modified the tree (BoolNode does not implement
+            // PartialEq because of its inner Arc<dyn PhysicalExpr>; comparing
+            // Debug-formatted strings is a robust, query-once approximation).
+            let before_flatten_dbg = format!("{:?}", after_not);
+            log_info!(
+                "[data-node][flatten] table='{}' AFTER push_not_down(): {}",
+                table_name,
+                before_flatten_dbg
+            );
+            let tree = after_not.flatten();
+            let after_flatten_dbg = format!("{:?}", tree);
+            let flatten_changed = before_flatten_dbg != after_flatten_dbg;
+            log_info!(
+                "[data-node][flatten] table='{}' AFTER flatten(): {} | flatten_changed={}",
+                table_name,
+                after_flatten_dbg,
+                flatten_changed
+            );
+            if flatten_changed {
+                log_info!(
+                    "[data-node][flatten] table='{}' CHANGED: flatten() collapsed nested same-kind AND/OR connectives",
+                    table_name
+                );
+            } else {
+                log_info!(
+                    "[data-node][flatten] table='{}' NO-OP: flatten() did not modify the tree (no flattenable nesting present)",
+                    table_name
+                );
+            }
             // One provider per Collector leaf (DFS order).
             let leaf_ids = tree.collector_leaves();
             let mut providers: Vec<Arc<ProviderHandle>> = Vec::with_capacity(leaf_ids.len());
