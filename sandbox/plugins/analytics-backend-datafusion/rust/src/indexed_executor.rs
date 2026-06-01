@@ -706,50 +706,77 @@ async unsafe fn execute_indexed_with_context_inner(
                     "classify_filter returned Tree but extraction is None".into(),
                 )
             })?;
-            // [DATA-NODE FLATTEN CONFIRMATION] Log the tree before normalization
+            // [DATA-NODE NORMALIZATION CONFIRMATION] Log the tree before normalization
             // so we can verify push_not_down() + flatten() runs here on the data
             // node (inside execute_indexed_with_context_inner, invoked via FFM
             // from the Java search thread).
+            //
+            // Capture the pre-normalization debug rendering once so we can:
+            //   1. Print it in the BEFORE line.
+            //   2. Use it as the comparison baseline for push_not_down().
+            // BoolNode does not implement PartialEq because of its inner
+            // Arc<dyn PhysicalExpr>; comparing Debug-formatted strings is a
+            // robust, query-once approximation.
+            let before_not_down_dbg = format!("{:?}", extraction.tree);
             log_info!(
-                "[data-node][flatten] table='{}' classification=Tree BEFORE push_not_down().flatten(): {:?}",
+                "[data-node][normalize] table='{}' classification=Tree BEFORE push_not_down().flatten(): {}",
                 table_name,
-                extraction.tree
+                before_not_down_dbg
             );
             // Normalize: push NOTs to leaves (De Morgan) then flatten nested
             // same-kind connectives. Flatten after push_not_down so the
             // connective changes from De Morgan (e.g. NOT(AND(...)) -> OR(NOT...))
             // get absorbed into the surrounding Or if applicable.
             let after_not = extraction.tree.push_not_down();
-            // Capture the pre-flatten debug rendering so we can detect whether
-            // flatten() actually modified the tree (BoolNode does not implement
-            // PartialEq because of its inner Arc<dyn PhysicalExpr>; comparing
-            // Debug-formatted strings is a robust, query-once approximation).
-            let before_flatten_dbg = format!("{:?}", after_not);
+            let after_not_down_dbg = format!("{:?}", after_not);
+            let not_down_changed = before_not_down_dbg != after_not_down_dbg;
             log_info!(
-                "[data-node][flatten] table='{}' AFTER push_not_down(): {}",
+                "[data-node][normalize] table='{}' AFTER push_not_down(): {} | not_down_changed={}",
                 table_name,
-                before_flatten_dbg
+                after_not_down_dbg,
+                not_down_changed
             );
+            if not_down_changed {
+                log_info!(
+                    "[data-node][normalize] table='{}' CHANGED: push_not_down() applied De Morgan (NOTs pushed to leaves)",
+                    table_name
+                );
+            } else {
+                log_info!(
+                    "[data-node][normalize] table='{}' NO-OP: push_not_down() did not modify the tree (no top-level NOTs above combinators)",
+                    table_name
+                );
+            }
             let tree = after_not.flatten();
             let after_flatten_dbg = format!("{:?}", tree);
-            let flatten_changed = before_flatten_dbg != after_flatten_dbg;
+            // Reuse the post-push_not_down rendering as the flatten baseline —
+            // avoids reformatting the same tree.
+            let flatten_changed = after_not_down_dbg != after_flatten_dbg;
             log_info!(
-                "[data-node][flatten] table='{}' AFTER flatten(): {} | flatten_changed={}",
+                "[data-node][normalize] table='{}' AFTER flatten(): {} | flatten_changed={}",
                 table_name,
                 after_flatten_dbg,
                 flatten_changed
             );
             if flatten_changed {
                 log_info!(
-                    "[data-node][flatten] table='{}' CHANGED: flatten() collapsed nested same-kind AND/OR connectives",
+                    "[data-node][normalize] table='{}' CHANGED: flatten() collapsed nested same-kind AND/OR connectives",
                     table_name
                 );
             } else {
                 log_info!(
-                    "[data-node][flatten] table='{}' NO-OP: flatten() did not modify the tree (no flattenable nesting present)",
+                    "[data-node][normalize] table='{}' NO-OP: flatten() did not modify the tree (no flattenable nesting present)",
                     table_name
                 );
             }
+            // Overall normalization summary — single line, easy to grep.
+            log_info!(
+                "[data-node][normalize] table='{}' SUMMARY not_down_changed={} flatten_changed={} normalize_changed={}",
+                table_name,
+                not_down_changed,
+                flatten_changed,
+                not_down_changed || flatten_changed
+            );
             // One provider per Collector leaf (DFS order).
             let leaf_ids = tree.collector_leaves();
             let mut providers: Vec<Arc<ProviderHandle>> = Vec::with_capacity(leaf_ids.len());
