@@ -124,12 +124,15 @@ public class FragmentConversionDriver {
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
-            LOGGER.debug(
-                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{}",
+            LOGGER.info(
+                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{} "
+                    + "(NOTE: each entry is one serialized backend blob; same-backend siblings under "
+                    + "AND/OR/NOT are fused into a single DelegatedExpression named after the FIRST "
+                    + "annotation id — `ids=[X]` does not mean only id X was delegated)",
                 plan.backendId(),
                 treeShape,
                 delegated.size(),
-                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
+                delegated.isEmpty() ? "" : " [firstIds=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
             );
         }
         stage.setPlanAlternatives(converted);
@@ -485,8 +488,23 @@ public class FragmentConversionDriver {
             Function<OperatorAnnotation, RexNode> resolver = delegationBytes.resolverFor(openSearchNode, node.getCluster().getRexBuilder());
             if (node instanceof OpenSearchFilter filter && resolver instanceof AnnotationResolver ar) {
                 // Combine delegated predicates in a single pass, then strip with simple unwrapper
-                RexNode resolved = ar.resolveTree(filter.getCondition());
+                RexNode original = filter.getCondition();
+                LOGGER.info(
+                    "[strip-filter] BEFORE resolveTree (post-CBO, annotations intact) condition={}",
+                    original
+                );
+                RexNode resolved = ar.resolveTree(original);
+                LOGGER.info(
+                    "[strip-filter] AFTER resolveTree (delegation combined; lucene siblings under OR/AND fused into one DelegatedPredicateFunction) condition={}",
+                    resolved
+                );
                 RexNode flattened = RexUtil.flatten(node.getCluster().getRexBuilder(), resolved);
+                boolean flattenChanged = !flattened.toString().equals(resolved.toString());
+                LOGGER.info(
+                    "[strip-filter] AFTER RexUtil.flatten (Calcite-side N-ary collapse) condition={} | calcite_flatten_changed={}",
+                    flattened,
+                    flattenChanged
+                );
                 return LogicalFilter.create(strippedChildren.getFirst(), flattened);
             }
             return openSearchNode.stripAnnotations(strippedChildren, resolver);
