@@ -511,6 +511,27 @@ async unsafe fn execute_indexed_with_context_inner(
 
     let emit_row_ids = requests_row_ids;
     let filter_expr = extract_filter_expr(&logical_plan);
+    // [data-node] Log the DataFusion `Expr` BEFORE expr_to_bool_tree using Debug ({:?})
+    // so the binary BinaryExpr(Or, …) chain is visible. The existing
+    // `DataFusion logical plan:` log uses Display, which collapses nested binary
+    // OR/AND chains into a flat-looking "A OR B OR C" string and hides the structure.
+    // Comparing this line to the next `[data-node][normalize] BEFORE push_not_down().flatten()`
+    // line tells you whether the binary nesting was introduced by:
+    //   - datafusion-substrait's from_substrait_plan (Expr is already nested) → likely cause,
+    //     since Expr::BinaryExpr has no N-ary form, OR
+    //   - expr_to_bool_tree (Expr is flat but BoolNode is nested) → would be a bool-tree bug.
+    if let Some(ref expr) = filter_expr {
+        log_info!(
+            "[data-node][bool-tree] table='{}' DataFusion Expr (Debug, BEFORE expr_to_bool_tree): {:?}",
+            table_name,
+            expr
+        );
+    } else {
+        log_info!(
+            "[data-node][bool-tree] table='{}' no filter expression (extract_filter_expr returned None)",
+            table_name
+        );
+    }
     let extraction = match filter_expr {
         None => None,
         Some(ref expr) => Some(
@@ -518,6 +539,17 @@ async unsafe fn execute_indexed_with_context_inner(
                 .map_err(|e| DataFusionError::Execution(format!("expr_to_bool_tree: {}", e)))?,
         ),
     };
+    // Log the BoolNode AFTER expr_to_bool_tree using Debug. This is identical to the
+    // tree printed in the next `[data-node][normalize] BEFORE push_not_down().flatten()`
+    // line — duplicated here only to make the bool-tree-translation step
+    // self-contained when grepping for `[bool-tree]`.
+    if let Some(ref ext) = extraction {
+        log_info!(
+            "[data-node][bool-tree] table='{}' BoolNode (Debug, AFTER expr_to_bool_tree): {:?}",
+            table_name,
+            ext.tree
+        );
+    }
 
     // Resolve classification: from Java config if available, otherwise derive from tree
     let classification = match classification_override {
