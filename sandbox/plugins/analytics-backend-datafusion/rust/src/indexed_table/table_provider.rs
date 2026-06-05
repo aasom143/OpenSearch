@@ -47,10 +47,12 @@ use futures::StreamExt;
 
 use super::eval::RowGroupBitsetSource;
 use super::metrics::PartitionMetrics;
+use super::page_pruner;
 use super::partitioning::{compute_assignments, PartitionAssignment, SegmentChunk, SegmentLayout};
 use super::stream::{FilterStrategy, IndexedExec, RowGroupInfo};
 use crate::datafusion_query_config::DatafusionQueryConfig;
 use crate::indexed_table::metrics::StreamMetrics;
+use native_bridge_common::log_info;
 use std::collections::HashSet;
 
 /// Info about a segment and its corresponding parquet file.
@@ -288,11 +290,14 @@ impl TableProvider for IndexedTableProvider {
 
         Ok(Arc::new(QueryShardExec {
             config: Arc::clone(&self.config),
-            full_schema,
+            full_schema: full_schema.clone(),
             projected_schema,
             projection: read_projection,
             assignments,
             properties,
+            segment_pruning_predicate: predicate.as_ref().and_then(|expr| {
+                page_pruner::build_pruning_predicate(expr, full_schema)
+            }),
             predicate,
             metrics: ExecutionPlanMetricsSet::new(),
             inner_parquet_metrics: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -320,6 +325,9 @@ pub struct QueryShardExec {
     /// into each `IndexedExec` so `ParquetSource.with_predicate(...)` can
     /// apply it during decode.
     predicate: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Pre-built pruning predicate for segment-level skip. Built once at
+    /// scan() time so execute() only pays the cheap per-chunk prune() cost.
+    segment_pruning_predicate: Option<Arc<datafusion::physical_optimizer::pruning::PruningPredicate>>,
     metrics: ExecutionPlanMetricsSet,
     inner_parquet_metrics: Arc<std::sync::Mutex<Vec<MetricsSet>>>,
     /// Column index in the OUTPUT schema where computed `___row_id` should be
@@ -424,6 +432,18 @@ impl ExecutionPlan for QueryShardExec {
                 continue;
             }
 
+            // Segment-level skip using pre-built PruningPredicate.
+            if let Some(ref pp) = self.segment_pruning_predicate {
+                let rg_indices: Vec<usize> = row_groups.iter().map(|rg| rg.index).collect();
+                if !page_pruner::can_segment_match(pp, &segment.metadata, &self.full_schema, &rg_indices) {
+                    log_info!(
+                        "[scf-segment-skip] segment_idx={} writer_gen={} row_groups={} SKIPPED by RG-level stats",
+                        chunk.segment_idx, segment.writer_generation, row_groups.len()
+                    );
+                    continue;
+                }
+            }
+
             // Build evaluator for this chunk.
             let evaluator = (self.config.evaluator_factory)(segment, chunk, &stream_metrics)
                 .map_err(|e| DataFusionError::External(e.into()))?;
@@ -458,6 +478,8 @@ impl ExecutionPlan for QueryShardExec {
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
+
+
 
         match streams.len() {
             0 => {

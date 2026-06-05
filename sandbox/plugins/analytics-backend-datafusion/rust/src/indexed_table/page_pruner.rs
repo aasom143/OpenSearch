@@ -482,6 +482,111 @@ impl PruningStatistics for CommonGridPageStats {
     }
 }
 
+/// Check if any row group in `rg_indices` can possibly match the predicate
+/// using row-group-level column statistics (min/max from parquet footer).
+///
+/// Returns `true` if at least one RG might match (or stats are unavailable).
+/// Returns `false` only when ALL RGs are provably excluded by their stats.
+pub fn can_segment_match(
+    pruning_predicate: &PruningPredicate,
+    metadata: &ParquetMetaData,
+    schema: &SchemaRef,
+    rg_indices: &[usize],
+) -> bool {
+    if rg_indices.is_empty() {
+        return false;
+    }
+
+    let columns = datafusion::physical_expr::utils::collect_columns(pruning_predicate.orig_expr());
+    if columns.is_empty() {
+        return true;
+    }
+
+    let arrow_schema = schema.as_ref();
+    let rg_metas: Vec<_> = rg_indices
+        .iter()
+        .filter_map(|&idx| metadata.row_groups().get(idx))
+        .collect();
+    if rg_metas.is_empty() {
+        return true;
+    }
+
+    let mut col_stats: HashMap<String, (ArrayRef, ArrayRef, Option<ArrayRef>)> = HashMap::new();
+
+    for col in &columns {
+        if arrow_schema.index_of(col.name()).is_err() {
+            continue;
+        }
+        let converter = match StatisticsConverter::try_new(
+            col.name(),
+            arrow_schema,
+            metadata.file_metadata().schema_descr(),
+        ) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let min_arr = match converter.row_group_mins(rg_metas.iter().copied()) {
+            Ok(arr) => arr,
+            Err(_) => continue,
+        };
+        let max_arr = match converter.row_group_maxes(rg_metas.iter().copied()) {
+            Ok(arr) => arr,
+            Err(_) => continue,
+        };
+        let null_counts = converter.row_group_null_counts(rg_metas.iter().copied())
+            .ok()
+            .map(|arr| Arc::new(arr) as ArrayRef);
+        col_stats.insert(col.name().to_string(), (min_arr, max_arr, null_counts));
+    }
+
+    if col_stats.is_empty() {
+        return true;
+    }
+
+    let stats = RgLevelStats {
+        col_stats,
+        num_rgs: rg_metas.len(),
+        row_counts: rg_metas.iter().map(|m| m.num_rows()).collect(),
+    };
+
+    match pruning_predicate.prune(&stats) {
+        Ok(keep) => keep.iter().any(|&k| k),
+        Err(_) => true,
+    }
+}
+
+struct RgLevelStats {
+    col_stats: HashMap<String, (ArrayRef, ArrayRef, Option<ArrayRef>)>,
+    num_rgs: usize,
+    row_counts: Vec<i64>,
+}
+
+impl PruningStatistics for RgLevelStats {
+    fn min_values(&self, column: &Column) -> Option<ArrayRef> {
+        self.col_stats.get(column.name()).map(|(m, _, _)| Arc::clone(m))
+    }
+    fn max_values(&self, column: &Column) -> Option<ArrayRef> {
+        self.col_stats.get(column.name()).map(|(_, m, _)| Arc::clone(m))
+    }
+    fn num_containers(&self) -> usize {
+        self.num_rgs
+    }
+    fn null_counts(&self, column: &Column) -> Option<ArrayRef> {
+        self.col_stats.get(column.name()).and_then(|(_, _, n)| n.clone())
+    }
+    fn row_counts(&self, _column: &Column) -> Option<ArrayRef> {
+        let arr = Int64Array::from_iter_values(self.row_counts.iter().copied());
+        Some(Arc::new(arr) as ArrayRef)
+    }
+    fn contained(
+        &self,
+        _column: &Column,
+        _values: &std::collections::HashSet<ScalarValue>,
+    ) -> Option<BooleanArray> {
+        None
+    }
+}
+
 /// Convert a per-page keep/skip decision + per-page row counts into a
 /// compacted `RowSelection`. Adjacent runs of the same decision are
 /// merged.
