@@ -398,6 +398,7 @@ impl ExecutionPlan for QueryShardExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let execute_start = std::time::Instant::now();
         let assignment = self.assignments.get(partition).ok_or_else(|| {
             DataFusionError::Internal(format!("partition {} out of range", partition))
         })?;
@@ -479,7 +480,10 @@ impl ExecutionPlan for QueryShardExec {
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }
 
-
+        log_info!(
+            "[scf-execute] partition={} total_chunks={} dispatched={} elapsed={:?}",
+            partition, assignment.chunks.len(), streams.len(), execute_start.elapsed()
+        );
 
         match streams.len() {
             0 => {
