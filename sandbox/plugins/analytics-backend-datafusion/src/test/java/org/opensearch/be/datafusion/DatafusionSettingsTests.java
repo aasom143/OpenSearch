@@ -55,7 +55,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
     }
 
     public void testAllSettingsContainsAllExpectedSettings() {
-        assertEquals(31, DatafusionSettings.ALL_SETTINGS.size());
+        assertEquals(32, DatafusionSettings.ALL_SETTINGS.size());
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_REDUCE_TARGET_PARTITIONS));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_MEMORY_GUARD_SPILL_EXEMPT_CAP));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DataFusionPlugin.DATAFUSION_SPILL_DIRECTORY));
@@ -65,6 +65,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_DEFAULT));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD));
         assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_FORCE_STRATEGY));
+        assertTrue(DatafusionSettings.ALL_SETTINGS.contains(DatafusionSettings.INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED));
     }
 
     public void testForceStrategySettingDefaultsAndMapping() {
@@ -102,6 +103,7 @@ public class DatafusionSettingsTests extends OpenSearchTestCase {
         assertEquals(1024, snapshot.minSkipRunDefault());
         assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 1e-15);
         assertEquals(DEFAULT_PARALLELISM, snapshot.targetPartitions());
+        assertEquals(false, snapshot.routePureParquetThroughIndexed());
     }
 
     public void testTargetPartitionsPassthroughWhenNonZero() {

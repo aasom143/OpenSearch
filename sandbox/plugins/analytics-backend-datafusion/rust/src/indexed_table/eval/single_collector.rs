@@ -150,7 +150,10 @@ pub struct SingleCollectorEvaluator {
     ///   evaluates this expression against the decoded batch and
     ///   AND-combines with the Collector bitmap mask to produce the
     ///   exact result.
-    residual_expr: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    ///
+    /// Wrapped in `CachedResidual` so the per-batch `on_batch_mask` remaps the
+    /// expression to the projected batch schema once, not once per batch.
+    residual: Option<super::eval_helpers::CachedResidual>,
     /// Counters recorded by `page_pruner.prune_rg`. Built from the
     /// stream's `PartitionMetrics` at evaluator construction.
     page_prune_metrics: Option<PagePruneMetrics>,
@@ -223,7 +226,7 @@ impl SingleCollectorEvaluator {
             collector,
             page_pruner,
             pruning_predicate,
-            residual_expr,
+            residual: residual_expr.map(super::eval_helpers::CachedResidual::new),
             page_prune_metrics,
             ffm_collector_calls,
             call_strategy,
@@ -567,6 +570,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 mask_len,
             }),
             mask_buffer: Some(mask_buffer),
+            selection_runs: None,
         }))
     }
 
@@ -581,7 +585,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
     ) -> Result<Option<BooleanArray>, String> {
         // No residual → no post-decode work. Stream's current_mask
         // (if built) handles Collector narrowing.
-        let Some(ref residual) = self.residual_expr else {
+        let Some(ref residual) = self.residual else {
             return Ok(None);
         };
 
@@ -639,8 +643,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             }
         };
 
-        // Evaluate residual against the batch.
-        let residual_mask = super::eval_helpers::evaluate_residual(residual, batch, batch_len)?;
+        // Evaluate residual against the batch (remapped once, reused per batch).
+        let residual_mask = residual.eval(batch, batch_len)?;
 
         // AND with kleene semantics (NULL → exclude).
         let combined = datafusion::arrow::compute::kernels::boolean::and_kleene(

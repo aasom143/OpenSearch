@@ -194,9 +194,22 @@ fn convert_expr(
         // comparison kernel rejects mixed types).
         other => {
             let unqualified = strip_column_qualifiers(other);
+            // Simplify before lowering. The substrait-decoded predicate carries
+            // casts on the WIDE side of comparisons — e.g. `cast(AdvEngineID as
+            // Int32) != Int32(0)` where the parquet column is Int16 — because
+            // substrait round-trips the pre-optimization logical expr. Lowered
+            // verbatim, that re-casts every column value on every batch in the
+            // residual `on_batch_mask`. The vanilla path avoids this: it runs the
+            // full optimizer (`create_physical_plan`), whose `unwrap_cast_in_comparison`
+            // rule rewrites the cast onto the literal (`AdvEngineID != Int16(0)`),
+            // a one-time const fold. `ExprSimplifier::simplify` applies that same
+            // rule (plus const-eval), so the residual matches vanilla and the
+            // per-batch cast disappears. Falls back to the un-simplified expr if
+            // simplification fails for any reason (correctness-preserving).
+            let simplified = simplify_residual_expr(&unqualified, df_schema);
             let phys = state
-                .create_physical_expr(unqualified.clone(), df_schema)
-                .map_err(|e| format!("create_physical_expr for {:?}: {}", unqualified, e))?;
+                .create_physical_expr(simplified.clone(), df_schema)
+                .map_err(|e| format!("create_physical_expr for {:?}: {}", simplified, e))?;
             let return_type = phys
                 .data_type(schema)
                 .map_err(|e| format!("data_type: {}", e))?;
@@ -285,6 +298,36 @@ fn strip_column_qualifiers(expr: &Expr) -> Expr {
         })
         .unwrap()
         .data
+}
+
+/// Coerce + simplify a residual leaf `Expr` against the scan schema, matching
+/// what the vanilla path's optimizer produces before physical lowering.
+///
+/// Order matters and mirrors DataFusion's analyzer→optimizer pipeline:
+///   1. `coerce` runs `TypeCoercionRewriter`, which inserts the cast a mixed-type
+///      comparison needs — for `small(Int16) != Int32(0)` it produces
+///      `cast(small as Int32) != Int32(0)` (cast on the COLUMN side). This is the
+///      same cast `create_physical_expr` would insert during lowering.
+///   2. `simplify` then runs `unwrap_cast_in_comparison`, which rewrites that cast
+///      onto the LITERAL: `small != Int16(0)` — a one-time const fold instead of a
+///      per-batch, per-row column widening in the residual `on_batch_mask`.
+///
+/// Without step 1 there is no cast present at simplify time (the raw substrait
+/// expr is `small != Int32(0)`), so `unwrap_cast` has nothing to unwrap and the
+/// cast reappears at lowering. Coercing first is what makes the unwrap fire.
+///
+/// Correctness-preserving: on any coercion/simplification error, returns the
+/// input expr unchanged (still correct, just slower — `create_physical_expr`
+/// re-coerces it anyway).
+fn simplify_residual_expr(expr: &Expr, df_schema: &DFSchema) -> Expr {
+    use datafusion::optimizer::simplify_expressions::{ExprSimplifier, SimplifyContext};
+
+    let context = SimplifyContext::default().with_schema(Arc::new(df_schema.clone()));
+    let simplifier = ExprSimplifier::new(context);
+    simplifier
+        .coerce(expr.clone(), df_schema)
+        .and_then(|coerced| simplifier.simplify(coerced))
+        .unwrap_or_else(|_| expr.clone())
 }
 
 fn extract_int32_literal(expr: &Expr) -> Result<i32, String> {
@@ -515,6 +558,9 @@ mod tests {
             Field::new("price", DataType::Int32, false),
             Field::new("qty", DataType::Int32, false),
             Field::new("active", DataType::Boolean, false),
+            // Narrow column to exercise unwrap-cast: a comparison against a
+            // wider literal lowers (pre-simplify) to `cast(small as Int32) != lit`.
+            Field::new("small", DataType::Int16, false),
         ]))
     }
 
@@ -532,6 +578,39 @@ mod tests {
         let expr = col("price").gt(lit(100i32));
         let r = expr_to_bool_tree(&expr, &test_schema(), &test_state()).unwrap();
         assert!(matches!(*r.tree, BoolNode::Predicate(_)));
+    }
+
+    #[test]
+    fn unwrap_cast_folds_column_cast_onto_literal() {
+        // `small` (Int16) compared to an Int32 literal. Lowered verbatim this
+        // would be `cast(small as Int32) != Int32(0)` — a per-batch column cast.
+        // After `simplify_residual_expr` runs unwrap_cast_in_comparison, the
+        // cast must move to the literal, leaving the column un-cast (matches the
+        // vanilla optimizer). Assert the lowered PhysicalExpr tree has NO CastExpr.
+        use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+        use datafusion::physical_expr::expressions::CastExpr;
+
+        let expr = col("small").not_eq(lit(0i32));
+        let r = expr_to_bool_tree(&expr, &test_schema(), &test_state()).unwrap();
+        let phys = match &*r.tree {
+            BoolNode::Predicate(p) => p.clone(),
+            other => panic!("expected Predicate, got {:?}", other),
+        };
+
+        let mut found_cast = false;
+        phys.apply(|node| {
+            if node.downcast_ref::<CastExpr>().is_some() {
+                found_cast = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        assert!(
+            !found_cast,
+            "residual still contains a CastExpr after simplify — unwrap_cast did not fire: {:?}",
+            phys
+        );
     }
 
     #[test]

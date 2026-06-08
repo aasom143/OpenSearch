@@ -25,8 +25,11 @@ import java.lang.foreign.ValueLayout;
 @ExperimentalApi
 public final class WireConfigSnapshot {
 
-    /** Total byte size of the wire struct ({@code WireDatafusionQueryConfig}). */
-    public static final long BYTE_SIZE = 56;
+    /**
+     * Total byte size of the wire struct ({@code WireDatafusionQueryConfig}).
+     * 60 bytes of payload padded to 64 (repr(C), 8-byte aligned).
+     */
+    public static final long BYTE_SIZE = 64;
 
     private final int batchSize;
     private final int targetPartitions;
@@ -36,6 +39,7 @@ public final class WireConfigSnapshot {
     private final boolean indexedPushdownFilters;
     private final int forceStrategy;
     private final boolean preferHashJoin;
+    private final boolean routePureParquetThroughIndexed;
 
     private WireConfigSnapshot(Builder builder) {
         this.batchSize = builder.batchSize;
@@ -46,6 +50,7 @@ public final class WireConfigSnapshot {
         this.indexedPushdownFilters = builder.indexedPushdownFilters;
         this.forceStrategy = builder.forceStrategy;
         this.preferHashJoin = builder.preferHashJoin;
+        this.routePureParquetThroughIndexed = builder.routePureParquetThroughIndexed;
     }
 
     public static Builder builder() {
@@ -64,7 +69,8 @@ public final class WireConfigSnapshot {
             .minSkipRunSelectivityThreshold(current.minSkipRunSelectivityThreshold)
             .indexedPushdownFilters(current.indexedPushdownFilters)
             .forceStrategy(current.forceStrategy)
-            .preferHashJoin(current.preferHashJoin);
+            .preferHashJoin(current.preferHashJoin)
+            .routePureParquetThroughIndexed(current.routePureParquetThroughIndexed);
     }
 
     public int batchSize() {
@@ -107,6 +113,14 @@ public final class WireConfigSnapshot {
     }
 
     /**
+     * Whether pure-parquet queries (no Lucene-delegated filters, no row-ids) are routed through the
+     * indexed executor instead of the vanilla {@code ListingTable} path. Defaults {@code false}.
+     */
+    public boolean routePureParquetThroughIndexed() {
+        return routePureParquetThroughIndexed;
+    }
+
+    /**
      * Writes this snapshot into a {@code MemorySegment} matching the
      * {@code WireDatafusionQueryConfig} {@code #[repr(C)]} layout.
      * <p>
@@ -128,8 +142,9 @@ public final class WireConfigSnapshot {
      * 44      4     cost_predicate                       i32      hardcoded 1
      * 48      4     cost_collector                       i32      hardcoded 10
      * 52      4     prefer_hash_join                     i32      from snapshot (0/1)
+     * 56      4     route_pure_parquet_through_indexed   i32      from snapshot (0/1)
      * ──────  ────
-     * Total: 56 bytes
+     * Total: 60 bytes of payload, padded to 64 (8-byte aligned, repr(C))
      * </pre>
      *
      * @param segment the target memory segment (at least {@link #BYTE_SIZE} bytes)
@@ -155,6 +170,8 @@ public final class WireConfigSnapshot {
         segment.set(ValueLayout.JAVA_INT, 48, 10);
         // Offset 52: prefer_hash_join (i32) — 0 = false (sort-merge join), 1 = true (hash join)
         segment.set(ValueLayout.JAVA_INT, 52, preferHashJoin ? 1 : 0);
+        // Offset 56: route_pure_parquet_through_indexed (i32) — 0 = false, 1 = true
+        segment.set(ValueLayout.JAVA_INT, 56, routePureParquetThroughIndexed ? 1 : 0);
     }
 
     /**
@@ -170,6 +187,7 @@ public final class WireConfigSnapshot {
         private boolean indexedPushdownFilters = true;
         private int forceStrategy = -1;
         private boolean preferHashJoin = true;
+        private boolean routePureParquetThroughIndexed = false;
 
         private Builder() {}
 
@@ -212,6 +230,12 @@ public final class WireConfigSnapshot {
         /** @param preferHashJoin false → DataFusion emits a spillable sort-merge join for equi-joins. */
         public Builder preferHashJoin(boolean preferHashJoin) {
             this.preferHashJoin = preferHashJoin;
+            return this;
+        }
+
+        /** @param routePureParquetThroughIndexed true → pure-parquet queries run on the indexed executor. */
+        public Builder routePureParquetThroughIndexed(boolean routePureParquetThroughIndexed) {
+            this.routePureParquetThroughIndexed = routePureParquetThroughIndexed;
             return this;
         }
 

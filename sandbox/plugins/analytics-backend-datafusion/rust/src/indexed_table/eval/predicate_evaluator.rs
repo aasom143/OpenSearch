@@ -22,20 +22,21 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_optimizer::pruning::PruningPredicate;
 use roaring::RoaringBitmap;
 
-use super::eval_helpers::{
-    compute_page_ranges, evaluate_residual, universe_bitmap_from_page_ranges,
-};
+use super::eval_helpers::{compute_page_ranges, universe_bitmap_from_page_ranges, CachedResidual};
 use super::{PrefetchedRg, RowGroupBitsetSource};
 use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{bitmap_to_packed_bits, build_mask, PositionMap};
+use crate::indexed_table::row_selection::{
+    bitmap_to_packed_bits, build_mask, packed_bits_to_boolean_array, PositionMap,
+};
 use crate::indexed_table::stream::RowGroupInfo;
 
 /// Per-RG state carried from `prefetch_rg` to `on_batch_mask` for delete filtering. Holds the
-/// candidate bitmap (page-universe ∩ liveDocs) and a lazily-built full-RG delivered liveDocs mask.
-/// `build_mask` needs the stream's `position_map` (only known at decode time), so the mask is built
-/// once on the RG's first batch (memcpy-speed for identity) and sliced per batch thereafter — the
-/// same efficient path the stream uses for `current_mask`, instead of a per-row `contains()`.
+/// candidate bitmap (page-universe ∩ liveDocs) and a pre-built full-RG delivered liveDocs mask.
+/// `build_mask` needs the stream's `position_map` (only known at decode time), so the identity
+/// case slices the pre-built `live_arr` per batch (zero-copy) and the rare non-identity case
+/// maps the candidate bitmap through the position map — the same efficient path the stream uses
+/// for `current_mask`, instead of a per-row `contains()`.
 struct DeleteRgState {
     /// Candidate bitmap (RG-relative) — used only for the rare non-identity position_map fallback.
     candidates: RoaringBitmap,
@@ -54,7 +55,10 @@ struct DeleteRgState {
 pub struct PredicateOnlyEvaluator {
     page_pruner: Arc<PagePruner>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
-    residual_expr: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Residual predicate, remapped to the batch schema once and reused across
+    /// batches. `None` when there is no residual (no page pruning either, so the
+    /// candidate universe is gap-free and no per-batch filtering is needed).
+    residual: Option<CachedResidual>,
     page_prune_metrics: Option<PagePruneMetrics>,
     stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
@@ -83,7 +87,7 @@ impl PredicateOnlyEvaluator {
         Self {
             page_pruner,
             pruning_predicate,
-            residual_expr,
+            residual: residual_expr.map(CachedResidual::new),
             page_prune_metrics,
             stats_prune_tree,
             rg_index_to_pos,
@@ -130,10 +134,13 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             None => return Ok(None),
         };
 
-        // LiveDocs filtering: AND with the segment's live-docs bitset to exclude deleted rows.
+        // Delete path: AND the segment's liveDocs into candidates so deleted rows are excluded.
         // Same mechanism as SingleCollectorEvaluator — the liveDocs words are LSB-first packed bits
         // in the RG-relative `[min_doc, max_doc)` range, converted to a RoaringBitmap at the
-        // RG-relative offset and intersected with the candidate universe.
+        // RG-relative offset and intersected with the candidate universe. Scattered deletes can't be
+        // skipped by a coarse RowSelection (no whole block is all-deleted), so we deliver the full
+        // row group and mask deleted rows post-decode in `on_batch_mask` — `forbid_parquet_pushdown`
+        // forces pushdown OFF so parquet never drops rows mid-decode and misaligns the mask.
         if self.deleted_doc_filtering_required {
             if let Ok(Some(live_bits)) =
                 get_live_docs(self.context_id, self.writer_generation, min_doc, max_doc)
@@ -148,38 +155,51 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             if candidates.is_empty() {
                 return Ok(None);
             }
+            // Pre-build the full-RG liveDocs BooleanArray from the packed candidate bits (no
+            // recompute in on_batch_mask). `mask_buffer` stays None: `needs_row_mask()` is false, so
+            // the stream never builds `current_mask` — the pre-built `live_arr` lives in
+            // DeleteRgState and is applied by `on_batch_mask` instead. `selection_runs` stays None so
+            // the stream delivers the full row group (candidate ∩ liveDocs) for post-decode masking.
+            let mask_len = rg.num_rows as usize;
+            let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
+            let live_arr = packed_bits_to_boolean_array(packed_bits, mask_len);
+            return Ok(Some(PrefetchedRg {
+                candidates: candidates.clone(),
+                eval_nanos: t.elapsed().as_nanos() as u64,
+                context: Box::new(DeleteRgState { candidates, live_arr }),
+                mask_buffer: None,
+                selection_runs: None,
+            }));
         }
 
-        let mask_len = rg.num_rows as usize;
-        let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
-        // Pre-build the packed liveDocs BooleanArray from the same bits (only when delete filtering
-        // is on) so on_batch_mask can slice it per batch without recomputing build_mask.
-        let live_arr = if self.deleted_doc_filtering_required {
-            Some(crate::indexed_table::row_selection::packed_bits_to_boolean_array(
-                packed_bits.clone(),
-                mask_len,
-            ))
-        } else {
-            None
+        // Fast-path select (no deletes) runs straight from the page ranges (RG-relative
+        // `(start, len)`), so `IndexedStream` can build the parquet `RowSelection` without
+        // re-walking the full candidate bitmap bit-by-bit in
+        // `build_row_selection_with_min_skip_run` (the dominant cost on non-selective full
+        // scans). Mirrors `universe_bitmap_from_page_ranges`' RG-relative offset math. `None`
+        // page_ranges = whole RG = one run.
+        let selection_runs: Vec<(usize, usize)> = match &page_ranges {
+            Some(ranges) => ranges
+                .iter()
+                .map(|(r_min, r_max)| {
+                    let lo = (*r_min as i64 - rg.first_row) as usize;
+                    let len = (*r_max - *r_min) as usize;
+                    (lo, len)
+                })
+                .collect(),
+            None => vec![(0, rg.num_rows as usize)],
         };
-        let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
-        // With delete filtering, carry the candidate bitmap (page-universe ∩ liveDocs, RG-relative)
-        // into on_batch_mask. Block-granular RowSelection can't skip scattered deletes (no whole
-        // block is all-deleted), so deleted rows are delivered and must be masked post-decode. The
-        // Some(residual) refinement mask is authoritative (the stream ignores the candidate-derived
-        // current_mask when on_batch_mask returns Some), so we AND the liveDocs in there ourselves.
-        let context: Box<dyn std::any::Any + Send + Sync> = match live_arr {
-            Some(live_arr) => Box::new(DeleteRgState {
-                candidates: candidates.clone(),
-                live_arr,
-            }),
-            None => Box::new(()),
-        };
+
+        // No `mask_buffer`: with `needs_row_mask() == false` the stream never builds
+        // `current_mask`, so the packed-bits buffer this evaluator used to pre-materialize would be
+        // dead work. The residual in `on_batch_mask` (or parquet pushdown when row-granular) does
+        // the filtering. Skipping `bitmap_to_packed_bits` here removes a full per-RG bit-iteration.
         Ok(Some(PrefetchedRg {
             candidates,
             eval_nanos: t.elapsed().as_nanos() as u64,
-            context,
-            mask_buffer: Some(mask_buffer),
+            context: Box::new(()),
+            mask_buffer: None,
+            selection_runs: Some(selection_runs),
         }))
     }
 
@@ -192,14 +212,16 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         batch_len: usize,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
-        // Residual predicate (e.g. RegionID = 229), if any.
-        let residual_mask = match self.residual_expr {
-            Some(ref residual) => Some(evaluate_residual(residual, batch, batch_len)?),
+        // Residual predicate (e.g. RegionID = 229), if any. `CachedResidual` remaps the expression
+        // to the delivered batch schema once and reuses it across batches.
+        let residual_mask = match self.residual {
+            Some(ref residual) => Some(residual.eval(batch, batch_len)?),
             None => None,
         };
-        // Deleted-doc mask: the candidate (page-universe ∩ liveDocs) → full-RG delivered mask, built
-        // ONCE per RG via build_mask (memcpy-speed for identity) and cached, then sliced to this
-        // batch (zero-copy). This is the stream's own current_mask path — not a per-row contains().
+        // Deleted-doc mask: the pre-built full-RG liveDocs BooleanArray (page-universe ∩ liveDocs),
+        // sliced to this batch (zero-copy for the common identity position_map). The non-identity
+        // (block-granular) fallback maps the candidate bitmap through the position map via
+        // build_mask. This is the stream's own current_mask path — not a per-row contains().
         let live_slice: Option<BooleanArray> = if self.deleted_doc_filtering_required {
             match rg_state.downcast_ref::<DeleteRgState>() {
                 Some(st) => match position_map {
@@ -222,6 +244,24 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             (None, Some(l)) => Ok(Some(l)),
             (None, None) => Ok(None),
         }
+    }
+
+    /// The candidate-stage `current_mask` is never consumed for this evaluator: `on_batch_mask`
+    /// returns the exact mask (residual and/or liveDocs) and `finalize_batch` applies it
+    /// EXCLUSIVELY (ignoring `current_mask`); when it returns `None` there is no page pruning, so
+    /// the candidate universe has no gaps and no mask is needed. Returning `false` skips the per-RG
+    /// `build_mask` over the full row group — pure waste here, since `on_batch_mask` already does
+    /// the filtering.
+    fn needs_row_mask(&self) -> bool {
+        false
+    }
+
+    /// The delete path applies liveDocs by RG-relative position in `on_batch_mask`, so parquet
+    /// pushdown must be OFF — it would drop rows mid-decode and misalign the pre-built liveDocs
+    /// mask. The no-delete fast path leaves pushdown enabled (trait default `false`) so the
+    /// residual is applied in lockstep with the decode.
+    fn forbid_parquet_pushdown(&self) -> bool {
+        self.deleted_doc_filtering_required
     }
 }
 

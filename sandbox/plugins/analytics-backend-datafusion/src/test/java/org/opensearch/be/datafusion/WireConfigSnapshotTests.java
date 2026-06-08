@@ -17,9 +17,10 @@ import java.lang.foreign.ValueLayout;
 public class WireConfigSnapshotTests extends OpenSearchTestCase {
 
     public void testByteSize() {
-        // 9 fixed fields (52) + prefer_hash_join i32 at offset 52 = 56. Must match the Rust
+        // prefer_hash_join i32 at offset 52 + route_pure_parquet_through_indexed i32 at offset 56
+        // = 60 bytes of payload, padded to 64 (repr(C), 8-byte aligned). Must match the Rust
         // WireDatafusionQueryConfig #[repr(C)] layout (datafusion_query_config.rs).
-        assertEquals(56L, WireConfigSnapshot.BYTE_SIZE);
+        assertEquals(64L, WireConfigSnapshot.BYTE_SIZE);
     }
 
     public void testWriteToWritesCorrectValuesAtCorrectOffsets() {
@@ -29,6 +30,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .listingTablePushdownFilters(true)
             .minSkipRunDefault(1024)
             .minSkipRunSelectivityThreshold(0.03)
+            .routePureParquetThroughIndexed(true)
             .build();
 
         try (Arena arena = Arena.ofConfined()) {
@@ -40,6 +42,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(1024L, segment.get(ValueLayout.JAVA_LONG, 16));
             assertEquals(0.03, segment.get(ValueLayout.JAVA_DOUBLE, 24), 1e-15);
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 32)); // listing_table_pushdown = true
+            assertEquals(1, segment.get(ValueLayout.JAVA_INT, 56)); // route_pure_parquet_through_indexed = true
         }
     }
 
@@ -66,6 +69,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 44));  // cost_predicate (hardcoded)
             assertEquals(10, segment.get(ValueLayout.JAVA_INT, 48)); // cost_collector (hardcoded)
             assertEquals(1, segment.get(ValueLayout.JAVA_INT, 52));  // prefer_hash_join default (true)
+            assertEquals(0, segment.get(ValueLayout.JAVA_INT, 56));  // route_pure_parquet_through_indexed default (false)
         }
     }
 
@@ -94,6 +98,17 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         }
     }
 
+    public void testIndexedPushdownFiltersIsSettable() {
+        // Offset 36 is no longer hardcoded — driven by the builder (default true).
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment seg = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
+            WireConfigSnapshot.builder().indexedPushdownFilters(false).build().writeTo(seg);
+            assertEquals(0, seg.get(ValueLayout.JAVA_INT, 36));
+            WireConfigSnapshot.builder().indexedPushdownFilters(true).build().writeTo(seg);
+            assertEquals(1, seg.get(ValueLayout.JAVA_INT, 36));
+        }
+    }
+
     public void testBuilderDefaultsMatchExpected() {
         WireConfigSnapshot snapshot = WireConfigSnapshot.builder().build();
 
@@ -103,6 +118,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(1024, snapshot.minSkipRunDefault());
         assertEquals(0.03, snapshot.minSkipRunSelectivityThreshold(), 1e-15);
         assertEquals(true, snapshot.indexedPushdownFilters());
+        assertEquals(false, snapshot.routePureParquetThroughIndexed());
     }
 
     public void testBuilderCopyPreservesAllFields() {
@@ -114,6 +130,7 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
             .minSkipRunSelectivityThreshold(0.5)
             .indexedPushdownFilters(false)
             .forceStrategy(1)
+            .routePureParquetThroughIndexed(true)
             .build();
 
         WireConfigSnapshot copy = WireConfigSnapshot.builder(original).build();
@@ -125,5 +142,6 @@ public class WireConfigSnapshotTests extends OpenSearchTestCase {
         assertEquals(original.minSkipRunSelectivityThreshold(), copy.minSkipRunSelectivityThreshold(), 0.0);
         assertEquals(original.indexedPushdownFilters(), copy.indexedPushdownFilters());
         assertEquals(original.forceStrategy(), copy.forceStrategy());
+        assertEquals(original.routePureParquetThroughIndexed(), copy.routePureParquetThroughIndexed());
     }
 }

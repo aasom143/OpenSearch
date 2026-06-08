@@ -146,6 +146,22 @@ public final class DatafusionSettings {
         }
     }
 
+    /**
+     * Whether pure-parquet queries (no Lucene-delegated filters, no row-ids) are routed
+     * through the indexed executor instead of the vanilla {@code ListingTable} path.
+     * <p>
+     * Default false keeps the vanilla path as the default. When true, pure-parquet queries
+     * run through {@code QueryShardExec} + {@code PredicateOnlyEvaluator}, collapsing the two
+     * scan implementations into one and surfacing the indexed path's per-operator metrics for
+     * pure-parquet queries. Intended as a diff aid: flag off vs on should return identical rows.
+     */
+    public static final Setting<Boolean> INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED = Setting.boolSetting(
+        "datafusion.indexed.route_pure_parquet_through_indexed",
+        false,
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
+    );
+
     // ── Concurrency gate settings ──
 
     /** Minimum guaranteed bytes for the DataFusion memory pool. Default is half of datafusion max (37% of budget). */
@@ -229,7 +245,8 @@ public final class DatafusionSettings {
         INDEXED_PUSHDOWN_FILTERS,
         INDEXED_MIN_SKIP_RUN_DEFAULT,
         INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD,
-        INDEXED_FORCE_STRATEGY
+        INDEXED_FORCE_STRATEGY,
+        INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED
     );
 
     // ── Snapshot management ──
@@ -269,6 +286,7 @@ public final class DatafusionSettings {
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .build();
 
         registerListeners(clusterSettings);
@@ -290,6 +308,7 @@ public final class DatafusionSettings {
             .minSkipRunDefault(INDEXED_MIN_SKIP_RUN_DEFAULT.get(settings))
             .minSkipRunSelectivityThreshold(INDEXED_MIN_SKIP_RUN_SELECTIVITY_THRESHOLD.get(settings))
             .forceStrategy(forceStrategyToWire(INDEXED_FORCE_STRATEGY.get(settings)))
+            .routePureParquetThroughIndexed(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED.get(settings))
             .build();
     }
 
@@ -316,6 +335,10 @@ public final class DatafusionSettings {
 
         clusterSettings.addSettingsUpdateConsumer(INDEXED_FORCE_STRATEGY, newValue -> {
             snapshot = WireConfigSnapshot.builder(snapshot).forceStrategy(forceStrategyToWire(newValue)).build();
+        });
+
+        clusterSettings.addSettingsUpdateConsumer(INDEXED_ROUTE_PURE_PARQUET_THROUGH_INDEXED, newValue -> {
+            snapshot = WireConfigSnapshot.builder(snapshot).routePureParquetThroughIndexed(newValue).build();
         });
 
         clusterSettings.addSettingsUpdateConsumer(SearchService.CONCURRENT_SEGMENT_SEARCH_TARGET_MAX_SLICE_COUNT_SETTING, newValue -> {

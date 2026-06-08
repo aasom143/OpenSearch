@@ -518,6 +518,11 @@ struct IndexedStream {
     projection: Option<Vec<usize>>,
     current_stream: Option<SendableRecordBatchStream>,
     current_inner_plan: Option<Arc<dyn ExecutionPlan>>,
+    /// TEMP (perf attribution): true until the current per-RG stream has been
+    /// polled once. The per-RG `DataSourceExec` opens lazily, so the first poll
+    /// carries the open+metadata cost; timing it separately isolates that from
+    /// steady-state decode.
+    current_stream_first_poll: bool,
     current_mask: Option<BooleanArray>,
     current_rg_first_row: i64,
     /// Per-RG state carried from `PrefetchedRg.context` so `on_batch_mask`
@@ -623,6 +628,7 @@ impl IndexedStream {
             projection,
             current_stream: None,
             current_inner_plan: None,
+            current_stream_first_poll: false,
             current_mask: None,
             current_rg_first_row: 0,
             current_rg_context: None,
@@ -955,11 +961,31 @@ impl IndexedStream {
             // 4. Pull the next filtered batch from upstream (parquet stream
             //    + evaluator), push into coalescer, loop.
             // Poll current stream
-            if let Some(ref mut stream) = self.current_stream {
-                let t_poll = Instant::now();
-                let poll_result = Pin::new(stream).poll_next(cx);
+            if self.current_stream.is_some() {
+                let is_first_poll = self.current_stream_first_poll;
+                // Poll in a tight scope so the `&mut self.current_stream` borrow
+                // ends before we touch other `self` fields below.
+                let (poll_result, poll_elapsed) = {
+                    let stream = self.current_stream.as_mut().unwrap();
+                    let t_poll = Instant::now();
+                    let r = Pin::new(stream).poll_next(cx);
+                    (r, t_poll.elapsed())
+                };
                 if let Some(ref t) = self.metrics.parquet_poll_time {
-                    t.add_duration(t_poll.elapsed());
+                    t.add_duration(poll_elapsed);
+                }
+                // TEMP (perf attribution): the FIRST poll of a per-RG stream
+                // carries the lazy open (metadata derive + array-reader build).
+                // Only count a first poll once it actually resolves (not Pending),
+                // so the timer reflects the open+first-decode, not a park.
+                if is_first_poll && !matches!(poll_result, Poll::Pending) {
+                    self.current_stream_first_poll = false;
+                    if let Some(ref t) = self.metrics.parquet_first_poll_time {
+                        t.add_duration(poll_elapsed);
+                    }
+                    if let Some(ref c) = self.metrics.parquet_first_poll_count {
+                        c.add(1);
+                    }
                 }
                 match poll_result {
                     Poll::Ready(Some(Ok(batch))) if batch.num_rows() > 0 => {
@@ -1057,6 +1083,7 @@ impl IndexedStream {
 
                     let candidates = prefetched.prefetched.candidates;
                     let prefetch_mask_buffer = prefetched.prefetched.mask_buffer;
+                    let prefetch_selection_runs = prefetched.prefetched.selection_runs;
 
                     if let Some(ref timer) = self.metrics.index_time {
                         timer.add_duration(Duration::from_nanos(prefetched.prefetched.eval_nanos));
@@ -1098,20 +1125,51 @@ impl IndexedStream {
                         counter.add(1);
                     }
 
-                    let selection = build_row_selection_with_min_skip_run(
-                        &candidates,
-                        rg.num_rows as usize,
-                        min_skip_run,
-                    );
-                    // Share the bitmap between PositionMap (under
-                    // row-granular regime) and build_mask without cloning
-                    // the underlying data.
+                    // Fast path: the evaluator handed us pre-built select runs
+                    // (contiguous page ranges) and does not consult PositionMap
+                    // in `on_batch_mask` (PredicateOnlyEvaluator). Build the
+                    // RowSelection straight from the runs — O(#runs) — instead of
+                    // walking the full candidate bitmap bit-by-bit in
+                    // `build_row_selection_with_min_skip_run` (O(#set bits), the
+                    // dominant cost on non-selective full scans). PositionMap is
+                    // unused on this path (residual applied via pushdown /
+                    // on_batch_mask; no row-id position lookups), so use a cheap
+                    // Identity placeholder and skip its construction too.
                     let candidates = Arc::new(candidates);
-                    let position_map = PositionMap::from_candidates_with_selection(
-                        Arc::clone(&candidates),
-                        &selection,
-                        min_skip_run,
-                    );
+                    let (selection, position_map) = if let Some(runs) = prefetch_selection_runs {
+                        let mut selectors: Vec<RowSelector> = Vec::with_capacity(runs.len() * 2);
+                        let mut pos = 0usize;
+                        for (start, len) in runs {
+                            if start > pos {
+                                selectors.push(RowSelector::skip(start - pos));
+                            }
+                            selectors.push(RowSelector::select(len));
+                            pos = start + len;
+                        }
+                        if pos < rg.num_rows as usize {
+                            selectors.push(RowSelector::skip(rg.num_rows as usize - pos));
+                        }
+                        let selection = RowSelection::from(selectors);
+                        // O(#runs) — does NOT walk the candidate bitmap. Correct
+                        // variant (Identity for whole-RG, Runs otherwise).
+                        let position_map = PositionMap::from_selection(&selection);
+                        (selection, position_map)
+                    } else {
+                        let selection = build_row_selection_with_min_skip_run(
+                            &candidates,
+                            rg.num_rows as usize,
+                            min_skip_run,
+                        );
+                        // Share the bitmap between PositionMap (under
+                        // row-granular regime) and build_mask without cloning
+                        // the underlying data.
+                        let position_map = PositionMap::from_candidates_with_selection(
+                            Arc::clone(&candidates),
+                            &selection,
+                            min_skip_run,
+                        );
+                        (selection, position_map)
+                    };
                     // Metric: record which PositionMap variant this RG
                     // landed in. Useful for tuning min_skip_run and
                     // understanding per-query memory profiles.
@@ -1173,6 +1231,7 @@ impl IndexedStream {
                             }
                             self.current_stream = Some(stream);
                             self.current_inner_plan = Some(plan);
+                            self.current_stream_first_poll = true;
                             // Under row-granular (min_skip_run == 1) every
                             // delivered row is by construction a candidate,
                             // so the mask would be all-true — skip building

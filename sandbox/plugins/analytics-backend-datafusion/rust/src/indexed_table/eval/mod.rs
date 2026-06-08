@@ -186,6 +186,16 @@ pub struct PrefetchedRg {
     /// `RoaringBitmap`. Set by evaluators that already produced the
     /// packed bits internally (e.g. `SingleCollectorEvaluator`).
     pub mask_buffer: Option<Buffer>,
+    /// Optional fast path: pre-built RG-relative `(start, len)` select runs,
+    /// already in ascending order. When `Some`, `IndexedStream` builds the
+    /// parquet `RowSelection` directly from these runs and skips both
+    /// `build_row_selection_with_min_skip_run` (which would re-walk the full
+    /// candidate bitmap bit-by-bit) and `PositionMap` construction. Set by
+    /// evaluators whose candidates are contiguous page ranges and whose
+    /// `on_batch_mask` does not consult `PositionMap` (e.g.
+    /// `PredicateOnlyEvaluator`: the residual is applied via pushdown /
+    /// `on_batch_mask`, and the page ranges are the exact select runs).
+    pub selection_runs: Option<Vec<(usize, usize)>>,
 }
 
 impl PrefetchedRg {
@@ -197,6 +207,7 @@ impl PrefetchedRg {
             eval_nanos,
             context: Box::new(()),
             mask_buffer: None,
+            selection_runs: None,
         }
     }
 }
@@ -525,6 +536,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             eval_nanos: t.elapsed().as_nanos() as u64,
             context: Box::new(prefetch),
             mask_buffer: None,
+            selection_runs: None,
         }))
     }
 
