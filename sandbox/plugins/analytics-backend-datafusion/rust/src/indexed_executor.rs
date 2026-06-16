@@ -937,11 +937,13 @@ async unsafe fn execute_indexed_with_context_inner(
                 .and_then(|expr| build_pruning_predicate(expr, Arc::clone(&schema_for_pruner)));
 
             Arc::new(
-                move |segment: &SegmentFileInfo, _chunk, stream_metrics: &StreamMetrics, stats_prune_tree: Option<&StatsPruneTree>| {
+                move |segment: &SegmentFileInfo, chunk, stream_metrics: &StreamMetrics, stats_prune_tree: Option<&StatsPruneTree>| {
                     let pruner = Arc::new(PagePruner::new(
                         &schema_for_pruner,
                         Arc::clone(&segment.metadata),
                     ));
+                    let rg_index_to_pos: HashMap<usize, usize> = chunk.row_group_indices.iter()
+                        .enumerate().map(|(pos, &idx)| (idx, pos)).collect();
                     let eval: Arc<dyn RowGroupBitsetSource> =
                         Arc::new(crate::indexed_table::eval::predicate_evaluator::PredicateOnlyEvaluator::new(
                             pruner,
@@ -949,6 +951,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             residual_expr.clone(),
                             Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
                             stats_prune_tree.cloned(),
+                            rg_index_to_pos,
                         ));
                     Ok(eval)
                 },
@@ -1071,6 +1074,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             context_id,
                             bloom_config,
                             stats_prune_tree.cloned(),
+                            chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
                         ));
                     Ok(eval)
                 },
@@ -1168,6 +1172,7 @@ async unsafe fn execute_indexed_with_context_inner(
                         )),
                         collector_strategy,
                         stats_prune_tree: stats_prune_tree.cloned(),
+                        rg_index_to_pos: chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
                     });
                     Ok(eval)
                 },
