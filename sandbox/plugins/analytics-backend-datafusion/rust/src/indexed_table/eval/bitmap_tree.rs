@@ -202,8 +202,17 @@ fn prefetch_node(
         if let Some(&pos) = rg_index_to_pos.get(&ctx.rg_idx) {
             if let Some(&false) = spt.rg_can_match.get(pos) {
                 native_bridge_common::log_debug!(
-                    "BitmapTree: skipping subtree for RG {} — pruned by RG-level stats",
-                    ctx.rg_idx
+                    "BitmapTree: skipping subtree for RG {} — pruned by RG-level stats, under_all_and_path={}, node_type={}",
+                    ctx.rg_idx,
+                    under_all_and_path,
+                    match node {
+                        ResolvedNode::And(_) => "AND",
+                        ResolvedNode::Or(_) => "OR",
+                        ResolvedNode::Not(_) => "NOT",
+                        ResolvedNode::Collector { .. } => "Collector",
+                        ResolvedNode::Predicate(_) => "Predicate",
+                        ResolvedNode::DelegationPossible { .. } => "DelegationPossible",
+                    }
                 );
                 if under_all_and_path {
                     skip_dfs(node, dfs);
@@ -309,6 +318,10 @@ fn prefetch_node(
                     stats_prune_tree.and_then(|spt| spt.children.get(val)),
                     rg_index_to_pos,
                 )?;
+                native_bridge_common::log_debug!(
+                    "BitmapTree: OR child[{}] (original_idx={}) for RG {} → contribution={}",
+                    arr_index, val, ctx.rg_idx, filtered_bitmap.len()
+                );
                 result_bitmap |= &filtered_bitmap;
 
                 // Short circuit case
@@ -378,14 +391,19 @@ fn prefetch_node(
         ResolvedNode::Predicate(expr) => {
             let leaf_idx = *dfs;
             *dfs += 1;
-            let _ = leaf_idx; // predicate leaves don't need per-leaf storage
-            Ok(predicate_page_bitmap(
+            let _ = leaf_idx;
+            let bm = predicate_page_bitmap(
                 expr,
                 ctx,
                 page_pruner,
                 pruning_predicates,
                 page_prune_metrics,
-            ))
+            );
+            native_bridge_common::log_debug!(
+                "BitmapTree: Predicate leaf for RG {} → page_bitmap_len={}",
+                ctx.rg_idx, bm.len()
+            );
+            Ok(bm)
         }
         ResolvedNode::DelegationPossible { .. } => {
             // Invariant: DelegationPossible must never appear under OR or NOT.
