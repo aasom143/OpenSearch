@@ -366,18 +366,18 @@ impl RowGroupBitsetSource for TreeBitsetSource {
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = Instant::now();
 
-        // // RG-level early-exit: precomputed from column stats at construction.
-        // if let Some(ref ann) = self.stats_prune_tree {
-        //     if let Some(&pos) = self.rg_index_to_pos.get(&rg.index) {
-        //         if let Some(&false) = ann.rg_can_match.get(pos) {
-        //             native_bridge_common::log_debug!(
-        //                 "BitmapTree: skipping RG {} — pruned by RG-level stats",
-        //                 rg.index
-        //             );
-        //             return Ok(None);
-        //         }
-        //     }
-        // }
+        // RG-level early-exit: precomputed from column stats at construction.
+        if let Some(ref ann) = self.stats_prune_tree {
+            if let Some(&pos) = self.rg_index_to_pos.get(&rg.index) {
+                if let Some(&false) = ann.rg_can_match.get(pos) {
+                    native_bridge_common::log_debug!(
+                        "BitmapTree: skipping RG {} — pruned by RG-level stats",
+                        rg.index
+                    );
+                    return Ok(None);
+                }
+            }
+        }
 
         let ctx = RgEvalContext {
             rg_idx: rg.index,
