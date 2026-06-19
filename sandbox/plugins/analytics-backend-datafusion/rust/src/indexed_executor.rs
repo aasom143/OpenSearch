@@ -903,7 +903,7 @@ async unsafe fn execute_indexed_with_context_inner(
         FilterClass::Tree => None,
     };
 
-    let prune_tree_config = extraction.as_ref().and_then(|e| {
+    let mut prune_tree_config = extraction.as_ref().and_then(|e| {
         let mut leaf_exprs: Vec<Arc<dyn PhysicalExpr>> = Vec::new();
         collect_predicate_exprs(&e.tree, &mut leaf_exprs);
         let leaf_predicates: HashMap<usize, Arc<PruningPredicate>> = leaf_exprs
@@ -1125,6 +1125,15 @@ async unsafe fn execute_indexed_with_context_inner(
                     })
                     .collect(),
             );
+
+            // Override prune_tree_config with the normalized tree — the same
+            // push_not_down().flatten() applied above. This ensures StatsPruneTree
+            // children indices align with ResolvedNode children indices.
+            prune_tree_config = if pruning_predicates.is_empty() {
+                None
+            } else {
+                Some(((*tree).clone(), Arc::clone(&pruning_predicates), schema_for_pruner.clone()))
+            };
 
             Arc::new(
                 move |segment: &SegmentFileInfo, chunk, stream_metrics: &StreamMetrics, stats_prune_tree: Option<&StatsPruneTree>| {
