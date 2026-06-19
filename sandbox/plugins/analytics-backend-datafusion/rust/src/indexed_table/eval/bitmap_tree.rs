@@ -109,6 +109,12 @@ impl TreeEvaluator for BitmapTreeEvaluator {
             stats_prune_tree,
             rg_index_to_pos,
         )?;
+        native_bridge_common::log_debug!(
+            "BitmapTree: RG {} — candidates={}, per_leaf_bitmaps=[{}]",
+            ctx.rg_idx,
+            candidates.len(),
+            per_leaf.iter().map(|(_, bm)| bm.len().to_string()).collect::<Vec<_>>().join(", ")
+        );
         Ok(TreePrefetch {
             candidates,
             per_leaf,
@@ -192,22 +198,22 @@ fn prefetch_node(
     // the current RG, skip the entire tree walk. Since collectors are
     // always-true in the resolution, a false here means a Predicate
     // under AND proved no match — collector bitmaps are irrelevant.
-    if let Some(spt) = stats_prune_tree {
-        if let Some(&pos) = rg_index_to_pos.get(&ctx.rg_idx) {
-            if let Some(&false) = spt.rg_can_match.get(pos) {
-                native_bridge_common::log_debug!(
-                    "BitmapTree: skipping subtree for RG {} — pruned by RG-level stats",
-                    ctx.rg_idx
-                );
-                if under_all_and_path {
-                    skip_dfs(node, dfs);
-                } else {
-                    skip_dfs_with_empty_bitmaps(node, dfs, out);
-                }
-                return Ok(RoaringBitmap::new());
-            }
-        }
-    }
+    // if let Some(spt) = stats_prune_tree {
+    //     if let Some(&pos) = rg_index_to_pos.get(&ctx.rg_idx) {
+    //         if let Some(&false) = spt.rg_can_match.get(pos) {
+    //             native_bridge_common::log_debug!(
+    //                 "BitmapTree: skipping subtree for RG {} — pruned by RG-level stats",
+    //                 ctx.rg_idx
+    //             );
+    //             if under_all_and_path {
+    //                 skip_dfs(node, dfs);
+    //             } else {
+    //                 skip_dfs_with_empty_bitmaps(node, dfs, out);
+    //             }
+    //             return Ok(RoaringBitmap::new());
+    //         }
+    //     }
+    // }
 
     match node {
         ResolvedNode::And(children) => {
