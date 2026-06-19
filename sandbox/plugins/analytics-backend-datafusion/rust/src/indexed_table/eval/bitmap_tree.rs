@@ -380,11 +380,15 @@ fn prefetch_node(
                 Ok(universe)
             }
         }
-        ResolvedNode::Collector { collector, .. } => {
+        ResolvedNode::Collector { collector, provider_key } => {
             let leaf_idx = *dfs;
             *dfs += 1;
             let key = Arc::as_ptr(collector) as *const () as usize;
             let bm = leaves.leaf_bitmap(node, leaf_idx, ctx)?;
+            native_bridge_common::log_debug!(
+                "BitmapTree: Collector leaf for RG {} — provider_key={}, bitmap_len={}",
+                ctx.rg_idx, provider_key, bm.len()
+            );
             out.push((key, bm.clone()));
             Ok(bm)
         }
@@ -451,11 +455,15 @@ fn collect_collector_leaves(
             }
         }
         ResolvedNode::Not(child) => collect_collector_leaves(child, ctx, leaves, dfs, out)?,
-        ResolvedNode::Collector { collector, .. } => {
+        ResolvedNode::Collector { collector, provider_key } => {
             let leaf_idx = *dfs;
             *dfs += 1;
             let key = Arc::as_ptr(collector) as *const () as usize;
             let bm = leaves.leaf_bitmap(node, leaf_idx, ctx)?;
+            native_bridge_common::log_debug!(
+                "BitmapTree: collect_collector_leaves for RG {} — provider_key={}, bitmap_len={}",
+                ctx.rg_idx, provider_key, bm.len()
+            );
             out.push((key, bm));
         }
         ResolvedNode::Predicate(_) => {
