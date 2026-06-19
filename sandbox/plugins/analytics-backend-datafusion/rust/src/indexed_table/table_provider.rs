@@ -646,9 +646,14 @@ impl ExecutionPlan for QueryShardExec {
             // Build stats prune tree for segment/RG/subtree-level pruning.
             let stats_prune_tree = self.config.prune_tree_config.as_ref().map(|(tree, preds, schema)| {
                 let rg_indices: Vec<usize> = row_groups.iter().map(|rg| rg.index).collect();
-                StatsPruneTree::build_from_bool_node(
+                let spt = StatsPruneTree::build_from_bool_node(
                     tree, preds, &segment.metadata, schema, &rg_indices,
-                )
+                );
+                native_bridge_common::log_debug!(
+                    "StatsPruneTree: root rg_can_match={:?} for rg_indices={:?}",
+                    spt.rg_can_match, rg_indices
+                );
+                spt
             });
 
             // Segment-level skip: if no RG in the chunk can match, skip entirely.

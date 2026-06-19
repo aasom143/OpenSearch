@@ -587,7 +587,14 @@ fn eval_leaf(
         row_counts: rg_metas.iter().map(|m| m.num_rows()).collect(),
     };
     match pruning_predicate.prune(&stats) {
-        Ok(keep) => keep,
+        Ok(keep) => {
+            native_bridge_common::log_debug!(
+                "StatsPruneTree: eval_leaf expr={:?} → rg_can_match={:?}",
+                pruning_predicate.orig_expr(),
+                keep
+            );
+            keep
+        }
         Err(_) => vec![true; num],
     }
 }
