@@ -216,7 +216,7 @@ impl AsyncFileReader for ScopedPageIndexReader {
             // 1. Footer-only metadata (shared metadata-cache hit if pre-seeded).
             //    Use the listing's ObjectMeta rather than a `head()` — the cache
             //    validity check only needs size + last_modified, both already known.
-            let (_schema, _size, footer) = load_parquet_metadata_with_meta(
+            let (file_arrow_schema, _size, footer) = load_parquet_metadata_with_meta(
                 Arc::clone(&store),
                 &location,
                 object_meta,
@@ -230,7 +230,7 @@ impl AsyncFileReader for ScopedPageIndexReader {
             //    non-empty: a projection-only query still needs a scoped OffsetIndex.
             if !predicate_names.is_empty() || !projection_names.is_empty() {
                 let (parquet_cols, offset_cols) = resolve_predicate_parquet_columns_pair(
-                    &file_schema, &footer, &predicate_names, &projection_names,
+                    &file_schema, &footer, &predicate_names, &projection_names, &file_arrow_schema,
                 );
                 if let Some(augmented) = load_scoped_page_index_cols(
                     &store,

@@ -727,13 +727,15 @@ mod tests {
         );
         let file_meta = FileMetaData::new(0, 0, None, None, schema, None);
         let pq_meta = ParquetMetaData::new(file_meta, vec![]);
+        let metadata = std::sync::Arc::new(pq_meta);
         SegmentFileInfo {
             writer_generation: global_base as i64 + 1, // arbitrary, just to vary
             max_doc,
             object_path: object_store::path::Path::from(format!("seg-{}.parquet", global_base)),
             parquet_size: 0,
             row_groups: vec![],
-            metadata: std::sync::Arc::new(pq_meta),
+            arrow_schema: std::sync::Arc::new(datafusion::arrow::datatypes::Schema::empty()),
+            metadata,
             global_base,
             sort_min: None,
             sort_max: None,
@@ -1027,6 +1029,7 @@ async unsafe fn execute_indexed_with_context_inner(
                         &segment.metadata,
                         &predicate_column_names,
                         &projection_column_names,
+                        &segment.arrow_schema,
                     );
                 if parquet_cols.is_empty() && offset_cols.is_empty() {
                     continue;
@@ -1066,6 +1069,7 @@ async unsafe fn execute_indexed_with_context_inner(
                     let pruner = Arc::new(PagePruner::new(
                         &schema_for_pruner,
                         Arc::clone(&segment.metadata),
+                        segment.arrow_schema.clone(),
                     ));
                     let rg_index_to_pos: HashMap<usize, usize> = chunk.row_group_indices.iter()
                         .enumerate().map(|(pos, &idx)| (idx, pos)).collect();
@@ -1170,6 +1174,7 @@ async unsafe fn execute_indexed_with_context_inner(
                     let pruner = Arc::new(PagePruner::new(
                         &schema_for_pruner,
                         Arc::clone(&segment.metadata),
+                        segment.arrow_schema.clone(),
                     ));
                     let bloom_config = if bloom_on_read {
                         Some(crate::indexed_table::eval::single_collector::BloomConfig {
@@ -1288,6 +1293,7 @@ async unsafe fn execute_indexed_with_context_inner(
                     let pruner = Arc::new(PagePruner::new(
                         &schema_for_pruner,
                         Arc::clone(&segment.metadata),
+                        segment.arrow_schema.clone(),
                     ));
 
                     let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(TreeBitsetSource {

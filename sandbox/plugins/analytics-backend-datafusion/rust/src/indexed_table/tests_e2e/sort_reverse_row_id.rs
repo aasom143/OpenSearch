@@ -155,6 +155,7 @@ fn build_segments(
             parquet_size: size,
             row_groups: rgs,
             metadata: Arc::clone(&parquet_meta),
+            arrow_schema: meta.schema().clone(),
             global_base: cumulative,
             sort_min: None,
             sort_max: None,
@@ -186,7 +187,7 @@ async fn collect_row_ids(
                 .cloned()
                 .unwrap_or_default();
             let collector: Arc<dyn RowGroupDocsCollector> = Arc::new(LocalOffsetCollector { matching });
-            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata), schema.clone()));
             // Single-collector tree.
             let tree = BoolNode::Collector { annotation_id: 0 };
             let tree = tree.push_not_down();
