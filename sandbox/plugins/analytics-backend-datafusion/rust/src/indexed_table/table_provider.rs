@@ -77,6 +77,11 @@ pub struct SegmentFileInfo {
     pub parquet_size: u64,
     pub row_groups: Vec<RowGroupInfo>,
     pub metadata: Arc<ParquetMetaData>,
+    /// Arrow schema derived from this segment's parquet footer. Computed once
+    /// at `build_segments` time by `parquet_to_arrow_schema` and reused by
+    /// page pruning, dynamic filter pruning, and column schema resolution
+    /// instead of re-deriving from the footer on every access.
+    pub arrow_schema: SchemaRef,
     /// Cumulative row count from all preceding segments. Used to compute
     /// shard-global row IDs: `global_base + rg.first_row + position_in_rg`.
     pub global_base: u64,
@@ -647,7 +652,7 @@ impl ExecutionPlan for QueryShardExec {
             let stats_prune_tree = self.config.prune_tree_config.as_ref().map(|(tree, preds, schema)| {
                 let rg_indices: Vec<usize> = row_groups.iter().map(|rg| rg.index).collect();
                 Arc::new(StatsPruneTree::build_from_bool_node(
-                    tree, preds, &segment.metadata, schema, &rg_indices,
+                    tree, preds, &segment.metadata, schema, &rg_indices, &segment.arrow_schema,
                 ))
             });
 
@@ -705,6 +710,7 @@ impl ExecutionPlan for QueryShardExec {
                 emit_row_ids: self.config.emit_row_ids,
                 row_id_output_index: self.row_id_output_index,
                 dynamic_filter: dynamic_filter.clone(),
+                seg_arrow_schema: segment.arrow_schema.clone(),
             };
             streams.push(exec.execute(0, Arc::clone(&context))?);
         }

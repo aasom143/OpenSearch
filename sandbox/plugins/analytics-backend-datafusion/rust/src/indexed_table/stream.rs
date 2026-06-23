@@ -357,6 +357,9 @@ pub struct IndexedExec {
     /// parquet statistics cannot satisfy the (tightening) predicate. `None`
     /// when no dynamic filter was pushed to this query.
     pub(crate) dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+    /// Cached per-segment arrow schema derived from parquet footer. Used by
+    /// page pruning and dynamic filter to avoid repeated `parquet_to_arrow_schema`.
+    pub(crate) seg_arrow_schema: SchemaRef,
 }
 
 impl fmt::Debug for IndexedExec {
@@ -452,6 +455,7 @@ impl ExecutionPlan for IndexedExec {
             self.emit_row_ids,
             self.row_id_output_index,
             self.dynamic_filter.clone(),
+            self.seg_arrow_schema.clone(),
         )))
     }
 }
@@ -552,6 +556,7 @@ impl IndexedStream {
         emit_row_ids: bool,
         row_id_output_index: Option<usize>,
         dynamic_filter: Option<Arc<dyn datafusion::physical_expr::PhysicalExpr>>,
+        seg_arrow_schema: SchemaRef,
     ) -> Self {
         let evaluator = Arc::clone(&index_reader.evaluator);
         let batch_coalescer =
@@ -559,6 +564,7 @@ impl IndexedStream {
         let dynamic_rg_pruner = super::dynamic_filter::DynamicRgPruner::new(
             dynamic_filter,
             full_schema.clone(),
+            seg_arrow_schema,
         );
         Self {
             schema,

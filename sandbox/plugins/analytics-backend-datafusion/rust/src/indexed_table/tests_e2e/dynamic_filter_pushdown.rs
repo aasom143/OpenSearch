@@ -130,6 +130,7 @@ async fn run_indexed(
         parquet_size: size,
         row_groups: rgs,
         metadata: Arc::clone(&parquet_meta),
+        arrow_schema: schema.clone(),
         global_base: 0,
             sort_min: None,
         sort_max: None,
@@ -138,7 +139,7 @@ async fn run_indexed(
     let factory: super::super::table_provider::EvaluatorFactory = {
         let schema = schema.clone();
         Arc::new(move |segment, _chunk, _stream_metrics, _stats_prune_tree| {
-            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata)));
+            let pruner = Arc::new(PagePruner::new(&schema, Arc::clone(&segment.metadata), schema.clone()));
             let collector: Arc<dyn RowGroupDocsCollector> = Arc::new(MatchAllCollector);
             let eval: Arc<dyn RowGroupBitsetSource> = Arc::new(
                 crate::indexed_table::eval::single_collector::SingleCollectorEvaluator::new(
