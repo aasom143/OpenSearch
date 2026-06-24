@@ -138,8 +138,15 @@ pub async fn load_parquet_metadata_with_meta(
     };
 
     let file_meta = pq_meta.file_metadata();
+    let t0 = Instant::now();
     let schema = parquet_to_arrow_schema(file_meta.schema_descr(), file_meta.key_value_metadata())
         .map_err(|e| format!("parquet_to_arrow_schema {location}: {e}"))?;
+    native_bridge_common::log_debug!(
+        "parquet_to_arrow_schema: location={}, fields={}, elapsed_ns={}",
+        location,
+        schema.fields().len(),
+        t0.elapsed().as_nanos(),
+    );
 
     Ok((Arc::new(schema), size, pq_meta))
 }
