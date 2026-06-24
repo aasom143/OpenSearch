@@ -120,6 +120,7 @@ impl PagePruner {
         // schema misaligns StatisticsConverter's positional column lookup under
         // dynamic-mapping schema drift.
         let descr = self.metadata.file_metadata().schema_descr();
+        let _t0 = std::time::Instant::now();
         let seg_arrow_schema = match datafusion::parquet::arrow::parquet_to_arrow_schema(
             descr,
             self.metadata.file_metadata().key_value_metadata(),
@@ -127,6 +128,7 @@ impl PagePruner {
             Ok(s) => Arc::new(s),
             Err(_) => Arc::clone(&self.schema),
         };
+        native_bridge_common::log_debug!("parquet_to_arrow_schema [page_pruner::prune_rg]: fields={}, elapsed_ns={}", seg_arrow_schema.fields().len(), _t0.elapsed().as_nanos());
 
         for col in &columns {
             let converter = match StatisticsConverter::try_new(col.name(), &seg_arrow_schema, descr)
@@ -540,6 +542,7 @@ fn eval_leaf(
     // no column when the segment's schema is narrower or reordered (dynamic-mapping
     // schema drift) — yielding null stats that prune RGs that actually match.
     let descr = metadata.file_metadata().schema_descr();
+    let _t0 = std::time::Instant::now();
     let seg_arrow_schema = match datafusion::parquet::arrow::parquet_to_arrow_schema(
         descr,
         metadata.file_metadata().key_value_metadata(),
@@ -547,6 +550,7 @@ fn eval_leaf(
         Ok(s) => Arc::new(s),
         Err(_) => Arc::clone(schema),
     };
+    native_bridge_common::log_debug!("parquet_to_arrow_schema [eval_leaf]: fields={}, elapsed_ns={}", seg_arrow_schema.fields().len(), _t0.elapsed().as_nanos());
     let arrow_schema = seg_arrow_schema.as_ref();
     let rg_metas: Vec<_> = rg_indices
         .iter()

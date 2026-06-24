@@ -491,10 +491,12 @@ fn try_acquire_budget(
     let cached_parquet = cached.file_metadata.as_any().downcast_ref::<CachedParquetMetaData>()?;
     let parquet_meta = cached_parquet.parquet_metadata();
 
+    let _t0 = std::time::Instant::now();
     let schema = parquet_to_arrow_schema(
         parquet_meta.file_metadata().schema_descr(),
         parquet_meta.file_metadata().key_value_metadata(),
     ).ok().map(Arc::new)?;
+    native_bridge_common::log_debug!("parquet_to_arrow_schema [session_context::budget]: fields={}, elapsed_ns={}", schema.fields().len(), _t0.elapsed().as_nanos());
 
     crate::query_budget::acquire_budget_from_metadata(
         pool,

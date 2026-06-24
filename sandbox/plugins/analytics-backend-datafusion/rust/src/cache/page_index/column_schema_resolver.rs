@@ -51,6 +51,7 @@ pub fn resolve_predicate_parquet_columns(
     // arrow position maps to its true leaf. (The passed `_arrow_schema` is the
     // union table schema and is intentionally NOT used for index resolution —
     // see the doc comment.)
+    let _t0 = std::time::Instant::now();
     let file_arrow_schema = match parquet_to_arrow_schema(
         parquet_schema,
         metadata.file_metadata().key_value_metadata(),
@@ -61,6 +62,7 @@ pub fn resolve_predicate_parquet_columns(
         // scoped load and falls back to footer-only.
         Err(_) => return vec![],
     };
+    native_bridge_common::log_debug!("parquet_to_arrow_schema [resolve_single]: fields={}, elapsed_ns={}", file_arrow_schema.fields().len(), _t0.elapsed().as_nanos());
     resolve_with_schema(&file_arrow_schema, metadata, predicate_column_names)
 }
 
@@ -78,12 +80,14 @@ pub fn resolve_predicate_parquet_columns_pair(
     projection_col_names: &[String],
 ) -> (Vec<usize>, Vec<usize>) {
     let parquet_schema = metadata.file_metadata().schema_descr();
+    let _t0 = std::time::Instant::now();
     match parquet_to_arrow_schema(
         parquet_schema,
         metadata.file_metadata().key_value_metadata(),
     ) {
         Ok(s) => {
             let file_arrow_schema = Arc::new(s);
+            native_bridge_common::log_debug!("parquet_to_arrow_schema [resolve_pair]: fields={}, elapsed_ns={}", file_arrow_schema.fields().len(), _t0.elapsed().as_nanos());
             (
                 resolve_with_schema(&file_arrow_schema, metadata, predicate_col_names),
                 resolve_with_schema(&file_arrow_schema, metadata, projection_col_names),

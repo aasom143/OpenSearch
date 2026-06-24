@@ -208,11 +208,13 @@ impl RgPruningContext {
         // schema: StatisticsConverter maps name→parquet-column positionally, so the full
         // schema reads the wrong/no column under dynamic-mapping schema drift.
         let descr = metadata.file_metadata().schema_descr();
+        let _t0 = std::time::Instant::now();
         let seg_schema = datafusion::parquet::arrow::parquet_to_arrow_schema(
             descr,
             metadata.file_metadata().key_value_metadata(),
         )
         .unwrap_or_else(|_| self.schema.as_ref().clone());
+        native_bridge_common::log_debug!("parquet_to_arrow_schema [dynamic_filter]: fields={}, elapsed_ns={}", seg_schema.fields().len(), _t0.elapsed().as_nanos());
         let stats = SingleRowGroupStatistics {
             parquet_schema: descr,
             rg_meta,
