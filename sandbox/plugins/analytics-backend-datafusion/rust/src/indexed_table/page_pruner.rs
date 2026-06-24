@@ -1589,8 +1589,12 @@ mod tests {
 
         let expr = bin(col("severity", 1), Operator::GtEq, lit_int(0));
         let pp = build_pruning_predicate(&expr, table_schema.clone()).unwrap();
+        let file_arrow_schema: SchemaRef = Arc::new(datafusion::parquet::arrow::parquet_to_arrow_schema(
+            md.file_metadata().schema_descr(),
+            md.file_metadata().key_value_metadata(),
+        ).unwrap());
         assert_eq!(
-            eval_leaf(&pp, &md, &table_schema, &[0], &table_schema),
+            eval_leaf(&pp, &md, &table_schema, &[0], &file_arrow_schema),
             vec![true],
             "severity >= 0 is always true; eval_leaf must not prune under schema drift"
         );

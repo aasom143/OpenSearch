@@ -551,6 +551,7 @@ mod tests {
         ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector,
     };
     use datafusion::parquet::arrow::ArrowWriter;
+    use parquet::arrow::parquet_to_arrow_schema;
     use datafusion::parquet::file::properties::{EnabledStatistics, WriterProperties};
     use datafusion::physical_expr::expressions::{BinaryExpr, Column as PhysColumn, Literal};
     use datafusion::physical_expr::PhysicalExpr;
@@ -890,7 +891,11 @@ mod tests {
 
         // Must resolve to the file's TRUE leaf for `price` = 1, NOT the union
         // position 0 (which is `extra` in this file).
-        let cols = resolve_predicate_parquet_columns(&union_schema, &fo, &["price".to_string()], &union_schema);
+        let file_own_schema: SchemaRef = Arc::new(parquet::arrow::parquet_to_arrow_schema(
+            fo.file_metadata().schema_descr(),
+            fo.file_metadata().key_value_metadata(),
+        ).unwrap());
+        let cols = resolve_predicate_parquet_columns(&union_schema, &fo, &["price".to_string()], &file_own_schema);
         assert_eq!(cols, vec![1], "price must resolve to its per-file leaf (1), not union pos 0");
 
         let aug = load_scoped_page_index_cols(&store, &loc, &fo, &cols, &[]).await.unwrap();
