@@ -149,7 +149,7 @@ mod tests {
         let file = tmp.reopen().unwrap();
         let options = ArrowReaderOptions::new().with_page_index(true);
         let meta = ArrowReaderMetadata::load(&file, options).unwrap();
-        Arc::new(PagePruner::new(meta.schema(), meta.metadata().clone()))
+        Arc::new(PagePruner::new(meta.schema(), meta.metadata().clone(), meta.schema().clone()))
     }
 
     #[test]
