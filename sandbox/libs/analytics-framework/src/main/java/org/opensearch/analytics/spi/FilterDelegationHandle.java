@@ -81,6 +81,41 @@ public interface FilterDelegationHandle extends Closeable {
     void releaseProvider(int providerKey);
 
     /**
+     * Create a collector and probe row-group boundaries for matches.
+     *
+     * <p>Creates a collector for the given segment range AND probes each
+     * [rgMins[i], rgMaxs[i]) range to determine if any docs match, writing
+     * 1 (may match) or 0 (definitely empty) into {@code outMatch}.
+     *
+     * <p>Default implementation delegates to {@link #createCollector} and
+     * fills {@code outMatch} conservatively with all 1s.
+     *
+     * @param providerKey key from {@link #createProvider}
+     * @param writerGeneration segment identifier
+     * @param minDoc inclusive lower bound of segment partition
+     * @param maxDoc exclusive upper bound of segment partition
+     * @param rgMins inclusive lower bounds per row group (ascending order)
+     * @param rgMaxs exclusive upper bounds per row group (ascending order)
+     * @param outMatch output array: 1 = may match, 0 = definitely empty
+     * @return packed long: if >= 0, lower 32 bits = collectorKey, upper 32 bits = firstDoc;
+     *         -1 on error; -2 if no docs match in this segment (all RGs empty)
+     */
+    default long createCollectorWithProbe(
+        int providerKey,
+        long writerGeneration,
+        int minDoc,
+        int maxDoc,
+        int[] rgMins,
+        int[] rgMaxs,
+        byte[] outMatch
+    ) {
+        java.util.Arrays.fill(outMatch, (byte) 1);
+        int key = createCollector(providerKey, writerGeneration, minDoc, maxDoc);
+        if (key < 0) return key;
+        return (long) key & 0xFFFFFFFFL;
+    }
+
+    /**
      * Returns {@code true} if the owning query has been cancelled.
      *
      * @return whether the query is cancelled

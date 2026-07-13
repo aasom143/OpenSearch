@@ -15,6 +15,7 @@ import org.opensearch.analytics.spi.DelegationThreadTracker;
 import org.opensearch.analytics.spi.FilterDelegationHandle;
 
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -217,6 +218,72 @@ public final class FilterTreeCallbacks {
                 throwable
             );
             return -1;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
+     * {@code createCollectorWithProbe(contextId, providerKey, writerGeneration, minDoc, maxDoc,
+     *       numRanges, rgMinsPtr, rgMaxsPtr, outMatchPtr) -> packed_result}.
+     */
+    public static long createCollectorWithProbe(
+        long contextId,
+        int providerKey,
+        long writerGeneration,
+        int minDoc,
+        int maxDoc,
+        int numRanges,
+        MemorySegment rgMinsPtr,
+        MemorySegment rgMaxsPtr,
+        MemorySegment outMatchPtr
+    ) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "createCollectorWithProbe", contextId);
+            if (binding == null || binding.handle() == null) {
+                return -1L;
+            }
+            // Read RG boundaries from native memory
+            if (numRanges <= 0) {
+                return -1L;
+            }
+            MemorySegment rgMinsView = rgMinsPtr.reinterpret((long) numRanges * Integer.BYTES);
+            MemorySegment rgMaxsView = rgMaxsPtr.reinterpret((long) numRanges * Integer.BYTES);
+            int[] rgMins = new int[numRanges];
+            int[] rgMaxs = new int[numRanges];
+            for (int i = 0; i < numRanges; i++) {
+                rgMins[i] = rgMinsView.getAtIndex(ValueLayout.JAVA_INT, i);
+                rgMaxs[i] = rgMaxsView.getAtIndex(ValueLayout.JAVA_INT, i);
+            }
+            byte[] outMatch = new byte[numRanges];
+
+            long result = binding.handle()
+                .createCollectorWithProbe(providerKey, writerGeneration, minDoc, maxDoc, rgMins, rgMaxs, outMatch);
+
+            // Write match bitmap back to native memory
+            MemorySegment outMatchView = outMatchPtr.reinterpret(numRanges);
+            for (int i = 0; i < numRanges; i++) {
+                outMatchView.set(ValueLayout.JAVA_BYTE, i, outMatch[i]);
+            }
+            return result;
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                new ParameterizedMessage(
+                    "createCollectorWithProbe(contextId={}, providerKey={}, writerGeneration={}, [{}, {}), numRanges={}) failed",
+                    contextId,
+                    providerKey,
+                    writerGeneration,
+                    minDoc,
+                    maxDoc,
+                    numRanges
+                ),
+                throwable
+            );
+            return -1L;
         } finally {
             trackEnd(contextId, tid);
         }
