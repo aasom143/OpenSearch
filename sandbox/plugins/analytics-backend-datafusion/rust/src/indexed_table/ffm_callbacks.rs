@@ -394,6 +394,7 @@ pub fn create_collector_with_probe(
     let cost = (phase1_result >> 32) as i64;
     let num_ranges = rg_boundaries.len();
 
+
     // Gate: skip Phase 2 if cost exceeds 1% of the segment.
     // At that density docs are spread across nearly all RGs — probing
     // would return all-1s, wasting the probe scorer + array overhead.

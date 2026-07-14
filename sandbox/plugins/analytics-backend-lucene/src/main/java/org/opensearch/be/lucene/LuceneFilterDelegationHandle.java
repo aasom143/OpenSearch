@@ -165,9 +165,16 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     @Override
     public int createCollector(int providerKey, long writerGeneration, int minDoc, int maxDoc) {
-        // Legacy entry point — delegate to the new method and discard cost.
+        // Legacy entry point — preserves old behavior where null scorer
+        // returns a valid collectorKey (collectDocs returns empty bitsets).
         long packed = createCollectorWithCost(providerKey, writerGeneration, minDoc, maxDoc);
-        if (packed < 0) return (int) packed;
+        if (packed == -1L) return -1;
+        if (packed == -2L) {
+            // Segment empty — store null scorer with a valid key (old behavior)
+            int collectorKey = nextCollectorKey.getAndIncrement();
+            scorersByCollectorKey.put(collectorKey, new ScorerHandle(null, minDoc, maxDoc));
+            return collectorKey;
+        }
         return (int) (packed & 0xFFFFFFFFL);
     }
 
@@ -221,7 +228,6 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         try {
             Scorer scorer = weight.scorer(leaf);
             if (scorer == null) {
-                // No docs match — return -2 (segment empty)
                 return -2L;
             }
             long cost = scorer.iterator().cost();
