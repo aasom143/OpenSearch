@@ -1227,6 +1227,12 @@ async unsafe fn execute_indexed_with_context_inner(
                                 })?;
                                 match outcome {
                                     CreateCollectorOutcome::SegmentEmpty => {
+                                        log_debug!(
+                                            "[probe-skip] SEGMENT_EMPTY: writer_generation={} doc_range=[{},{})",
+                                            segment.writer_generation,
+                                            chunk.doc_min,
+                                            chunk.doc_max
+                                        );
                                         let eval: Arc<dyn RowGroupBitsetSource> =
                                             Arc::new(EmptySegmentEvaluator);
                                         return Ok(eval);

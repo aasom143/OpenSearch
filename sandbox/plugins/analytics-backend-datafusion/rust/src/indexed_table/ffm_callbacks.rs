@@ -340,8 +340,12 @@ pub fn create_collector_with_probe(
 ) -> Result<CreateCollectorOutcome, String> {
     let cost_fn = match load_create_collector_with_cost() {
         Ok(f) => f,
-        Err(_) => {
+        Err(e) => {
             // Fallback: use legacy createCollector, no probe info.
+            native_bridge_common::log_debug!(
+                "[probe-skip] FALLBACK: createCollectorWithCost not registered ({}), using legacy path",
+                e
+            );
             let collector = FfmSegmentCollector::create(
                 context_id,
                 provider_key,

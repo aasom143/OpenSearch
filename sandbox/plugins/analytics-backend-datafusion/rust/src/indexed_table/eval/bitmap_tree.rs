@@ -1101,6 +1101,12 @@ impl LeafBitmapSource for CollectorLeafBitmaps {
             if let Some(rg_flags) = self.probe_rg_can_match.get(&leaf_key) {
                 if let Some(&pos) = self.rg_index_to_pos.get(&ctx.rg_idx) {
                     if let Some(&false) = rg_flags.get(pos) {
+                        native_bridge_common::log_debug!(
+                            "[probe-skip] BT_LEAF_SKIPPED: rg_index={} range=[{},{})",
+                            ctx.rg_idx,
+                            ctx.min_doc,
+                            ctx.max_doc
+                        );
                         return Ok(RoaringBitmap::new());
                     }
                 }

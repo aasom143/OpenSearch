@@ -283,6 +283,12 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         if let Some(ref probe) = self.probe_rg_can_match {
             if let Some(&pos) = self.rg_index_to_pos.get(&rg.index) {
                 if let Some(&false) = probe.get(pos) {
+                    native_bridge_common::log_debug!(
+                        "[probe-skip] RG_SKIPPED: rg_index={} range=[{},{}) — probe confirmed no docs",
+                        rg.index,
+                        min_doc,
+                        max_doc
+                    );
                     return Ok(None);
                 }
             }
