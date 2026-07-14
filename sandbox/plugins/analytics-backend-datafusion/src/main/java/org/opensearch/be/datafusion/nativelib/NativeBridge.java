@@ -387,10 +387,12 @@ public final class NativeBridge {
         );
 
         // void df_register_filter_tree_callbacks(createProvider, releaseProvider, createCollector,
-        // collectDocs, releaseCollector, createCollectorWithProbe)
+        // collectDocs, releaseCollector, createCollectorWithProbe, createCollectorWithCost, probeCollector)
         REGISTER_FILTER_TREE_CALLBACKS = linker.downcallHandle(
             lib.find("df_register_filter_tree_callbacks").orElseThrow(),
             FunctionDescriptor.ofVoid(
+                ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
@@ -699,6 +701,25 @@ public final class NativeBridge {
                     java.lang.foreign.MemorySegment.class
                 )
             );
+            MethodHandle createCollectorWithCost = lookup.findStatic(
+                cb,
+                "createCollectorWithCost",
+                java.lang.invoke.MethodType.methodType(long.class, long.class, int.class, long.class, int.class, int.class)
+            );
+            MethodHandle probeCollector = lookup.findStatic(
+                cb,
+                "probeCollector",
+                java.lang.invoke.MethodType.methodType(
+                    long.class,
+                    long.class,
+                    int.class,
+                    long.class,
+                    int.class,
+                    java.lang.foreign.MemorySegment.class,
+                    java.lang.foreign.MemorySegment.class,
+                    java.lang.foreign.MemorySegment.class
+                )
+            );
 
             java.lang.foreign.MemorySegment createProviderStub = linker.upcallStub(
                 createProvider,
@@ -756,6 +777,32 @@ public final class NativeBridge {
                 ),
                 arena
             );
+            java.lang.foreign.MemorySegment createCollectorWithCostStub = linker.upcallStub(
+                createCollectorWithCost,
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT
+                ),
+                arena
+            );
+            java.lang.foreign.MemorySegment probeCollectorStub = linker.upcallStub(
+                probeCollector,
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS,
+                    ValueLayout.ADDRESS
+                ),
+                arena
+            );
             NativeCall.invokeVoid(
                 REGISTER_FILTER_TREE_CALLBACKS,
                 createProviderStub,
@@ -763,7 +810,9 @@ public final class NativeBridge {
                 createCollectorStub,
                 collectDocsStub,
                 releaseCollectorStub,
-                createCollectorWithProbeStub
+                createCollectorWithProbeStub,
+                createCollectorWithCostStub,
+                probeCollectorStub
             );
         } catch (Throwable t) {
             throw new ExceptionInInitializerError(t);

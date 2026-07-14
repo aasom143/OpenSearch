@@ -116,6 +116,39 @@ public interface FilterDelegationHandle extends Closeable {
     }
 
     /**
+     * Phase 1 of two-phase probe: create a collector and return its cost.
+     * Same as {@link #createCollector} but returns a packed long with both
+     * the collector key and the scorer's estimated cost.
+     *
+     * @return packed long: lower 32 bits = collectorKey, upper 32 bits = cost (capped at INT_MAX);
+     *         -1 on error; -2 if no docs match (null scorer / segment empty)
+     */
+    default long createCollectorWithCost(int providerKey, long writerGeneration, int minDoc, int maxDoc) {
+        int key = createCollector(providerKey, writerGeneration, minDoc, maxDoc);
+        if (key < 0) return key;
+        // Default: return cost=INT_MAX (forces gate to fire → no probe)
+        return ((long) Integer.MAX_VALUE << 32) | (key & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Phase 2 of two-phase probe: scan RG boundaries using a probe scorer.
+     * Only called when Phase 1 returned a cost below the probe threshold.
+     * Creates a lightweight probe scorer from the same Weight and advances
+     * through row-group boundaries to identify empty RGs.
+     *
+     * @param providerKey the provider (Weight) to create the probe scorer from
+     * @param writerGeneration identifies the segment
+     * @param rgMins inclusive lower bounds per row group
+     * @param rgMaxs exclusive upper bounds per row group
+     * @param outMatch output: 1 = may match, 0 = definitely empty
+     * @return number of RGs skipped (outMatch=0); -1 on error
+     */
+    default long probeCollector(int providerKey, long writerGeneration, int[] rgMins, int[] rgMaxs, byte[] outMatch) {
+        java.util.Arrays.fill(outMatch, (byte) 1);
+        return 0;
+    }
+
+    /**
      * Returns {@code true} if the owning query has been cancelled.
      *
      * @return whether the query is cancelled

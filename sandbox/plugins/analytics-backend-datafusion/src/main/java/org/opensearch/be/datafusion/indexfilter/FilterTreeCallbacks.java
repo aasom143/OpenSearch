@@ -290,6 +290,96 @@ public final class FilterTreeCallbacks {
     }
 
     /**
+     * {@code createCollectorWithCost(contextId, providerKey, writerGeneration, minDoc, maxDoc) -> packed(cost|key)|-1|-2}.
+     * Phase 1 of two-phase probe: same as createCollector but returns cost in upper 32 bits.
+     */
+    public static long createCollectorWithCost(long contextId, int providerKey, long writerGeneration, int minDoc, int maxDoc) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "createCollectorWithCost", contextId);
+            if (binding == null || binding.handle() == null) {
+                return -1L;
+            }
+            return binding.handle().createCollectorWithCost(providerKey, writerGeneration, minDoc, maxDoc);
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                new ParameterizedMessage(
+                    "createCollectorWithCost(contextId={}, providerKey={}, writerGeneration={}) failed",
+                    contextId,
+                    providerKey,
+                    writerGeneration
+                ),
+                throwable
+            );
+            return -1L;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
+     * {@code probeCollector(contextId, providerKey, writerGeneration, numRanges, rgMinsPtr, rgMaxsPtr, outMatchPtr) -> skipped|-1}.
+     * Phase 2 of two-phase probe: creates probe scorer and scans RG boundaries.
+     */
+    public static long probeCollector(
+        long contextId,
+        int providerKey,
+        long writerGeneration,
+        int numRanges,
+        MemorySegment rgMinsPtr,
+        MemorySegment rgMaxsPtr,
+        MemorySegment outMatchPtr
+    ) {
+        long tid = trackStart(contextId);
+        try {
+            QueryBinding binding = BINDINGS.get(contextId);
+            assertBindingExists(binding, "probeCollector", contextId);
+            if (binding == null || binding.handle() == null) {
+                return -1L;
+            }
+            if (numRanges <= 0) {
+                return -1L;
+            }
+            MemorySegment rgMinsView = rgMinsPtr.reinterpret((long) numRanges * Integer.BYTES);
+            MemorySegment rgMaxsView = rgMaxsPtr.reinterpret((long) numRanges * Integer.BYTES);
+            int[] rgMins = new int[numRanges];
+            int[] rgMaxs = new int[numRanges];
+            for (int i = 0; i < numRanges; i++) {
+                rgMins[i] = rgMinsView.getAtIndex(ValueLayout.JAVA_INT, i);
+                rgMaxs[i] = rgMaxsView.getAtIndex(ValueLayout.JAVA_INT, i);
+            }
+            byte[] outMatch = new byte[numRanges];
+
+            long result = binding.handle().probeCollector(providerKey, writerGeneration, rgMins, rgMaxs, outMatch);
+
+            MemorySegment outMatchView = outMatchPtr.reinterpret(numRanges);
+            for (int i = 0; i < numRanges; i++) {
+                outMatchView.set(ValueLayout.JAVA_BYTE, i, outMatch[i]);
+            }
+            return result;
+        } catch (AssertionError e) {
+            throw e;
+        } catch (Throwable throwable) {
+            LOGGER.error(
+                new ParameterizedMessage(
+                    "probeCollector(contextId={}, providerKey={}, writerGeneration={}, numRanges={}) failed",
+                    contextId,
+                    providerKey,
+                    writerGeneration,
+                    numRanges
+                ),
+                throwable
+            );
+            return -1L;
+        } finally {
+            trackEnd(contextId, tid);
+        }
+    }
+
+    /**
      * {@code collectDocs(contextId, collectorKey, minDoc, maxDoc, outPtr, outWordCap) -> wordsWritten|-1}.
      */
     public static long collectDocs(long contextId, int collectorKey, int minDoc, int maxDoc, MemorySegment outPtr, long outWordCap) {
