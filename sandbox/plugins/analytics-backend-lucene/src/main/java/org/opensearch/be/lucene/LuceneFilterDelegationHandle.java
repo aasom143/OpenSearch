@@ -229,6 +229,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc));
             // Pack: upper 32 bits = cost (capped), lower 32 bits = collectorKey
             int costCapped = (int) Math.min(cost, Integer.MAX_VALUE);
+            LOGGER.debug(
+                "[probe-skip] COST: cost={} segMaxDoc={} ({}%) collectorKey={}",
+                cost,
+                leaf.reader().maxDoc(),
+                (cost * 100) / leaf.reader().maxDoc(),
+                collectorKey
+            );
             return ((long) costCapped << 32) | (collectorKey & 0xFFFFFFFFL);
         } catch (IOException exception) {
             LOGGER.error(

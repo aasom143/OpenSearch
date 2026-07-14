@@ -398,6 +398,12 @@ pub fn create_collector_with_probe(
     let gate_fires = threshold_pct > 0 && cost * 100 > seg_max_doc * threshold_pct;
 
     if gate_fires {
+        native_bridge_common::log_debug!(
+            "[probe-skip] GATE: cost={} seg_max_doc={} threshold={}% — skipping probe",
+            cost,
+            seg_max_doc,
+            threshold_pct
+        );
         let rg_can_match = vec![true; num_ranges];
         return Ok(CreateCollectorOutcome::Active {
             collector: FfmSegmentCollector {
@@ -410,6 +416,12 @@ pub fn create_collector_with_probe(
     }
 
     // Phase 2: probe RG boundaries (only for selective queries)
+    native_bridge_common::log_debug!(
+        "[probe-skip] PROBE_PHASE2: cost={} seg_max_doc={} num_ranges={} — calling probeCollector",
+        cost,
+        seg_max_doc,
+        num_ranges
+    );
     let probe_fn = match load_probe_collector() {
         Ok(f) => f,
         Err(_) => {
