@@ -240,8 +240,17 @@ fn prefetch_node(
                 // Remaining children get empty bitmap entries (no FFM
                 // upcalls) so refinement can look them up without panic.
                 if result_bitmap.as_ref().unwrap().is_empty() {
+                    let mut skipped_collectors = 0usize;
                     for &j in indices.iter().skip_while(|&&x| x != i).skip(1) {
+                        skipped_collectors += count_collector_leaves(&children[j]);
                         skip_dfs_with_empty_bitmaps(&children[j], dfs, out);
+                    }
+                    if skipped_collectors > 0 {
+                        native_bridge_common::log_debug!(
+                            "BitmapTree: AND short-circuit saved {} collector FFM call(s) for RG {}",
+                            skipped_collectors,
+                            ctx.rg_idx
+                        );
                     }
                     break;
                 }
@@ -358,6 +367,17 @@ fn prefetch_node(
                  Planner must drop performance peers under OR/NOT before fragment conversion."
             )
         }
+    }
+}
+
+fn count_collector_leaves(node: &ResolvedNode) -> usize {
+    match node {
+        ResolvedNode::And(children) | ResolvedNode::Or(children) => {
+            children.iter().map(count_collector_leaves).sum()
+        }
+        ResolvedNode::Not(child) => count_collector_leaves(child),
+        ResolvedNode::Collector { .. } => 1,
+        ResolvedNode::Predicate(_) | ResolvedNode::DelegationPossible { .. } => 0,
     }
 }
 
