@@ -834,6 +834,12 @@ public class AnalyticsSearchService implements AutoCloseable {
             );
             AnalyticsSearchBackendPlugin backend = backends.get(resolved.plan.getBackendId());
 
+            // Detect deleted docs and propagate to the execution context so the native
+            // bridge can pass it to Rust (for defusing the live-docs MatchAll Collector
+            // when no deletions exist).
+            AnalyticsSearchBackendPlugin luceneBackend = backends.get("lucene");
+            ctx.setHasDeletedDocs(luceneBackend != null && luceneBackend.hasDeletedDocs(ctx));
+
             backendContext = applyInstructionHandlers(backend, resolved.plan.getInstructions(), ctx);
 
             // Handle exchange — if plan has delegation, ask accepting backend for handle and pass to driving

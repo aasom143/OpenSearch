@@ -12,6 +12,7 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlFunction;
@@ -35,6 +36,7 @@ import org.opensearch.analytics.planner.rel.OpenSearchValues;
 import org.opensearch.analytics.planner.rel.OperatorAnnotation;
 import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.analytics.spi.DelegatedExpression;
+import org.opensearch.analytics.spi.DelegatedPredicateFunction;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationPossibleFunction;
 import org.opensearch.analytics.spi.FieldStorageInfo;
@@ -125,12 +127,20 @@ public class FragmentConversionDriver {
                 ? FilterTreeShapeDeriver.derive(filter, plan.backendId())
                 : FilterTreeShape.NO_DELEGATION;
 
+            // Inject MatchAll delegated_predicate into the filter tree when the coverage
+            // algorithm determines the tree doesn't guarantee live-docs filtering.
+            boolean requiresLiveDocsMatchAll = FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, plan.backendId());
+            RelNode fragmentForConversion = plan.resolvedFragment();
+            if (requiresLiveDocsMatchAll) {
+                fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
+            }
+
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
-            byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
+            byte[] bytes = convert(fragmentForConversion, convertor, delegationBytes);
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
-            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
+            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
             LOGGER.debug(
@@ -239,6 +249,7 @@ public class FragmentConversionDriver {
         AnalyticsSearchBackendPlugin backend,
         StagePlan plan,
         FilterTreeShape treeShape,
+        OpenSearchFilter filter,
         IntraOperatorDelegationBytes delegationBytes
     ) {
         FragmentInstructionHandlerFactory factory = backend.getInstructionHandlerFactory();
@@ -257,8 +268,13 @@ public class FragmentConversionDriver {
             boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD);
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             if (!delegated.isEmpty()) {
-                factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds, logicalTableName)
-                    .ifPresent(instructions::add);
+                factory.createShardScanWithDelegationNode(
+                    treeShape,
+                    delegated.size(),
+                    requestsRowIds,
+                    logicalTableName,
+                    FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, backend.name())
+                ).ifPresent(instructions::add);
             } else {
                 factory.createShardScanNode(requestsRowIds, logicalTableName).ifPresent(instructions::add);
             }
@@ -693,4 +709,65 @@ public class FragmentConversionDriver {
         return node.copy(node.getTraitSet(), List.of(placeholder));
     }
 
+    /**
+     * Sentinel annotation ID for the injected MatchAll live-docs delegation.
+     * Uses Integer.MAX_VALUE to avoid collision with coordinator-assigned IDs (which start at 0).
+     */
+    static final int LIVE_DOCS_MATCHALL_ANNOTATION_ID = Integer.MAX_VALUE;
+
+    /**
+     * Injects {@code AND(existingCondition, delegated_predicate(LIVE_DOCS_MATCHALL_ANNOTATION_ID))}
+     * into the filter. For Path A (no filter), inserts a new Filter above the leaf scan.
+     */
+    private static RelNode injectMatchAllDelegation(RelNode fragment, OpenSearchFilter filter) {
+        if (filter != null) {
+            RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
+            RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
+            RexNode augmentedCondition = rexBuilder.makeCall(
+                org.apache.calcite.sql.fun.SqlStdOperatorTable.AND,
+                filter.getCondition(),
+                matchAllPredicate
+            );
+            // Replace the filter in-tree: copy the filter with augmented condition, then
+            // rebuild parents by walking up. For the common plan shapes (Project → Filter → Scan
+            // or Filter → Scan), the filter is findLeaf's parent or the fragment itself.
+            return replaceFilter(fragment, filter, augmentedCondition);
+        }
+        // Path A: no existing filter — insert a Filter(delegated_predicate(INT_MAX)) above the leaf scan
+        RelNode leaf = findLeaf(fragment);
+        RexBuilder rexBuilder = leaf.getCluster().getRexBuilder();
+        RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
+        LogicalFilter newFilter = LogicalFilter.create(leaf, matchAllPredicate);
+        return replaceChild(fragment, leaf, newFilter);
+    }
+
+    private static RelNode replaceFilter(RelNode root, OpenSearchFilter target, RexNode newCondition) {
+        if (root == target) {
+            return target.copy(target.getTraitSet(), target.getInput(), newCondition);
+        }
+        List<RelNode> newInputs = new ArrayList<>(root.getInputs().size());
+        boolean replaced = false;
+        for (RelNode input : root.getInputs()) {
+            RelNode result = replaceFilter(input, target, newCondition);
+            newInputs.add(result);
+            if (result != input) replaced = true;
+        }
+        return replaced ? root.copy(root.getTraitSet(), newInputs) : root;
+    }
+
+    private static RelNode replaceChild(RelNode root, RelNode target, RelNode replacement) {
+        if (root == target) {
+            return replacement;
+        }
+        List<RelNode> newInputs = new ArrayList<>(root.getInputs().size());
+        boolean replaced = false;
+        for (RelNode input : root.getInputs()) {
+            RelNode result = replaceChild(input, target, replacement);
+            newInputs.add(result);
+            if (result != input) replaced = true;
+        }
+        return replaced ? root.copy(root.getTraitSet(), newInputs) : root;
+    }
 }
+
+
