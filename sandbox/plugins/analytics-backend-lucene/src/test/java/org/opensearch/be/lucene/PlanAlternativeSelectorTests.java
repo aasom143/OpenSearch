@@ -553,9 +553,14 @@ public class PlanAlternativeSelectorTests extends OpenSearchTestCase {
                 public Optional<InstructionNode> createShardScanWithDelegationNode(
                     FilterTreeShape treeShape,
                     int delegatedPredicateCount,
-                    boolean requestsRowIds
+                    boolean requestsRowIds,
+                    boolean requiresLiveDocsMatchAll
                 ) {
-                    return Optional.of(new ShardScanWithDelegationInstructionNode(treeShape, delegatedPredicateCount, requestsRowIds));
+                    return Optional.of(
+                        new ShardScanWithDelegationInstructionNode(
+                            treeShape, delegatedPredicateCount, requestsRowIds, requiresLiveDocsMatchAll
+                        )
+                    );
                 }
 
                 @Override

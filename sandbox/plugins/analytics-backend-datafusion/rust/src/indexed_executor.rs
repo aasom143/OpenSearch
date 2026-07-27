@@ -890,6 +890,10 @@ async unsafe fn execute_indexed_with_context_inner(
         .indexed_config
         .as_ref()
         .is_some_and(|c| c.requests_row_ids);
+    let has_deleted_docs = handle
+        .indexed_config
+        .as_ref()
+        .is_some_and(|c| c.has_deleted_docs);
     let classification_override = handle.indexed_config.map(|config| {
         // FilterTreeShape: 1 = CONJUNCTIVE → SingleCollector, 2 = INTERLEAVED → Tree.
         match (config.tree_shape, config.delegated_predicate_count) {
@@ -1135,8 +1139,15 @@ async unsafe fn execute_indexed_with_context_inner(
 
             // Correctness-delegated provider (eager). `None` when the query has only
             // performance-delegated leaves and no Collector at all.
+            // Defuse: when annotation_id is the live-docs sentinel (i32::MAX) and the
+            // shard has no deletions, skip the FFM call — all docs are alive.
             let correctness_provider: Option<Arc<ProviderHandle>> =
                 match single_collector_id(&extraction.tree) {
+                    Some(annotation_id)
+                        if annotation_id == i32::MAX && !has_deleted_docs =>
+                    {
+                        None
+                    }
                     Some(annotation_id) => Some(Arc::new(
                         create_provider(context_id, annotation_id)
                             .map_err(|e| DataFusionError::External(e.into()))?,
@@ -1270,9 +1281,13 @@ async unsafe fn execute_indexed_with_context_inner(
                 .push_not_down()
                 .flatten();
             // One provider per Collector leaf (DFS order).
+            // Defuse: skip the live-docs sentinel when no deletions exist.
             let leaf_ids = tree.collector_leaves();
             let mut providers: Vec<Arc<ProviderHandle>> = Vec::with_capacity(leaf_ids.len());
             for annotation_id in &leaf_ids {
+                if *annotation_id == i32::MAX && !has_deleted_docs {
+                    continue;
+                }
                 providers.push(Arc::new(
                     create_provider(context_id, *annotation_id)
                         .map_err(|e| DataFusionError::External(e.into()))?,

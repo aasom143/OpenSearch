@@ -47,7 +47,8 @@ public interface FragmentInstructionHandlerFactory {
     Optional<InstructionNode> createShardScanWithDelegationNode(
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
-        boolean requestsRowIds
+        boolean requestsRowIds,
+        boolean requiresLiveDocsMatchAll
     );
 
     /** Creates a partial aggregate instruction node. */

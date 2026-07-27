@@ -25,21 +25,33 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
 
     private final FilterTreeShape treeShape;
     private final int delegatedPredicateCount;
+    private final boolean requiresLiveDocsMatchAll;
 
     public ShardScanWithDelegationInstructionNode(FilterTreeShape treeShape, int delegatedPredicateCount) {
-        this(treeShape, delegatedPredicateCount, false);
+        this(treeShape, delegatedPredicateCount, false, true);
     }
 
     public ShardScanWithDelegationInstructionNode(FilterTreeShape treeShape, int delegatedPredicateCount, boolean requestsRowIds) {
+        this(treeShape, delegatedPredicateCount, requestsRowIds, true);
+    }
+
+    public ShardScanWithDelegationInstructionNode(
+        FilterTreeShape treeShape,
+        int delegatedPredicateCount,
+        boolean requestsRowIds,
+        boolean requiresLiveDocsMatchAll
+    ) {
         super(requestsRowIds);
         this.treeShape = treeShape;
         this.delegatedPredicateCount = delegatedPredicateCount;
+        this.requiresLiveDocsMatchAll = requiresLiveDocsMatchAll;
     }
 
     public ShardScanWithDelegationInstructionNode(StreamInput in) throws IOException {
         super(in);
         this.treeShape = in.readEnum(FilterTreeShape.class);
         this.delegatedPredicateCount = in.readVInt();
+        this.requiresLiveDocsMatchAll = in.readBoolean();
     }
 
     @Override
@@ -52,6 +64,7 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
         super.writeTo(out);
         out.writeEnum(treeShape);
         out.writeVInt(delegatedPredicateCount);
+        out.writeBoolean(requiresLiveDocsMatchAll);
     }
 
     public FilterTreeShape getTreeShape() {
@@ -60,5 +73,15 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
 
     public int getDelegatedPredicateCount() {
         return delegatedPredicateCount;
+    }
+
+    /**
+     * Whether the data node should inject a MatchAll delegation when deleted docs are present.
+     * Computed at the coordinator via the tree coverage algorithm: {@code true} when the filter
+     * tree does not guarantee that every result row passes through a correctness Collector
+     * (which respects liveDocs).
+     */
+    public boolean requiresLiveDocsMatchAll() {
+        return requiresLiveDocsMatchAll;
     }
 }

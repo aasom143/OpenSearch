@@ -65,7 +65,8 @@ final class LuceneInstructionHandlerFactory implements FragmentInstructionHandle
     public Optional<InstructionNode> createShardScanWithDelegationNode(
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
-        boolean requestsRowIds
+        boolean requestsRowIds,
+        boolean requiresLiveDocsMatchAll
     ) {
         // Lucene driver doesn't accept delegated predicates, so the with-delegation variant
         // collapses to a plain shard-scan. The treeShape / delegatedPredicateCount fields

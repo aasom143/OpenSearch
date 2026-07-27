@@ -1461,6 +1461,7 @@ public final class NativeBridge {
         int delegatedPredicateCount,
         boolean requestsRowIds,
         boolean hasPartialAggregate,
+        boolean hasDeletedDocs,
         long queryConfigPtr,
         byte[] planBytes
     ) {
@@ -1482,6 +1483,7 @@ public final class NativeBridge {
                 delegatedPredicateCount,
                 (byte) (requestsRowIds ? 1 : 0),
                 (byte) (hasPartialAggregate ? 1 : 0),
+                (byte) (hasDeletedDocs ? 1 : 0),
                 queryConfigPtr,
                 planSegment,
                 planLen
