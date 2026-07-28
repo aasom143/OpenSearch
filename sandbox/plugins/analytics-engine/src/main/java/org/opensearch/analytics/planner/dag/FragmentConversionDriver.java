@@ -130,13 +130,19 @@ public class FragmentConversionDriver {
             RelNode fragmentForConversion = plan.resolvedFragment();
             if (requiresLiveDocsMatchAll) {
                 fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
+                if (treeShape == FilterTreeShape.NO_DELEGATION) {
+                    treeShape = FilterTreeShape.CONJUNCTIVE;
+                }
             }
 
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
             byte[] bytes = convert(fragmentForConversion, convertor, delegationBytes);
 
             // Assemble instruction list
-            List<DelegatedExpression> delegated = delegationBytes.getResult();
+            List<DelegatedExpression> delegated = new ArrayList<>(delegationBytes.getResult());
+            if (requiresLiveDocsMatchAll) {
+                delegated.add(createMatchAllDelegatedExpression());
+            }
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
@@ -701,6 +707,16 @@ public class FragmentConversionDriver {
             if (result != input) replaced = true;
         }
         return replaced ? root.copy(root.getTraitSet(), newInputs) : root;
+    }
+
+    private static DelegatedExpression createMatchAllDelegatedExpression() {
+        try (org.opensearch.common.io.stream.BytesStreamOutput output = new org.opensearch.common.io.stream.BytesStreamOutput()) {
+            output.writeNamedWriteable(new org.opensearch.index.query.MatchAllQueryBuilder());
+            byte[] bytes = org.opensearch.core.common.bytes.BytesReference.toBytes(output.bytes());
+            return new DelegatedExpression(LIVE_DOCS_MATCHALL_ANNOTATION_ID, "lucene", bytes);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Failed to serialize MatchAllQueryBuilder", e);
+        }
     }
 }
 
