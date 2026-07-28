@@ -24,6 +24,7 @@ import org.opensearch.index.translog.TranslogManager;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * Unified interface for indexing operations in OpenSearch.
@@ -82,6 +83,32 @@ public interface Indexer
      */
     default boolean isReplicaIndexer() {
         return false;
+    }
+
+    /**
+     * Acquires a point-in-time {@link Engine.SearcherSupplier} for DSL search.
+     * <p>
+     * Implementations that cannot serve {@link Engine.Searcher}-based search throw
+     * {@link IllegalStateException}. The {@code wrapper} is applied by the supplier on each
+     * searcher it hands out.
+     */
+    default Engine.SearcherSupplier acquireSearcherSupplier(
+        Function<Engine.Searcher, Engine.Searcher> wrapper,
+        Engine.SearcherScope scope
+    ) {
+        throw unsupportedSearcher();
+    }
+
+    /**
+     * Acquires a single {@link Engine.Searcher}. The caller owns the returned searcher and must
+     * close it. See {@link #acquireSearcherSupplier(Function, Engine.SearcherScope)}.
+     */
+    default Engine.Searcher acquireSearcher(String source, Engine.SearcherScope scope, Function<Engine.Searcher, Engine.Searcher> wrapper) {
+        throw unsupportedSearcher();
+    }
+
+    private IllegalStateException unsupportedSearcher() {
+        return new IllegalStateException("Cannot apply function on indexer " + getClass() + " directly on IndexShard");
     }
 
     /**
