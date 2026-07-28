@@ -13,6 +13,8 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.QueryCache;
 import org.apache.lucene.search.QueryCachingPolicy;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
+import org.opensearch.index.engine.exec.SearchableFormatReader;
 
 import java.util.Map;
 import java.util.Objects;
@@ -25,7 +27,7 @@ import java.util.Objects;
  * same as the current reader's top-reader" assertion — fatal across the FFM boundary.
  */
 @ExperimentalApi
-public final class LuceneReader {
+public final class LuceneReader implements SearchableFormatReader {
 
     private final DirectoryReader directoryReader;
     private final Map<Long, String> generationToSegmentName;
@@ -40,6 +42,19 @@ public final class LuceneReader {
 
     public DirectoryReader directoryReader() {
         return directoryReader;
+    }
+
+    /**
+     * Exposes this reader for core DSL search. Readers handed out by
+     * {@code LuceneReaderManager} are always wrapped, so the cast holds; the check guards
+     * hand-built readers (e.g. in tests).
+     */
+    @Override
+    public OpenSearchDirectoryReader openSearchDirectoryReader() {
+        if (directoryReader instanceof OpenSearchDirectoryReader wrapped) {
+            return wrapped;
+        }
+        throw new IllegalStateException("directoryReader is not an OpenSearchDirectoryReader: " + directoryReader.getClass().getName());
     }
 
     public Map<Long, String> generationToSegmentName() {
