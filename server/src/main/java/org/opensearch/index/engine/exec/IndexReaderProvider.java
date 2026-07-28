@@ -10,6 +10,7 @@ package org.opensearch.index.engine.exec;
 
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.concurrent.GatedCloseable;
+import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.index.engine.dataformat.DataFormat;
 import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 
@@ -63,5 +64,14 @@ public interface IndexReaderProvider {
         Object reader(DataFormat format);
 
         <R> R getReader(DataFormat format, Class<R> readerType);
+
+        /**
+         * Returns the Lucene reader of the one searchable format in this reader, for core DSL
+         * search. Implementations that hold no searchable format throw
+         * {@link UnsupportedOperationException}.
+         */
+        default OpenSearchDirectoryReader searchableDirectoryReader() {
+            throw new UnsupportedOperationException("searchableDirectoryReader is not supported by " + getClass().getName());
+        }
     }
 }

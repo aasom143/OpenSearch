@@ -2477,8 +2477,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     public Engine.SearcherSupplier acquireSearcherSupplier(Engine.SearcherScope scope) {
         readAllowed();
         markSearcherAccessed();
-        final Indexer engine = getIndexer();
-        return applyOnEngine(engine, eng -> eng.acquireSearcherSupplier(this::wrapSearcher, scope));
+        return getIndexer().acquireSearcherSupplier(this::wrapSearcher, scope);
     }
 
     public Engine.Searcher acquireSearcher(String source) {
@@ -2495,8 +2494,7 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
     private Engine.Searcher acquireSearcher(String source, Engine.SearcherScope scope) {
         readAllowed();
         markSearcherAccessed();
-        final Indexer indexer = getIndexer();
-        return applyOnEngine(indexer, engine -> engine.acquireSearcher(source, scope, this::wrapSearcher));
+        return getIndexer().acquireSearcher(source, scope, this::wrapSearcher);
     }
 
     /**
@@ -4734,12 +4732,13 @@ public class IndexShard extends AbstractIndexShardComponent implements IndicesCl
                 @Override
                 public void afterRefresh(boolean didRefresh) {
                     if (!didRefresh) return;
-                    // Use the engine directly (not IndexShard.acquireSearcher) so that we do NOT
+                    // Use the indexer directly (not IndexShard.acquireSearcher) so that we do NOT
                     // go through IndexShard.wrapSearcher.
                     try (
-                        Engine.Searcher searcher = applyOnEngine(
-                            getIndexer(),
-                            engine -> engine.acquireSearcher("lucene_field_count", Engine.SearcherScope.INTERNAL)
+                        Engine.Searcher searcher = getIndexer().acquireSearcher(
+                            "lucene_field_count",
+                            Engine.SearcherScope.INTERNAL,
+                            Function.identity()
                         )
                     ) {
                         FieldInfos fieldInfos = FieldInfos.getMergedFieldInfos(searcher.getIndexReader());

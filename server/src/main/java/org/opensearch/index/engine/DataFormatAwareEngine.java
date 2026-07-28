@@ -22,8 +22,10 @@ import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.common.concurrent.GatedCloseable;
 import org.opensearch.common.concurrent.GatedConditionalCloseable;
 import org.opensearch.common.lease.Releasable;
+import org.opensearch.common.lease.Releasables;
 import org.opensearch.common.logging.Loggers;
 import org.opensearch.common.lucene.Lucene;
+import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.lucene.uid.Versions;
 import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.queue.DefaultLockableHolder;
@@ -69,6 +71,7 @@ import org.opensearch.index.engine.exec.FilesListener;
 import org.opensearch.index.engine.exec.IndexReaderProvider;
 import org.opensearch.index.engine.exec.Indexer;
 import org.opensearch.index.engine.exec.PrimaryTermFieldType;
+import org.opensearch.index.engine.exec.SearchableFormatReader;
 import org.opensearch.index.engine.exec.Segment;
 import org.opensearch.index.engine.exec.WriterFileSet;
 import org.opensearch.index.engine.exec.commit.Committer;
@@ -106,6 +109,7 @@ import org.opensearch.search.suggest.completion.CompletionStats;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -124,6 +128,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 
 import static org.opensearch.index.engine.Engine.MAX_UNSAFE_AUTO_ID_TIMESTAMP_COMMIT_ID;
 import static org.opensearch.index.seqno.SequenceNumbers.UNASSIGNED_SEQ_NO;
@@ -2266,6 +2271,84 @@ public class DataFormatAwareEngine implements Indexer {
         }
     }
 
+    /**
+     * Acquires a searcher supplier over the searchable (Lucene) format of the current catalog
+     * snapshot, so that core DSL search works on a data-format-aware shard.
+     * <p>
+     * Ownership: the supplier holds both a store ref and the {@link Reader} ref (which pins the
+     * catalog snapshot); {@code doClose} releases them. Every searcher handed out is built over
+     * the same {@link OpenSearchDirectoryReader} instance, keeping {@code Weight}s bound to one
+     * top-level reader context.
+     */
+    @Override
+    public Engine.SearcherSupplier acquireSearcherSupplier(Function<Engine.Searcher, Engine.Searcher> wrapper, Engine.SearcherScope scope) {
+        ensureOpen();
+        /* Acquire order is store -> reader so the store cannot close underneath the reader. */
+        if (store.tryIncRef() == false) {
+            throw new AlreadyClosedException(shardId + " store is closed", failedEngine.get());
+        }
+        Releasable storeRef = store::decRef;
+        GatedCloseable<Reader> readerRef = null;
+        try {
+            readerRef = acquireReader();
+            final OpenSearchDirectoryReader directoryReader = readerRef.get().searchableDirectoryReader();
+            final GatedCloseable<Reader> acquired = readerRef;
+            Engine.SearcherSupplier supplier = new Engine.SearcherSupplier(wrapper) {
+                @Override
+                protected Engine.Searcher acquireSearcherInternal(String source) {
+                    return new Engine.Searcher(
+                        source,
+                        directoryReader,
+                        engineConfig.getSimilarity(),
+                        engineConfig.getQueryCache(),
+                        engineConfig.getQueryCachingPolicy(),
+                        () -> {}
+                    );
+                }
+
+                @Override
+                protected void doClose() {
+                    try {
+                        acquired.close();
+                    } catch (IOException e) {
+                        throw new UncheckedIOException("failed to release reader", e);
+                    } finally {
+                        store.decRef();
+                    }
+                }
+            };
+            // Ownership handed to the supplier - do not release here.
+            readerRef = null;
+            storeRef = null;
+            return supplier;
+        } catch (IOException e) {
+            throw new EngineException(shardId, "failed to acquire reader", e);
+        } finally {
+            IOUtils.closeWhileHandlingException(readerRef);
+            Releasables.close(storeRef);
+        }
+    }
+
+    @Override
+    public Engine.Searcher acquireSearcher(String source, Engine.SearcherScope scope, Function<Engine.Searcher, Engine.Searcher> wrapper) {
+        Engine.SearcherSupplier releasable = null;
+        try {
+            Engine.SearcherSupplier supplier = releasable = acquireSearcherSupplier(wrapper, scope);
+            Engine.Searcher searcher = supplier.acquireSearcher(source);
+            releasable = null;
+            return new Engine.Searcher(
+                source,
+                searcher.getDirectoryReader(),
+                searcher.getSimilarity(),
+                searcher.getQueryCache(),
+                searcher.getQueryCachingPolicy(),
+                () -> Releasables.close(searcher, supplier)
+            );
+        } finally {
+            Releasables.close(releasable);
+        }
+    }
+
     @Override
     public void ensureOpen() {
         if (isClosed.get()) {
@@ -2704,6 +2787,36 @@ public class DataFormatAwareEngine implements Indexer {
         @Override
         public CatalogSnapshot catalogSnapshot() {
             return snapshotRef.get();
+        }
+
+        /**
+         * Resolves the single {@link SearchableFormatReader} among the per-format readers. Throws
+         * if none is present (no format can serve DSL search) or if more than one is, since a
+         * searcher must be bound to exactly one top-level Lucene reader.
+         */
+        @Override
+        public OpenSearchDirectoryReader searchableDirectoryReader() {
+            SearchableFormatReader searchable = null;
+            DataFormat searchableFormat = null;
+            for (Map.Entry<DataFormat, Object> entry : readers.entrySet()) {
+                if (entry.getValue() instanceof SearchableFormatReader candidate) {
+                    if (searchable != null) {
+                        throw new IllegalStateException(
+                            "Multiple searchable format readers present ["
+                                + searchableFormat.name()
+                                + ", "
+                                + entry.getKey().name()
+                                + "]; expected exactly one"
+                        );
+                    }
+                    searchable = candidate;
+                    searchableFormat = entry.getKey();
+                }
+            }
+            if (searchable == null) {
+                throw new IllegalStateException("No searchable format reader available for formats " + readers.keySet());
+            }
+            return searchable.openSearchDirectoryReader();
         }
 
         @Override

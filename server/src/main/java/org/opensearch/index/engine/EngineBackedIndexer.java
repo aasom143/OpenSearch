@@ -33,6 +33,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * An indexer implementation that uses an engine to perform indexing operations.
@@ -464,6 +465,17 @@ public class EngineBackedIndexer implements Indexer {
         // TODO: Replace with a reader backed by segment infos catalog snapshot and Lucene's Directory reader.
         // For now we throw an exception as this is not yet implemented
         throw new UnsupportedOperationException("acquireReader is not supported in EngineBackedIndexer");
+    }
+
+    /** Engine-backed search: delegates searcher acquisition to the wrapped {@link Engine}. */
+    @Override
+    public Engine.SearcherSupplier acquireSearcherSupplier(Function<Engine.Searcher, Engine.Searcher> wrapper, Engine.SearcherScope scope) {
+        return engine.acquireSearcherSupplier(wrapper, scope);
+    }
+
+    @Override
+    public Engine.Searcher acquireSearcher(String source, Engine.SearcherScope scope, Function<Engine.Searcher, Engine.Searcher> wrapper) {
+        return engine.acquireSearcher(source, scope, wrapper);
     }
 
     public Engine getEngine() {
