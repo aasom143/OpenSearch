@@ -441,7 +441,7 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         SETTING_INDEX_APPEND_ONLY_ENABLED,
         false,
         Property.IndexScope,
-        Property.Final
+        Property.Dynamic
     );
 
     /**
