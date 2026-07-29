@@ -186,9 +186,9 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
         try {
             Scorer scorer = weight.scorer(leaf);
-            int collectorKey = nextCollectorKey.getAndIncrement();
-            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc));
             org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
+            int collectorKey = nextCollectorKey.getAndIncrement();
+            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, liveDocs, minDoc, maxDoc));
             LOGGER.info(
                 "[scf] createCollector providerKey={} writerGeneration={} segment={} range=[{},{}) collectorKey={} maxDoc={} liveDocs={} numDeletedDocs={}",
                 providerKey,
@@ -235,13 +235,16 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             if (scanFrom < scanTo) {
                 try {
                     DocIdSetIterator iterator = handle.scorer.iterator();
+                    org.apache.lucene.util.Bits liveDocs = handle.liveDocs;
                     int docId = handle.currentDoc;
                     if (docId != DocIdSetIterator.NO_MORE_DOCS) {
                         if (docId < scanFrom) {
                             docId = iterator.advance(scanFrom);
                         }
                         while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
-                            bits.set(docId - minDoc);
+                            if (liveDocs == null || liveDocs.get(docId)) {
+                                bits.set(docId - minDoc);
+                            }
                             docId = iterator.nextDoc();
                         }
                         handle.currentDoc = docId;
@@ -305,12 +308,14 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     private static final class ScorerHandle {
         final Scorer scorer;
+        final org.apache.lucene.util.Bits liveDocs;
         final int partitionMinDoc;
         final int partitionMaxDoc;
         int currentDoc = -1;
 
-        ScorerHandle(Scorer scorer, int partitionMinDoc, int partitionMaxDoc) {
+        ScorerHandle(Scorer scorer, org.apache.lucene.util.Bits liveDocs, int partitionMinDoc, int partitionMaxDoc) {
             this.scorer = scorer;
+            this.liveDocs = liveDocs;
             this.partitionMinDoc = partitionMinDoc;
             this.partitionMaxDoc = partitionMaxDoc;
         }
