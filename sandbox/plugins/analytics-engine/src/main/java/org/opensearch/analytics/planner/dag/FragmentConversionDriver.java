@@ -126,7 +126,10 @@ public class FragmentConversionDriver {
 
             // Inject MatchAll delegated_predicate into the filter tree when the coverage
             // algorithm determines the tree doesn't guarantee live-docs filtering.
-            boolean requiresLiveDocsMatchAll = FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, plan.backendId());
+            // Skip injection for Lucene-driven plans (count-fast-path) — Lucene's IndexSearcher
+            // already respects liveDocs natively.
+            boolean requiresLiveDocsMatchAll = !"lucene".equals(plan.backendId())
+                && FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, plan.backendId());
             RelNode fragmentForConversion = plan.resolvedFragment();
             if (requiresLiveDocsMatchAll) {
                 fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
