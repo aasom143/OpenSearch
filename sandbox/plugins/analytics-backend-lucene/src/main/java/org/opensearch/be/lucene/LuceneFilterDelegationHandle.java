@@ -188,13 +188,18 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             Scorer scorer = weight.scorer(leaf);
             int collectorKey = nextCollectorKey.getAndIncrement();
             scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc));
-            LOGGER.debug(
-                "[scf] createCollector providerKey={} writerGeneration={} range=[{},{}) → collectorKey={}",
+            org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
+            LOGGER.info(
+                "[scf] createCollector providerKey={} writerGeneration={} segment={} range=[{},{}) collectorKey={} maxDoc={} liveDocs={} numDeletedDocs={}",
                 providerKey,
                 writerGeneration,
+                segName,
                 minDoc,
                 maxDoc,
-                collectorKey
+                collectorKey,
+                leaf.reader().maxDoc(),
+                liveDocs != null ? "present(len=" + liveDocs.length() + ")" : "null(all live)",
+                leaf.reader().numDeletedDocs()
             );
             return collectorKey;
         } catch (IOException exception) {
