@@ -255,16 +255,15 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         long[] words = bits.getBits();
         int wordCount = (span + 63) >>> 6;
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug(
-                "[scf] collectDocs collectorKey={} range=[{},{}) → cardinality={} words={}",
-                collectorKey,
-                minDoc,
-                maxDoc,
-                bits.cardinality(),
-                wordCount
-            );
-        }
+        LOGGER.info(
+            "[scf] collectDocs collectorKey={} range=[{},{}) cardinality={} span={} setBits={}",
+            collectorKey,
+            minDoc,
+            maxDoc,
+            bits.cardinality(),
+            span,
+            bitsToString(bits, span)
+        );
         return wordCount;
     }
 
@@ -282,6 +281,18 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     public void close() {
         weightsByProviderKey.clear();
         scorersByCollectorKey.clear();
+    }
+
+    private static String bitsToString(FixedBitSet bits, int len) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < len; i++) {
+            if (bits.get(i)) {
+                if (sb.length() > 1) sb.append(",");
+                sb.append(i);
+            }
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     private SegmentReader unwrapSegmentReader(LeafReader reader) {
