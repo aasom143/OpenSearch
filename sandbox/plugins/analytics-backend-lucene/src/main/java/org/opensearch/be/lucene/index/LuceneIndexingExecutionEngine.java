@@ -55,7 +55,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -291,13 +293,16 @@ public class LuceneIndexingExecutionEngine implements IndexingExecutionEngine<Lu
 
     /**
      * Incorporates flushed per-writer segments into the shared IndexWriter via
-     * {@code addIndexes}, then opens an NRT reader to discover the final file names
-     * assigned by Lucene after the merge.
+     * {@code addIndexes}, then opens an NRT reader to rebuild the Lucene file list of every
+     * live segment from the names Lucene actually assigned.
      * <p>
-     * Existing segments from the catalog snapshot are preserved. New segments from
-     * writer temp directories are batched into a single {@code addIndexes} call for
-     * efficiency. After incorporation, the writer generation attribute on each segment
-     * is used to correlate back to the originating writer.
+     * Existing segments are carried over, but their Lucene {@link WriterFileSet} is rebuilt from
+     * the reader rather than reused, so a {@code .liv} written by a drained delete or a rename
+     * from a merge is reflected in the catalog. Other formats' entries are left untouched. The
+     * reader is opened with {@code writeAllDeletes=true} so buffered liveDocs are on disk before
+     * the catalog snapshot references them. New segments from writer temp directories are batched
+     * into a single {@code addIndexes} call for efficiency. The writer generation attribute on
+     * each segment is used to correlate back to the originating writer.
      *
      * @param refreshInput contains existing catalog segments and newly flushed writer segments
      * @return the combined list of existing and newly incorporated segments
@@ -311,7 +316,15 @@ public class LuceneIndexingExecutionEngine implements IndexingExecutionEngine<Lu
 
         long refreshStart = System.nanoTime();
         try {
-            List<Segment> resultSegments = new ArrayList<>(refreshInput.existingSegments());
+            // Our own entries are rebuilt from the NRT reader below, so seed with the existing
+            // segments to retain every other format's WriterFileSet and then overwrite ours per
+            // generation. Keying by generation rather than appending keeps exactly one Segment per
+            // generation: Segment.Builder.addSearchableFiles is a put, so a duplicate generation in
+            // the result list would resolve by iteration order instead of structurally.
+            Map<Long, Map<String, WriterFileSet>> segmentsByGeneration = new LinkedHashMap<>();
+            for (Segment existing : refreshInput.existingSegments()) {
+                segmentsByGeneration.put(existing.generation(), new HashMap<>(existing.dfGroupedSearchableFiles()));
+            }
 
             // Collect all source directories and their paths for a single batched addIndexes call
             List<Directory> sourceDirectories = new ArrayList<>();
@@ -354,13 +367,20 @@ public class LuceneIndexingExecutionEngine implements IndexingExecutionEngine<Lu
                     }
                 }
             }
-            // After addIndexes, open an NRT reader to discover the actual file names
-            // for the newly added segments. Lucene renames files during addIndexes,
-            // so the original temp directory file names are no longer valid.
+            // After addIndexes, open an NRT reader to rebuild the file list of every live segment.
+            // Lucene renames files during addIndexes, and a drained delete adds a .liv, so
+            // previously recorded names are no longer authoritative for any generation.
+            //
+            // writeAllDeletes=true pushes buffered liveDocs to disk (IndexWriter.getReader ->
+            // writeReaderPool(true) -> ReaderPool.commit -> PendingDeletes.writeLiveDocs) so the
+            // .liv exists before the catalog snapshot is built from these file lists. Otherwise the
+            // deletes stay in heap until the next commit and the catalog — which is what commit
+            // fsyncs, the deletion policy retains, and segment replication ships — would never
+            // reference them. Segments without new deletes short-circuit inside writeLiveDocs.
             Set<Long> liveGenerations = new HashSet<>();
             if (sourceDirectories.isEmpty() == false || refreshInput.existingSegments().isEmpty() == false) {
                 Path sharedDir = store.shardPath().resolveIndex();
-                try (DirectoryReader reader = DirectoryReader.open(sharedWriter)) {
+                try (DirectoryReader reader = DirectoryReader.open(sharedWriter, true, true)) {
                     for (LeafReaderContext ctx : reader.leaves()) {
                         if (ctx.reader() instanceof SegmentReader segReader) {
                             SegmentCommitInfo segInfo = segReader.getSegmentInfo();
@@ -370,23 +390,26 @@ public class LuceneIndexingExecutionEngine implements IndexingExecutionEngine<Lu
                             }
                             long writerGen = Long.parseLong(genAttr);
                             liveGenerations.add(writerGen);
-                            if (!writerGenerations.contains(writerGen)) {
-                                continue;
-                            }
-                            long numDocs = segReader.maxDoc();
 
+                            // maxDoc, not numDocs: a liveDocs-only delete keeps rows physically present
+                            // to stay offset-aligned with the primary format, so the row count is
+                            // unchanged. Matches LuceneMerger.buildMergedFileSet.
                             WriterFileSet.Builder wfsBuilder = WriterFileSet.builder()
                                 .directory(sharedDir)
                                 .writerGeneration(writerGen)
-                                .addNumRows(numDocs);
+                                .addNumRows(segReader.maxDoc());
 
                             for (String file : segInfo.files()) {
                                 wfsBuilder.addFile(file);
                             }
 
-                            resultSegments.add(Segment.builder(writerGen).addSearchableFiles(dataFormat, wfsBuilder.build()).build());
-                            writerGenerations.remove(writerGen);
-                            stats.incRefreshSegmentsIncorporatedTotal();
+                            // Replace this generation's entry; other formats' entries are untouched.
+                            WriterFileSet luceneFiles = wfsBuilder.build();
+                            segmentsByGeneration.computeIfAbsent(writerGen, gen -> new HashMap<>()).put(dataFormat.name(), luceneFiles);
+
+                            if (writerGenerations.remove(writerGen)) {
+                                stats.incRefreshSegmentsIncorporatedTotal();
+                            }
                         }
                     }
                 }
@@ -410,6 +433,11 @@ public class LuceneIndexingExecutionEngine implements IndexingExecutionEngine<Lu
                 if (liveGenerations.contains(segment.generation()) == false) {
                     droppedGenerations.add(segment.generation());
                 }
+            }
+
+            List<Segment> resultSegments = new ArrayList<>(segmentsByGeneration.size());
+            for (Map.Entry<Long, Map<String, WriterFileSet>> entry : segmentsByGeneration.entrySet()) {
+                resultSegments.add(new Segment(entry.getKey(), entry.getValue()));
             }
 
             return new RefreshResult(List.copyOf(resultSegments), droppedGenerations);
