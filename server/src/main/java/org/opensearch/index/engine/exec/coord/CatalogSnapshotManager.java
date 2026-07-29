@@ -31,6 +31,7 @@ import org.opensearch.index.shard.ShardPath;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -273,11 +274,13 @@ public class CatalogSnapshotManager implements Closeable {
             throw e;
         }
 
-        // Segment generation uniqueness: a generation that appeared in a previous snapshot
-        // must not reappear with different files. This prevents generation overlap bugs
-        // where a merge output reuses a writer generation, causing file identity confusion.
+        // Segment generation identity: a generation that appeared in a previous snapshot must still
+        // refer to the same physical segment, so its file set must overlap the one recorded before.
+        // This prevents generation overlap bugs where a merge output reuses a writer generation,
+        // causing file identity confusion. Its file set may still evolve — a delete persists a new
+        // Lucene .liv for the same segment — so overlap is required rather than equality.
         assert assertSegmentGenerationFileConsistency(refreshedSegments)
-            : "segment generation-to-file mapping is inconsistent with previous snapshots";
+            : "segment generation refers to an unrelated file set compared with a previous snapshot";
 
         // No duplicate generations within the same snapshot
         assert refreshedSegments.stream().map(Segment::generation).distinct().count() == refreshedSegments.size()
@@ -629,21 +632,35 @@ public class CatalogSnapshotManager implements Closeable {
     }
 
     /**
-     * Asserts that no segment generation in the new snapshot conflicts with a different
-     * file set in any existing tracked snapshot. This catches generation overlap bugs
-     * where a merge or writer reuses a generation number, causing the catalog to track
-     * two different file sets under the same generation — which would lead to data loss
-     * when the "wrong" files are deleted.
+     * Asserts that a segment generation appearing in both the new snapshot and an existing tracked
+     * snapshot still refers to the same physical segment, by requiring their per-format file sets to
+     * overlap. This catches generation overlap bugs where a merge or writer reuses a generation
+     * number, causing the catalog to track two unrelated file sets under the same generation — which
+     * would lead to data loss when the "wrong" files are deleted.
+     * <p>
+     * Overlap rather than equality: one generation's file set evolves across snapshots as
+     * per-generation files are written (a Lucene {@code .liv} for newly persisted deletes replaces
+     * the previous one while the base segment files remain), so requiring equality would reject a
+     * legitimate delete.
      */
     private boolean assertSegmentGenerationFileConsistency(List<Segment> newSegments) {
         for (Segment newSeg : newSegments) {
             for (CatalogSnapshot existing : catalogSnapshotMap.values()) {
                 for (Segment existingSeg : existing.getSegments()) {
                     if (existingSeg.generation() == newSeg.generation()) {
-                        // Same generation — files must be identical per format
+                        // Same generation — the file sets must describe the same physical segment,
+                        // which means they must overlap. Equality is too strong: a segment
+                        // legitimately gains or swaps per-generation files while its base files stay
+                        // (Lucene writes _X_1.liv when deletes are first persisted, then _X_2.liv on
+                        // the next batch), so two snapshots of one generation can differ without any
+                        // reuse. Overlap is what separates that from a reused generation, where an
+                        // unrelated segment's files show up under the same number.
                         for (Map.Entry<String, WriterFileSet> entry : newSeg.dfGroupedSearchableFiles().entrySet()) {
                             WriterFileSet existingWfs = existingSeg.dfGroupedSearchableFiles().get(entry.getKey());
-                            if (existingWfs != null && existingWfs.files().equals(entry.getValue().files()) == false) {
+                            if (existingWfs == null || existingWfs.files().isEmpty() || entry.getValue().files().isEmpty()) {
+                                continue;
+                            }
+                            if (Collections.disjoint(existingWfs.files(), entry.getValue().files())) {
                                 logger.error(
                                     "Generation {} has conflicting files for format [{}]: existing={}, new={}",
                                     newSeg.generation(),
