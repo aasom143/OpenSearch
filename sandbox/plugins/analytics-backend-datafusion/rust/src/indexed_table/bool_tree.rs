@@ -185,6 +185,46 @@ impl BoolNode {
         }
     }
 
+    /// Remove a `Collector` leaf with the given `annotation_id` from the tree.
+    /// Under AND, the leaf is simply dropped (AND of remaining children).
+    /// Under OR, the leaf is replaced with a constant-false (empty bitmap) since
+    /// removing an OR branch tightens the result set — but for the live-docs
+    /// sentinel this is only called when has_deleted_docs=false, meaning the
+    /// sentinel would produce all-ones anyway, so dropping under AND is safe
+    /// (AND with universe = identity).
+    /// If the tree IS the sentinel itself, returns an empty AND (universe).
+    pub fn remove_collector_by_id(self, target_id: i32) -> BoolNode {
+        match self {
+            BoolNode::Collector { annotation_id } if annotation_id == target_id => {
+                // Replace with an empty AND which acts as TRUE (universe)
+                // in the candidate stage. An empty AND = intersection of nothing = all rows.
+                BoolNode::And(vec![])
+            }
+            BoolNode::And(children) => {
+                let filtered: Vec<BoolNode> = children
+                    .into_iter()
+                    .map(|c| c.remove_collector_by_id(target_id))
+                    .filter(|c| !matches!(c, BoolNode::And(v) if v.is_empty()))
+                    .collect();
+                if filtered.len() == 1 {
+                    filtered.into_iter().next().unwrap()
+                } else {
+                    BoolNode::And(filtered)
+                }
+            }
+            BoolNode::Or(children) => BoolNode::Or(
+                children
+                    .into_iter()
+                    .map(|c| c.remove_collector_by_id(target_id))
+                    .collect(),
+            ),
+            BoolNode::Not(child) => {
+                BoolNode::Not(Box::new(child.remove_collector_by_id(target_id)))
+            }
+            other => other,
+        }
+    }
+
     /// Demote every `DelegationPossible` leaf to a plain native `Predicate`. Called for
     /// `FilterClass::Tree` plans (any OR/NOT), whose evaluator can't run `DelegationPossible`.
     /// The coordinator never puts perf directly under OR/NOT, but an AND-side perf leaf can ride
