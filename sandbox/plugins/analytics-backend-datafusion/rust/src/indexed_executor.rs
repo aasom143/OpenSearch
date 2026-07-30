@@ -1143,14 +1143,14 @@ async unsafe fn execute_indexed_with_context_inner(
             // shard has no deletions, skip the FFM call — all docs are alive.
             let correctness_provider: Option<Arc<ProviderHandle>> =
                 match single_collector_id(&extraction.tree) {
-                    Some(annotation_id)
-                        if annotation_id == i32::MAX && !has_deleted_docs =>
-                    {
-                        log_info!(
-                            "[live-docs] defuse: annotation_id=i32::MAX, has_deleted_docs=false — skipping MatchAll provider creation"
-                        );
-                        None
-                    }
+                    // Some(annotation_id)
+                    //     if annotation_id == i32::MAX && !has_deleted_docs =>
+                    // {
+                    //     log_info!(
+                    //         "[live-docs] defuse: annotation_id=i32::MAX, has_deleted_docs=false — skipping MatchAll provider creation"
+                    //     );
+                    //     None
+                    // }
                     Some(annotation_id) => {
                         log_info!(
                             "[live-docs] creating provider: annotation_id={}, has_deleted_docs={}",
