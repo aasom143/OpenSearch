@@ -39,7 +39,7 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
-use native_bridge_common::log_debug;
+use native_bridge_common::{log_debug, log_info};
 use prost::Message;
 use substrait::proto::Plan;
 
@@ -1146,12 +1146,22 @@ async unsafe fn execute_indexed_with_context_inner(
                     Some(annotation_id)
                         if annotation_id == i32::MAX && !has_deleted_docs =>
                     {
+                        log_info!(
+                            "[live-docs] defuse: annotation_id=i32::MAX, has_deleted_docs=false — skipping MatchAll provider creation"
+                        );
                         None
                     }
-                    Some(annotation_id) => Some(Arc::new(
-                        create_provider(context_id, annotation_id)
-                            .map_err(|e| DataFusionError::External(e.into()))?,
-                    )),
+                    Some(annotation_id) => {
+                        log_info!(
+                            "[live-docs] creating provider: annotation_id={}, has_deleted_docs={}",
+                            annotation_id,
+                            has_deleted_docs
+                        );
+                        Some(Arc::new(
+                            create_provider(context_id, annotation_id)
+                                .map_err(|e| DataFusionError::External(e.into()))?,
+                        ))
+                    }
                     None => None,
                 };
 
