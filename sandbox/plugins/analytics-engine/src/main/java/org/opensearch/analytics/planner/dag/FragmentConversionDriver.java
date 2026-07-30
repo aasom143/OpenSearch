@@ -149,7 +149,7 @@ public class FragmentConversionDriver {
             if (requiresLiveDocsMatchAll) {
                 delegated.add(createMatchAllDelegatedExpression());
             }
-            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegationBytes);
+            List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegated);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
             LOGGER.debug(
@@ -259,7 +259,7 @@ public class FragmentConversionDriver {
         StagePlan plan,
         FilterTreeShape treeShape,
         OpenSearchFilter filter,
-        IntraOperatorDelegationBytes delegationBytes
+        List<DelegatedExpression> delegated
     ) {
         FragmentInstructionHandlerFactory factory = backend.getInstructionHandlerFactory();
         LinkedList<InstructionNode> instructions = new LinkedList<>();
@@ -275,7 +275,6 @@ public class FragmentConversionDriver {
             // QTF narrows the Scan to [belowAnchorPhysicalFields..., __row_id__]; signal that to the
             // backend so it picks the row-id-aware table provider regardless of delegation.
             boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD);
-            List<DelegatedExpression> delegated = delegationBytes.getResult();
             if (!delegated.isEmpty()) {
                 factory.createShardScanWithDelegationNode(
                     treeShape,
