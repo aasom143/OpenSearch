@@ -1288,18 +1288,23 @@ async unsafe fn execute_indexed_with_context_inner(
             // same-kind connectives. Flatten after push_not_down so the
             // connective changes from De Morgan (e.g. NOT(AND(...)) -> OR(NOT...))
             // get absorbed into the surrounding Or if applicable.
-            let tree = Arc::try_unwrap(extraction.tree)
+            let mut tree = Arc::try_unwrap(extraction.tree)
                 .unwrap()
                 .push_not_down()
                 .flatten();
+            // Defuse: when the shard has no deletions, remove the live-docs sentinel
+            // Collector (annotation_id == i32::MAX) from the tree entirely — replace it
+            // with a no-op that doesn't require an FFM provider. This avoids both the
+            // createProvider call and the positional-index misalignment that would occur
+            // if we simply skipped the provider in the vec (resolve() maps collectors
+            // to BoolNode::Collector leaves by DFS position, not by key).
+            if !has_deleted_docs {
+                tree = tree.remove_collector_by_id(i32::MAX);
+            }
             // One provider per Collector leaf (DFS order).
-            // Defuse: skip the live-docs sentinel when no deletions exist.
             let leaf_ids = tree.collector_leaves();
             let mut providers: Vec<Arc<ProviderHandle>> = Vec::with_capacity(leaf_ids.len());
             for annotation_id in &leaf_ids {
-                if *annotation_id == i32::MAX && !has_deleted_docs {
-                    continue;
-                }
                 providers.push(Arc::new(
                     create_provider(context_id, *annotation_id)
                         .map_err(|e| DataFusionError::External(e.into()))?,
