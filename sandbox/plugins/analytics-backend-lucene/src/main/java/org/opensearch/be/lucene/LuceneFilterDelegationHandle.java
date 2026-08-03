@@ -70,8 +70,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     private final BooleanSupplier isCancelledSupplier;
     private final Map<Long, String> generationToSegmentName;
 
+    /** Sentinel annotation ID for the injected live-docs delegation (no MatchAll query needed). */
+    private static final int LIVE_DOCS_ANNOTATION_ID = Integer.MAX_VALUE;
+
     private final ConcurrentHashMap<Integer, Weight> weightsByProviderKey = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, ScorerHandle> scorersByCollectorKey = new ConcurrentHashMap<>();
+    /** Provider keys that are live-docs-only (no Weight — just read liveDocs directly). */
+    private final ConcurrentHashMap<Integer, Boolean> liveDocsProviderKeys = new ConcurrentHashMap<>();
     private final AtomicInteger nextProviderKey = new AtomicInteger(1);
     private final AtomicInteger nextCollectorKey = new AtomicInteger(1);
 
@@ -100,6 +105,10 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     ) {
         Map<Integer, Query> queries = new HashMap<>();
         for (DelegatedExpression expr : expressions) {
+            // Live-docs sentinel: no query compilation needed — handled via direct liveDocs read.
+            if (expr.getAnnotationId() == LIVE_DOCS_ANNOTATION_ID) {
+                continue;
+            }
             try {
                 StreamInput rawInput = StreamInput.wrap(expr.getExpressionBytes());
                 StreamInput input = new NamedWriteableAwareStreamInput(rawInput, registry);
@@ -121,6 +130,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     @Override
     public int createProvider(int annotationId) {
+        // Live-docs provider: no Weight/Scorer needed — collectDocs reads liveDocs bits directly.
+        if (annotationId == LIVE_DOCS_ANNOTATION_ID) {
+            int providerKey = nextProviderKey.getAndIncrement();
+            liveDocsProviderKeys.put(providerKey, Boolean.TRUE);
+            LOGGER.debug("[scf] createProvider annotationId=LIVE_DOCS → providerKey={}", providerKey);
+            return providerKey;
+        }
         Query query = queriesByAnnotationId.get(annotationId);
         if (query == null) {
             return -1;
@@ -139,8 +155,9 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     @Override
     public int createCollector(int providerKey, long writerGeneration, int minDoc, int maxDoc) {
-        Weight weight = weightsByProviderKey.get(providerKey);
-        if (weight == null) {
+        boolean isLiveDocsProvider = liveDocsProviderKeys.containsKey(providerKey);
+        Weight weight = isLiveDocsProvider ? null : weightsByProviderKey.get(providerKey);
+        if (!isLiveDocsProvider && weight == null) {
             return -1;
         }
         String segName = generationToSegmentName.get(writerGeneration);
@@ -185,17 +202,23 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             + leafMaxDoc;
 
         try {
-            Scorer scorer = weight.scorer(leaf);
             org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
             int collectorKey = nextCollectorKey.getAndIncrement();
-            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, liveDocs, minDoc, maxDoc));
+            if (isLiveDocsProvider) {
+                // Live-docs-only: no scorer needed, just the liveDocs bitset reference.
+                scorersByCollectorKey.put(collectorKey, ScorerHandle.liveDocsOnly(liveDocs, minDoc, maxDoc));
+            } else {
+                Scorer scorer = weight.scorer(leaf);
+                scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, liveDocs, minDoc, maxDoc));
+            }
             LOGGER.debug(
-                "[scf] createCollector providerKey={} writerGeneration={} range=[{},{}) → collectorKey={}",
+                "[scf] createCollector providerKey={} writerGeneration={} range=[{},{}) → collectorKey={} liveDocsOnly={}",
                 providerKey,
                 writerGeneration,
                 minDoc,
                 maxDoc,
-                collectorKey
+                collectorKey,
+                isLiveDocsProvider
             );
             return collectorKey;
         } catch (IOException exception) {
@@ -222,8 +245,15 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             return 0;
         }
         int span = maxDoc - minDoc;
-        FixedBitSet bits = new FixedBitSet(span);
+        int wordCount = (span + 63) >>> 6;
 
+        if (handle.liveDocsOnly) {
+            // Fast path: directly copy liveDocs bits without Scorer overhead.
+            fillLiveDocsBitset(handle.liveDocs, minDoc, span, wordCount, out);
+            return wordCount;
+        }
+
+        FixedBitSet bits = new FixedBitSet(span);
         if (handle.scorer != null) {
             int scanFrom = Math.max(minDoc, handle.partitionMinDoc);
             int scanTo = Math.min(maxDoc, handle.partitionMaxDoc);
@@ -252,7 +282,6 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         }
 
         long[] words = bits.getBits();
-        int wordCount = (span + 63) >>> 6;
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug(
@@ -265,6 +294,48 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             );
         }
         return wordCount;
+    }
+
+    /**
+     * Directly fills the output buffer with the liveDocs bitset for [minDoc, minDoc+span).
+     * No Scorer, no iterator — just a tight bit-copy loop. When liveDocs is null (no deletions),
+     * fills all-ones.
+     */
+    private static void fillLiveDocsBitset(
+        org.apache.lucene.util.Bits liveDocs,
+        int minDoc,
+        int span,
+        int wordCount,
+        MemorySegment out
+    ) {
+        if (liveDocs == null) {
+            // No deletions: all docs alive — fill all-ones, then clear trailing bits.
+            for (int i = 0; i < wordCount; i++) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, i, -1L);
+            }
+            int trailing = span % 64;
+            if (trailing != 0) {
+                long mask = (1L << trailing) - 1;
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, mask);
+            }
+        } else {
+            // Has deletions: build bitset from liveDocs.get(docId) for each doc in range.
+            long word = 0;
+            int wordIdx = 0;
+            for (int i = 0; i < span; i++) {
+                if (liveDocs.get(minDoc + i)) {
+                    word |= (1L << (i & 63));
+                }
+                if ((i & 63) == 63) {
+                    out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+                    word = 0;
+                    wordIdx++;
+                }
+            }
+            if ((span & 63) != 0) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+            }
+        }
     }
 
     @Override
@@ -294,15 +365,31 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     private static final class ScorerHandle {
         final Scorer scorer;
         final org.apache.lucene.util.Bits liveDocs;
+        final boolean liveDocsOnly;
         final int partitionMinDoc;
         final int partitionMaxDoc;
         int currentDoc = -1;
 
         ScorerHandle(Scorer scorer, org.apache.lucene.util.Bits liveDocs, int partitionMinDoc, int partitionMaxDoc) {
+            this(scorer, liveDocs, false, partitionMinDoc, partitionMaxDoc);
+        }
+
+        private ScorerHandle(
+            Scorer scorer,
+            org.apache.lucene.util.Bits liveDocs,
+            boolean liveDocsOnly,
+            int partitionMinDoc,
+            int partitionMaxDoc
+        ) {
             this.scorer = scorer;
             this.liveDocs = liveDocs;
+            this.liveDocsOnly = liveDocsOnly;
             this.partitionMinDoc = partitionMinDoc;
             this.partitionMaxDoc = partitionMaxDoc;
+        }
+
+        static ScorerHandle liveDocsOnly(org.apache.lucene.util.Bits liveDocs, int partitionMinDoc, int partitionMaxDoc) {
+            return new ScorerHandle(null, liveDocs, true, partitionMinDoc, partitionMaxDoc);
         }
     }
 }
