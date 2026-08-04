@@ -128,8 +128,7 @@ public class FragmentConversionDriver {
             // algorithm determines the tree doesn't guarantee live-docs filtering.
             // Skip injection for Lucene-driven plans (count-fast-path) — Lucene's IndexSearcher
             // already respects liveDocs natively.
-            boolean requiresLiveDocsMatchAll = !"lucene".equals(plan.backendId())
-                && FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, plan.backendId());
+            boolean requiresLiveDocsMatchAll = true;
             RelNode fragmentForConversion = plan.resolvedFragment();
             if (requiresLiveDocsMatchAll) {
                 fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
