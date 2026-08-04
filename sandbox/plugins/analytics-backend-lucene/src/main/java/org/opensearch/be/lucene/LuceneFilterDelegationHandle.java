@@ -297,12 +297,8 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     }
 
     /**
-     * Directly fills the output buffer with the liveDocs bitset for [minDoc, minDoc+span).
-     * No Scorer, no iterator. When liveDocs is null (no deletions), fills all-ones.
-     *
-     * <p>Fast path: if the underlying Bits is a FixedBitSet, extracts the raw long[] and
-     * copies the relevant word range directly — O(words) bulk copy, no per-bit check.
-     * Fallback: per-bit loop for other Bits implementations.
+     * Fills the output buffer with the liveDocs bitset for [minDoc, minDoc+span).
+     * When liveDocs is null (no deletions), fills all-ones.
      */
     private static void fillLiveDocsBitset(
         org.apache.lucene.util.Bits liveDocs,
@@ -312,48 +308,16 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         MemorySegment out
     ) {
         if (liveDocs == null) {
-            // No deletions: all docs alive — fill all-ones, then clear trailing bits.
             for (int i = 0; i < wordCount; i++) {
                 out.setAtIndex(ValueLayout.JAVA_LONG, i, -1L);
             }
             int trailing = span % 64;
             if (trailing != 0) {
-                long mask = (1L << trailing) - 1;
-                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, mask);
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, (1L << trailing) - 1);
             }
             return;
         }
 
-        // Fast path: direct word-level copy from FixedBitSet backing array.
-        // liveDocs is typically a FixedBitSet (Lucene's default for live-docs tracking).
-        if (liveDocs instanceof FixedBitSet fbs) {
-            long[] srcWords = fbs.getBits();
-            int startWord = minDoc >>> 6;
-            int bitOffset = minDoc & 63;
-
-            if (bitOffset == 0) {
-                // Word-aligned: direct copy of the relevant slice.
-                MemorySegment.copy(srcWords, startWord, out, ValueLayout.JAVA_LONG, 0, wordCount);
-            } else {
-                // Unaligned: shift pairs of source words to produce each output word.
-                for (int i = 0; i < wordCount; i++) {
-                    long lo = srcWords[startWord + i] >>> bitOffset;
-                    long hi = (startWord + i + 1 < srcWords.length)
-                        ? srcWords[startWord + i + 1] << (64 - bitOffset)
-                        : 0L;
-                    out.setAtIndex(ValueLayout.JAVA_LONG, i, lo | hi);
-                }
-            }
-            // Clear trailing bits beyond span.
-            int trailing = span & 63;
-            if (trailing != 0) {
-                long lastWord = out.getAtIndex(ValueLayout.JAVA_LONG, wordCount - 1);
-                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, lastWord & ((1L << trailing) - 1));
-            }
-            return;
-        }
-
-        // Fallback: per-bit loop for non-FixedBitSet implementations.
         long word = 0;
         int wordIdx = 0;
         for (int i = 0; i < span; i++) {
