@@ -711,9 +711,13 @@ public class FragmentConversionDriver {
     }
 
     private static DelegatedExpression createMatchAllDelegatedExpression() {
-        // No query bytes needed — the Java handle recognizes the sentinel annotation ID
-        // and reads liveDocs directly without compiling a query.
-        return new DelegatedExpression(LIVE_DOCS_MATCHALL_ANNOTATION_ID, "lucene", new byte[0]);
+        try (org.opensearch.common.io.stream.BytesStreamOutput output = new org.opensearch.common.io.stream.BytesStreamOutput()) {
+            output.writeNamedWriteable(new org.opensearch.index.query.MatchAllQueryBuilder());
+            byte[] bytes = org.opensearch.core.common.bytes.BytesReference.toBytes(output.bytes());
+            return new DelegatedExpression(LIVE_DOCS_MATCHALL_ANNOTATION_ID, "lucene", bytes);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Failed to serialize MatchAllQueryBuilder", e);
+        }
     }
 }
 
