@@ -1033,6 +1033,7 @@ pub unsafe extern "C" fn df_create_session_context(
     context_id: i64,
     query_config_ptr: i64,
     has_partial_aggregate: u8,
+    deleted_doc_filtering_required: u8,
     plan_ptr: *const u8,
     plan_len: i64,
 ) -> i64 {
@@ -1055,6 +1056,7 @@ pub unsafe extern "C" fn df_create_session_context(
                 table_name,
                 context_id,
                 has_partial_aggregate != 0,
+                deleted_doc_filtering_required != 0,
                 query_config,
                 plan_bytes,
             ),

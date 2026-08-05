@@ -435,6 +435,7 @@ public final class NativeBridge {
                 ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_BYTE,   // hasPartialAggregate (0/1)
+                ValueLayout.JAVA_BYTE,   // deletedDocFilteringRequired (0/1)
                 ValueLayout.ADDRESS,
                 ValueLayout.JAVA_LONG
             )
@@ -1444,6 +1445,7 @@ public final class NativeBridge {
         String tableName,
         long contextId,
         boolean hasPartialAggregate,
+        boolean deletedDocFilteringRequired,
         long queryConfigPtr,
         byte[] planBytes
     ) {
@@ -1463,6 +1465,7 @@ public final class NativeBridge {
                 contextId,
                 queryConfigPtr,
                 (byte) (hasPartialAggregate ? 1 : 0),
+                (byte) (deletedDocFilteringRequired ? 1 : 0),
                 planSegment,
                 planLen
             );
