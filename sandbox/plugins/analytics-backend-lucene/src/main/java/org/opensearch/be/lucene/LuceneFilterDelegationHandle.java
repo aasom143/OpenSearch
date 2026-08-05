@@ -302,6 +302,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     public int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, MemorySegment out) {
         String segName = generationToSegmentName.get(writerGeneration);
         if (segName == null) {
+            LOGGER.debug("[scf] getLiveDocs writerGeneration={} → segment not found", writerGeneration);
             return -1;
         }
         LeafReaderContext leaf = null;
@@ -312,12 +313,16 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             }
         }
         if (leaf == null) {
+            LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} → leaf not found", writerGeneration, segName);
             return -1;
         }
         org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
         if (liveDocs == null) {
+            LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} range=[{},{}) → all alive", writerGeneration, segName, minDoc, maxDoc);
             return -2;
         }
+        LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} range=[{},{}) → has deletions, numDeletedDocs={}",
+            writerGeneration, segName, minDoc, maxDoc, leaf.reader().numDeletedDocs());
         int span = maxDoc - minDoc;
         int wordCount = (span + 63) >>> 6;
         long word = 0;
