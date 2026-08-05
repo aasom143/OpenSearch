@@ -25,7 +25,7 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
 
     private final FilterTreeShape treeShape;
     private final int delegatedPredicateCount;
-    private final boolean requiresLiveDocsMatchAll;
+    private final boolean requiresDeletedDocFiltering;
 
     public ShardScanWithDelegationInstructionNode(FilterTreeShape treeShape, int delegatedPredicateCount) {
         this(treeShape, delegatedPredicateCount, false, null, true);
@@ -36,25 +36,25 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
     }
 
     // treeShape/delegatedPredicateCount/requestsRowIds are upstream's params; logicalTableName is main's
-    // addition; requiresLiveDocsMatchAll is our feature-branch addition, appended last.
+    // addition; requiresDeletedDocFiltering is our feature-branch addition, appended last.
     public ShardScanWithDelegationInstructionNode(
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
         boolean requestsRowIds,
         String logicalTableName,
-        boolean requiresLiveDocsMatchAll
+        boolean requiresDeletedDocFiltering
     ) {
         super(requestsRowIds, logicalTableName);
         this.treeShape = treeShape;
         this.delegatedPredicateCount = delegatedPredicateCount;
-        this.requiresLiveDocsMatchAll = requiresLiveDocsMatchAll;
+        this.requiresDeletedDocFiltering = requiresDeletedDocFiltering;
     }
 
     public ShardScanWithDelegationInstructionNode(StreamInput in) throws IOException {
         super(in);
         this.treeShape = in.readEnum(FilterTreeShape.class);
         this.delegatedPredicateCount = in.readVInt();
-        this.requiresLiveDocsMatchAll = in.readBoolean();
+        this.requiresDeletedDocFiltering = in.readBoolean();
     }
 
     @Override
@@ -67,7 +67,7 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
         super.writeTo(out);
         out.writeEnum(treeShape);
         out.writeVInt(delegatedPredicateCount);
-        out.writeBoolean(requiresLiveDocsMatchAll);
+        out.writeBoolean(requiresDeletedDocFiltering);
     }
 
     public FilterTreeShape getTreeShape() {
@@ -84,7 +84,7 @@ public class ShardScanWithDelegationInstructionNode extends ShardScanInstruction
      * tree does not guarantee that every result row passes through a correctness Collector
      * (which respects liveDocs).
      */
-    public boolean requiresLiveDocsMatchAll() {
-        return requiresLiveDocsMatchAll;
+    public boolean requiresDeletedDocFiltering() {
+        return requiresDeletedDocFiltering;
     }
 }

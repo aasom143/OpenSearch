@@ -62,7 +62,7 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
         int delegatedPredicateCount,
         boolean requestsRowIds,
         String logicalTableName,
-        boolean requiresLiveDocsMatchAll
+        boolean requiresDeletedDocFiltering
     ) {
         return Optional.of(
             new ShardScanWithDelegationInstructionNode(
@@ -70,7 +70,7 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
                 delegatedPredicateCount,
                 requestsRowIds,
                 logicalTableName,
-                requiresLiveDocsMatchAll
+                requiresDeletedDocFiltering
             )
         );
     }
