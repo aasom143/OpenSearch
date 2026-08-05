@@ -81,6 +81,7 @@ pub(super) fn remap_expr_to_batch(
 }
 
 use super::bool_tree::ResolvedNode;
+use super::ffm_callbacks::get_live_docs;
 use super::page_pruner::PagePruneMetrics;
 use super::page_pruner::PagePruner;
 use super::page_pruner::StatsPruneTree;
@@ -355,6 +356,12 @@ pub struct TreeBitsetSource {
     pub stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
     pub rg_index_to_pos: HashMap<usize, usize>,
+    /// Per-query context identifier for FFM upcalls.
+    pub context_id: i64,
+    /// Segment writer generation for getLiveDocs calls.
+    pub writer_generation: i64,
+    /// When true, call getLiveDocs per RG to filter deleted rows.
+    pub deleted_doc_filtering_required: bool,
 }
 
 impl RowGroupBitsetSource for TreeBitsetSource {
@@ -454,7 +461,7 @@ impl RowGroupBitsetSource for TreeBitsetSource {
         // coalesce consecutive bits into `insert_range` calls so we
         // get one O(log n) call per run instead of O(1) per bit.
         let anchor = (min_doc as i64) - rg.first_row;
-        let rg_candidates = if anchor == 0 {
+        let mut rg_candidates = if anchor == 0 {
             prefetch.candidates.clone()
         } else {
             let mut rg_candidates = RoaringBitmap::new();
@@ -493,6 +500,26 @@ impl RowGroupBitsetSource for TreeBitsetSource {
             }
             rg_candidates
         };
+
+        // LiveDocs filtering: AND with live-docs bitset to exclude deleted rows.
+        if self.deleted_doc_filtering_required {
+            if let Ok(Some(live_bits)) = get_live_docs(
+                self.context_id,
+                self.writer_generation,
+                min_doc,
+                max_doc,
+            ) {
+                let offset = (min_doc as i64 - rg.first_row) as u32;
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(live_bits.as_ptr() as *const u8, live_bits.len() * 8)
+                };
+                let live_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+                rg_candidates &= live_bm;
+                if rg_candidates.is_empty() {
+                    return Ok(None);
+                }
+            }
+        }
 
         // Compute final page-level pruning metrics from the resolved
         // bitmap. A page is "pruned" if zero candidate bits fall within

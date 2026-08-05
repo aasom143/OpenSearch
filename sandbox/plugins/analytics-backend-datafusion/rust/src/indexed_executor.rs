@@ -1271,6 +1271,7 @@ async unsafe fn execute_indexed_with_context_inner(
                             bloom_config,
                             stats_prune_tree.cloned(),
                             chunk.row_group_indices.iter().enumerate().map(|(pos, &idx)| (idx, pos)).collect(),
+                            deleted_doc_filtering_required,
                         ));
                         Ok(eval)
                     },
@@ -1409,6 +1410,9 @@ async unsafe fn execute_indexed_with_context_inner(
                                 .enumerate()
                                 .map(|(pos, &idx)| (idx, pos))
                                 .collect(),
+                            context_id,
+                            writer_generation: segment.writer_generation,
+                            deleted_doc_filtering_required,
                         });
                         Ok(eval)
                     },
