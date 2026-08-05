@@ -32,6 +32,8 @@ use object_store::ObjectMeta;
 use datafusion::datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroupAccess};
 
 use crate::indexed_table::ffm_callbacks::get_live_docs;
+use crate::indexed_table::parquet_bridge;
+use datafusion::execution::cache::cache_manager::FileMetadataCache;
 
 /// Per-file info needed to build the liveDocs RowSelection.
 pub struct LiveDocsFileInfo {
@@ -45,6 +47,8 @@ pub struct LiveDocsTableProvider {
     schema: SchemaRef,
     files: Vec<LiveDocsFileInfo>,
     store_url: ObjectStoreUrl,
+    store: Arc<dyn object_store::ObjectStore>,
+    metadata_cache: Arc<dyn FileMetadataCache>,
     context_id: i64,
 }
 
@@ -53,12 +57,16 @@ impl LiveDocsTableProvider {
         schema: SchemaRef,
         files: Vec<LiveDocsFileInfo>,
         store_url: ObjectStoreUrl,
+        store: Arc<dyn object_store::ObjectStore>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
         context_id: i64,
     ) -> Self {
         Self {
             schema,
             files,
             store_url,
+            store,
+            metadata_cache,
             context_id,
         }
     }
@@ -153,26 +161,46 @@ impl TableProvider for LiveDocsTableProvider {
         for file_info in &self.files {
             let mut pf = PartitionedFile::from(file_info.object_meta.clone());
 
-            // Fetch liveDocs for this file's segment
-            let live_docs_result = get_live_docs(
-                self.context_id,
-                file_info.writer_generation,
-                0,
-                file_info.num_rows as i32,
-            );
+            // Load parquet metadata from cache to get RG row counts and actual num_rows.
+            let pq_meta_result = parquet_bridge::load_parquet_metadata_with_meta(
+                Arc::clone(&self.store),
+                &file_info.object_meta.location,
+                file_info.object_meta.clone(),
+                Arc::clone(&self.metadata_cache),
+            )
+            .await;
 
-            match live_docs_result {
-                Ok(Some(bitset)) => {
-                    // Has deletions — build access plan with RowSelection
-                    let access_plan =
-                        Self::build_access_plan(&bitset, &file_info.row_group_row_counts);
-                    pf = pf.with_extensions(Arc::new(access_plan));
-                }
-                Ok(None) => {
-                    // All alive — no access plan needed, parquet reads all rows
-                }
-                Err(_) => {
-                    // Error fetching liveDocs — fall back to reading all rows
+            if let Ok((_schema, _size, pq_meta)) = pq_meta_result {
+                let num_rows: i64 = pq_meta
+                    .row_groups()
+                    .iter()
+                    .map(|rg| rg.num_rows())
+                    .sum();
+                let rg_row_counts: Vec<u64> = pq_meta
+                    .row_groups()
+                    .iter()
+                    .map(|rg| rg.num_rows() as u64)
+                    .collect();
+
+                // Fetch liveDocs for this file's segment
+                let live_docs_result = get_live_docs(
+                    self.context_id,
+                    file_info.writer_generation,
+                    0,
+                    num_rows as i32,
+                );
+
+                match live_docs_result {
+                    Ok(Some(bitset)) => {
+                        let access_plan = Self::build_access_plan(&bitset, &rg_row_counts);
+                        pf = pf.with_extensions(Arc::new(access_plan));
+                    }
+                    Ok(None) => {
+                        // All alive — no access plan needed
+                    }
+                    Err(_) => {
+                        // Error fetching liveDocs — fall back to reading all rows
+                    }
                 }
             }
 
