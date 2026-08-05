@@ -472,10 +472,11 @@ public final class NativeBridge {
             )
         );
 
-        // void df_register_filter_tree_callbacks(createCollector, collectDocs, releaseCollector)
+        // void df_register_filter_tree_callbacks(createProvider, releaseProvider, createCollector, collectDocs, releaseCollector, getLiveDocs)
         REGISTER_FILTER_TREE_CALLBACKS = linker.downcallHandle(
             lib.find("df_register_filter_tree_callbacks").orElseThrow(),
             FunctionDescriptor.ofVoid(
+                ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS,
@@ -801,6 +802,19 @@ public final class NativeBridge {
                 "releaseCollector",
                 java.lang.invoke.MethodType.methodType(void.class, long.class, int.class)
             );
+            MethodHandle getLiveDocs = lookup.findStatic(
+                cb,
+                "getLiveDocs",
+                java.lang.invoke.MethodType.methodType(
+                    long.class,
+                    long.class,
+                    long.class,
+                    int.class,
+                    int.class,
+                    java.lang.foreign.MemorySegment.class,
+                    long.class
+                )
+            );
 
             java.lang.foreign.MemorySegment createProviderStub = linker.upcallStub(
                 createProvider,
@@ -842,13 +856,27 @@ public final class NativeBridge {
                 FunctionDescriptor.ofVoid(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT),
                 arena
             );
+            java.lang.foreign.MemorySegment getLiveDocsStub = linker.upcallStub(
+                getLiveDocs,
+                FunctionDescriptor.of(
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_LONG,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.JAVA_INT,
+                    ValueLayout.ADDRESS,
+                    ValueLayout.JAVA_LONG
+                ),
+                arena
+            );
             NativeCall.invokeVoid(
                 REGISTER_FILTER_TREE_CALLBACKS,
                 createProviderStub,
                 releaseProviderStub,
                 createCollectorStub,
                 collectDocsStub,
-                releaseCollectorStub
+                releaseCollectorStub,
+                getLiveDocsStub
             );
         } catch (Throwable t) {
             throw new ExceptionInInitializerError(t);
