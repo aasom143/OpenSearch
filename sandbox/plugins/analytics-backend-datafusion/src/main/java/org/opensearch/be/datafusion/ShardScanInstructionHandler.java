@@ -91,7 +91,7 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     tableName,
                     contextId,
                     context.hasPartialAggregate(),
-                    context.hasDeletedDocs(),
+                    true,
                     segment.address(),
                     context.getFragmentBytes()
                 );
