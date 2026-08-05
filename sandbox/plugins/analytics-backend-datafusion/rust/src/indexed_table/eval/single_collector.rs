@@ -31,7 +31,7 @@ use native_bridge_common::log_debug;
 use roaring::RoaringBitmap;
 
 use super::{PrefetchedRg, RowGroupBitsetSource};
-use crate::indexed_table::ffm_callbacks::{create_provider, FfmSegmentCollector, ProviderHandle};
+use crate::indexed_table::ffm_callbacks::{create_provider, get_live_docs, FfmSegmentCollector, ProviderHandle};
 use crate::indexed_table::index::RowGroupDocsCollector;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
 use crate::indexed_table::row_selection::{
@@ -186,6 +186,8 @@ pub struct SingleCollectorEvaluator {
     stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
     rg_index_to_pos: HashMap<usize, usize>,
+    /// When true, call getLiveDocs per RG to filter deleted rows.
+    deleted_doc_filtering_required: bool,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -215,6 +217,7 @@ impl SingleCollectorEvaluator {
         bloom_config: Option<BloomConfig>,
         stats_prune_tree: Option<Arc<StatsPruneTree>>,
         rg_index_to_pos: HashMap<usize, usize>,
+        deleted_doc_filtering_required: bool,
     ) -> Self {
         Self {
             collector,
@@ -231,6 +234,7 @@ impl SingleCollectorEvaluator {
             bloom_config,
             stats_prune_tree,
             rg_index_to_pos,
+            deleted_doc_filtering_required,
         }
     }
 }
@@ -506,6 +510,23 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             //     "[scf-rust] peer bitset intersected rg={} writer_generation={} candidates_before={} peer_cardinality={} candidates_after={}",
             //     rg.index, self.writer_generation, candidates_before, peer_card, candidates.len()
             // );
+        }
+
+        // LiveDocs filtering: AND with live-docs bitset to exclude deleted rows.
+        if self.deleted_doc_filtering_required {
+            if let Ok(Some(live_bits)) = get_live_docs(
+                self.context_id,
+                self.writer_generation,
+                min_doc,
+                max_doc,
+            ) {
+                let offset = (min_doc as i64 - rg.first_row) as u32;
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(live_bits.as_ptr() as *const u8, live_bits.len() * 8)
+                };
+                let live_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+                candidates &= live_bm;
+            }
         }
 
         if candidates.is_empty() {
