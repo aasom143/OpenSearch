@@ -483,11 +483,11 @@ public class FilterDelegationForIndexFullConversionTests extends OpenSearchTestC
                     int delegatedPredicateCount,
                     boolean requestsRowIds,
                     String logicalTableName,
-                    boolean requiresLiveDocsMatchAll
+                    boolean requiresDeletedDocFiltering
                 ) {
                     return Optional.of(
                         new ShardScanWithDelegationInstructionNode(
-                            treeShape, delegatedPredicateCount, requestsRowIds, logicalTableName, requiresLiveDocsMatchAll
+                            treeShape, delegatedPredicateCount, requestsRowIds, logicalTableName, requiresDeletedDocFiltering
                         )
                     );
                 }
