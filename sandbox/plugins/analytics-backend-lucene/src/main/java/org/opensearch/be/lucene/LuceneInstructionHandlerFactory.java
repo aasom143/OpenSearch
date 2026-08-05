@@ -66,7 +66,7 @@ final class LuceneInstructionHandlerFactory implements FragmentInstructionHandle
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
         boolean requestsRowIds,
-        boolean requiresLiveDocsMatchAll
+        boolean requiresDeletedDocFiltering
     ) {
         // Lucene driver doesn't accept delegated predicates, so the with-delegation variant
         // collapses to a plain shard-scan. The treeShape / delegatedPredicateCount fields

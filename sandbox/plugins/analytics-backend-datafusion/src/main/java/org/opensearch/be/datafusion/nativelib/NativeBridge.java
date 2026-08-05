@@ -452,7 +452,7 @@ public final class NativeBridge {
                 ValueLayout.JAVA_INT,
                 ValueLayout.JAVA_BYTE,   // requestsRowIds (0/1) — QTF query phase signal
                 ValueLayout.JAVA_BYTE,   // hasPartialAggregate (0/1)
-                ValueLayout.JAVA_BYTE,   // hasDeletedDocs (0/1)
+                ValueLayout.JAVA_BYTE,   // deletedDocFilteringRequired (0/1)
                 ValueLayout.JAVA_LONG,   // queryConfigPtr
                 ValueLayout.ADDRESS,     // planBytes (multi-index schema widening)
                 ValueLayout.JAVA_LONG    // planLen
@@ -1462,7 +1462,7 @@ public final class NativeBridge {
         int delegatedPredicateCount,
         boolean requestsRowIds,
         boolean hasPartialAggregate,
-        boolean hasDeletedDocs,
+        boolean deletedDocFilteringRequired,
         long queryConfigPtr,
         byte[] planBytes
     ) {
@@ -1484,7 +1484,7 @@ public final class NativeBridge {
                 delegatedPredicateCount,
                 (byte) (requestsRowIds ? 1 : 0),
                 (byte) (hasPartialAggregate ? 1 : 0),
-                (byte) (hasDeletedDocs ? 1 : 0),
+                (byte) (deletedDocFilteringRequired ? 1 : 0),
                 queryConfigPtr,
                 planSegment,
                 planLen

@@ -188,7 +188,7 @@ impl BoolNode {
     /// Under AND, the leaf is simply dropped (AND of remaining children).
     /// Under OR, the leaf is replaced with a constant-false (empty bitmap) since
     /// removing an OR branch tightens the result set — but for the live-docs
-    /// sentinel this is only called when has_deleted_docs=false, meaning the
+    /// sentinel this is only called when deleted_doc_filtering_required=false, meaning the
     /// sentinel would produce all-ones anyway, so dropping under AND is safe
     /// (AND with universe = identity).
     /// If the tree IS the sentinel itself, returns an empty AND (universe).

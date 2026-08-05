@@ -128,9 +128,9 @@ public class FragmentConversionDriver {
             // algorithm determines the tree doesn't guarantee live-docs filtering.
             // Skip injection for Lucene-driven plans (count-fast-path) — Lucene's IndexSearcher
             // already respects liveDocs natively.
-            boolean requiresLiveDocsMatchAll = true;
+            boolean requiresDeletedDocFiltering = true;
             RelNode fragmentForConversion = plan.resolvedFragment();
-            if (requiresLiveDocsMatchAll) {
+            if (requiresDeletedDocFiltering) {
                 fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
                 if (treeShape == FilterTreeShape.NO_DELEGATION) {
                     treeShape = FilterTreeShape.CONJUNCTIVE;
@@ -142,7 +142,7 @@ public class FragmentConversionDriver {
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = new ArrayList<>(delegationBytes.getResult());
-            if (requiresLiveDocsMatchAll) {
+            if (requiresDeletedDocFiltering) {
                 delegated.add(createMatchAllDelegatedExpression());
             }
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegated);
@@ -260,7 +260,7 @@ public class FragmentConversionDriver {
                     treeShape,
                     delegated.size(),
                     requestsRowIds,
-                    FilterTreeShapeDeriver.requiresLiveDocsMatchAll(filter, backend.name())
+                    FilterTreeShapeDeriver.requiresDeletedDocFiltering(filter, backend.name())
                 ).ifPresent(instructions::add);
             } else {
                 factory.createShardScanNode(requestsRowIds).ifPresent(instructions::add);

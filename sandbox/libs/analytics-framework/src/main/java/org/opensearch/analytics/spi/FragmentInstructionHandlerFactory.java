@@ -48,7 +48,7 @@ public interface FragmentInstructionHandlerFactory {
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
         boolean requestsRowIds,
-        boolean requiresLiveDocsMatchAll
+        boolean requiresDeletedDocFiltering
     );
 
     /** Creates a partial aggregate instruction node. */

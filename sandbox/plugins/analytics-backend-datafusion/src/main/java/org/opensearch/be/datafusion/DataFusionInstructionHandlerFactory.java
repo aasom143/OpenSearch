@@ -57,10 +57,10 @@ public class DataFusionInstructionHandlerFactory implements FragmentInstructionH
         FilterTreeShape treeShape,
         int delegatedPredicateCount,
         boolean requestsRowIds,
-        boolean requiresLiveDocsMatchAll
+        boolean requiresDeletedDocFiltering
     ) {
         return Optional.of(
-            new ShardScanWithDelegationInstructionNode(treeShape, delegatedPredicateCount, requestsRowIds, requiresLiveDocsMatchAll)
+            new ShardScanWithDelegationInstructionNode(treeShape, delegatedPredicateCount, requestsRowIds, requiresDeletedDocFiltering)
         );
     }
 
