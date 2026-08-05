@@ -277,6 +277,46 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     }
 
     @Override
+    public int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, MemorySegment out) {
+        String segName = generationToSegmentName.get(writerGeneration);
+        if (segName == null) {
+            return -1;
+        }
+        LeafReaderContext leaf = null;
+        for (LeafReaderContext lrc : leaves) {
+            if (unwrapSegmentReader(lrc.reader()).getSegmentInfo().info.name.equals(segName)) {
+                leaf = lrc;
+                break;
+            }
+        }
+        if (leaf == null) {
+            return -1;
+        }
+        org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
+        if (liveDocs == null) {
+            return -2;
+        }
+        int span = maxDoc - minDoc;
+        int wordCount = (span + 63) >>> 6;
+        long word = 0;
+        int wordIdx = 0;
+        for (int i = 0; i < span; i++) {
+            if (liveDocs.get(minDoc + i)) {
+                word |= (1L << (i & 63));
+            }
+            if ((i & 63) == 63) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+                word = 0;
+                wordIdx++;
+            }
+        }
+        if ((span & 63) != 0) {
+            out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+        }
+        return wordCount;
+    }
+
+    @Override
     public void close() {
         weightsByProviderKey.clear();
         scorersByCollectorKey.clear();
