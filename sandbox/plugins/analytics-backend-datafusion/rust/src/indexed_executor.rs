@@ -892,10 +892,10 @@ async unsafe fn execute_indexed_with_context_inner(
         .indexed_config
         .as_ref()
         .is_some_and(|c| c.requests_row_ids);
-    let has_deleted_docs = handle
+    let deleted_doc_filtering_required = handle
         .indexed_config
         .as_ref()
-        .is_some_and(|c| c.has_deleted_docs);
+        .is_some_and(|c| c.deleted_doc_filtering_required);
     let classification_override = handle.indexed_config.map(|config| {
         // FilterTreeShape: 1 = CONJUNCTIVE → SingleCollector, 2 = INTERLEAVED → Tree.
         match (config.tree_shape, config.delegated_predicate_count) {
@@ -1146,18 +1146,18 @@ async unsafe fn execute_indexed_with_context_inner(
             let correctness_provider: Option<Arc<ProviderHandle>> =
                 match single_collector_id(&extraction.tree) {
                     // Some(annotation_id)
-                    //     if annotation_id == i32::MAX && !has_deleted_docs =>
+                    //     if annotation_id == i32::MAX && !deleted_doc_filtering_required =>
                     // {
                     //     log_info!(
-                    //         "[live-docs] defuse: annotation_id=i32::MAX, has_deleted_docs=false — skipping MatchAll provider creation"
+                    //         "[live-docs] defuse: annotation_id=i32::MAX, deleted_doc_filtering_required=false — skipping MatchAll provider creation"
                     //     );
                     //     None
                     // }
                     Some(annotation_id) => {
                         log_info!(
-                            "[live-docs] creating provider: annotation_id={}, has_deleted_docs={}",
+                            "[live-docs] creating provider: annotation_id={}, deleted_doc_filtering_required={}",
                             annotation_id,
-                            has_deleted_docs
+                            deleted_doc_filtering_required
                         );
                         Some(Arc::new(
                             create_provider(context_id, annotation_id)
@@ -1298,7 +1298,7 @@ async unsafe fn execute_indexed_with_context_inner(
             // createProvider call and the positional-index misalignment that would occur
             // if we simply skipped the provider in the vec (resolve() maps collectors
             // to BoolNode::Collector leaves by DFS position, not by key).
-            if !has_deleted_docs {
+            if !deleted_doc_filtering_required {
                 tree = tree.remove_collector_by_id(i32::MAX);
             }
             // One provider per Collector leaf (DFS order).

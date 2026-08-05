@@ -142,7 +142,7 @@ final class FilterTreeShapeDeriver {
      * @param drivingBackendId the driving backend name
      * @return true if MatchAll injection is needed when deleted docs are present
      */
-    static boolean requiresLiveDocsMatchAll(OpenSearchFilter filter, String drivingBackendId) {
+    static boolean requiresDeletedDocFiltering(OpenSearchFilter filter, String drivingBackendId) {
         if (filter == null) {
             return true;
         }

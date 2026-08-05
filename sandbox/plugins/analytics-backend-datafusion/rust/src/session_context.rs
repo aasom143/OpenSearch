@@ -83,7 +83,7 @@ pub struct IndexedExecutionConfig {
     /// When true, the shard has deleted documents. The live-docs MatchAll Collector
     /// (annotation_id == i32::MAX) should call through to Java. When false, defuse
     /// that Collector (return all-ones without FFM call).
-    pub has_deleted_docs: bool,
+    pub deleted_doc_filtering_required: bool,
 }
 
 /// Widens `inferred` to the plan's `base_schema` (for index-pattern / alias scans) so the
@@ -546,7 +546,7 @@ pub async unsafe fn create_session_context_indexed(
     delegated_predicate_count: i32,
     requests_row_ids: bool,
     has_partial_aggregate: bool,
-    has_deleted_docs: bool,
+    deleted_doc_filtering_required: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
 ) -> Result<i64, DataFusionError> {
@@ -569,7 +569,7 @@ pub async unsafe fn create_session_context_indexed(
         tree_shape,
         delegated_predicate_count,
         requests_row_ids,
-        has_deleted_docs,
+        deleted_doc_filtering_required,
     });
 
     Ok(ptr)
