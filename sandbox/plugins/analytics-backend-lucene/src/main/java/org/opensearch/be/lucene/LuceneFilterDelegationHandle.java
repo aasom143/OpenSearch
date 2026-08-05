@@ -321,14 +321,20 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} range=[{},{}) → all alive", writerGeneration, segName, minDoc, maxDoc);
             return -2;
         }
-        LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} range=[{},{}) → has deletions, numDeletedDocs={}",
-            writerGeneration, segName, minDoc, maxDoc, leaf.reader().numDeletedDocs());
-        int span = maxDoc - minDoc;
+        int leafMaxDoc = leaf.reader().maxDoc();
+        int effectiveMaxDoc = Math.min(maxDoc, leafMaxDoc);
+        int effectiveMinDoc = Math.min(minDoc, leafMaxDoc);
+        LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} range=[{},{}) effectiveRange=[{},{}) → has deletions, numDeletedDocs={}",
+            writerGeneration, segName, minDoc, maxDoc, effectiveMinDoc, effectiveMaxDoc, leaf.reader().numDeletedDocs());
+        int span = effectiveMaxDoc - effectiveMinDoc;
+        if (span <= 0) {
+            return -2;
+        }
         int wordCount = (span + 63) >>> 6;
         long word = 0;
         int wordIdx = 0;
         for (int i = 0; i < span; i++) {
-            if (liveDocs.get(minDoc + i)) {
+            if (liveDocs.get(effectiveMinDoc + i)) {
                 word |= (1L << (i & 63));
             }
             if ((i & 63) == 63) {
