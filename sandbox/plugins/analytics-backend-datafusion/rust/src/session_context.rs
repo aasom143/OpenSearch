@@ -395,10 +395,13 @@ pub async unsafe fn create_session_context(
         let store_url = ObjectStoreUrl::parse("file://").map_err(|e| {
             DataFusionError::Internal(format!("failed to parse store URL: {}", e))
         })?;
+        let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
         let provider = Arc::new(crate::live_docs_table_provider::LiveDocsTableProvider::new(
             resolved_schema,
             files,
             store_url,
+            Arc::clone(&shard_view.store),
+            metadata_cache,
             context_id,
         ));
         ctx.register_table(register_name.as_str(), provider)
