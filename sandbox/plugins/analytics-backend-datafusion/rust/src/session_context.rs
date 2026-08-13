@@ -379,78 +379,35 @@ pub async unsafe fn create_session_context(
         listing_options
     };
 
-    if deleted_doc_filtering_required {
-        // Register LiveDocsTableProvider: attaches per-file liveDocs RowSelection
-        // so parquet physically skips deleted rows during I/O.
-        let files: Vec<crate::live_docs_table_provider::LiveDocsFileInfo> = shard_view
-            .object_metas
-            .iter()
-            .enumerate()
-            .map(|(i, meta)| {
-                let writer_gen = shard_view.writer_generations.get(i).copied().unwrap_or(0);
-                let (num_rows, rg_counts) = match &shard_view.file_metadata {
-                    Some(fm) if i < fm.len() => {
-                        let rg = &fm[i].row_group_row_counts;
-                        (rg.iter().sum::<u64>(), rg.clone())
-                    }
-                    _ => (meta.size as u64, vec![]),
-                };
-                crate::live_docs_table_provider::LiveDocsFileInfo {
-                    object_meta: meta.clone(),
-                    writer_generation: writer_gen,
-                    num_rows,
-                    row_group_row_counts: rg_counts,
-                }
-            })
-            .collect();
-        let store_url = ObjectStoreUrl::parse("file://").map_err(|e| {
-            DataFusionError::Internal(format!("failed to parse store URL: {}", e))
-        })?;
-        let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
-        let provider = Arc::new(crate::live_docs_table_provider::LiveDocsTableProvider::new(
-            resolved_schema,
-            files,
-            store_url,
-            Arc::clone(&shard_view.store),
-            metadata_cache,
-            context_id,
-        ));
-        ctx.register_table(register_name.as_str(), provider)
+    // Always use standard ListingTable — predicate pushdown works natively.
+    // When deleted_doc_filtering_required, a post-read LiveDocsFilterExec will
+    // be inserted by the physical optimizer to remove the few deleted rows.
+    let table_config = ListingTableConfig::new(shard_view.table_path.clone())
+        .with_listing_options(listing_options)
+        .with_schema(resolved_schema);
+
+    // Wire the global statistics cache into the ListingTable.
+    let stats_cache = runtime.runtime_env.cache_manager.get_file_statistic_cache();
+    let provider = Arc::new(
+        ListingTable::try_new(table_config)
             .map_err(|e| {
                 error!(
-                    "create_session_context: failed to register LiveDocsTableProvider '{}': {}",
-                    register_name, e
-                );
-                e
-            })?;
-    } else {
-        let table_config = ListingTableConfig::new(shard_view.table_path.clone())
-            .with_listing_options(listing_options)
-            .with_schema(resolved_schema);
-
-        // Wire the global statistics cache into the ListingTable.
-        let stats_cache = runtime.runtime_env.cache_manager.get_file_statistic_cache();
-        let provider = Arc::new(
-            ListingTable::try_new(table_config)
-                .map_err(|e| {
-                    error!(
-                        "create_session_context: failed to create listing table: {}",
-                        e
-                    );
+                    "create_session_context: failed to create listing table: {}",
                     e
-                })?
-                .with_cache(stats_cache),
-        );
-
-        ctx.register_table(register_name.as_str(), provider)
-            .map_err(|e| {
-                error!(
-                    "create_session_context: failed to register table '{}': {}",
-                    register_name, e
                 );
                 e
-            })?;
-    }
+            })?
+            .with_cache(stats_cache),
+    );
+
+    ctx.register_table(register_name.as_str(), provider)
+        .map_err(|e| {
+            error!(
+                "create_session_context: failed to register table '{}': {}",
+                register_name, e
+            );
+            e
+        })?;
     log_debug!(
         "create_session_context: registered table '{}' with file_sort_order_keys={}",
         register_name,
