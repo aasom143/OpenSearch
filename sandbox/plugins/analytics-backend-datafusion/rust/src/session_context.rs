@@ -288,6 +288,19 @@ pub async unsafe fn create_session_context(
             )));
     }
 
+    // Install LiveDocsFilterOptimizer when deleted-doc filtering is required.
+    // Wraps DataSourceExec in LiveDocsFilterExec to remove deleted rows post-read.
+    if deleted_doc_filtering_required {
+        let mut path_to_gen = std::collections::HashMap::new();
+        for (i, meta) in shard_view.object_metas.iter().enumerate() {
+            let gen = shard_view.writer_generations.get(i).copied().unwrap_or(0);
+            path_to_gen.insert(meta.location.to_string(), gen);
+        }
+        state_builder = state_builder.with_physical_optimizer_rule(Arc::new(
+            crate::live_docs_optimizer::LiveDocsFilterOptimizer::new(context_id, path_to_gen),
+        ));
+    }
+
     let state = state_builder.build();
 
     let ctx = SessionContext::new_with_state(state);
