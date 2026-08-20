@@ -32,7 +32,6 @@ pub mod ffm;
 pub mod helper;
 pub mod indexed_executor;
 pub mod indexed_table;
-pub mod live_docs_filter;
 pub mod local_executor;
 pub mod memory;
 pub mod memory_guard;
