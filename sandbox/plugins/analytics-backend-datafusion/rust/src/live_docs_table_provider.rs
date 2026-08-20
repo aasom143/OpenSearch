@@ -73,6 +73,12 @@ impl LiveDocsTableProvider {
 
     /// Build a ParquetAccessPlan from a liveDocs bitset for one file.
     /// Converts the per-doc bitset into per-row-group RowSelections.
+    ///
+    /// Word-level scan: for the common mostly-alive case (few deletions in a large shard)
+    /// almost every 64-bit word is all-ones, so we advance 64 rows at a time for all-ones
+    /// (and all-zeros) words and only drop to per-bit for "mixed" words that straddle a
+    /// deletion boundary. This is O(total_words + deletions) instead of O(total_rows) — the
+    /// per-bit version dominated query latency on large deletion-bearing segments.
     fn build_access_plan(
         live_docs: &[u64],
         row_group_row_counts: &[u64],
@@ -84,43 +90,100 @@ impl LiveDocsTableProvider {
         let mut doc_offset: usize = 0;
         for (rg_idx, &rg_rows) in row_group_row_counts.iter().enumerate() {
             let rg_rows = rg_rows as usize;
-            let mut selectors = Vec::new();
-            let mut i = 0;
-            while i < rg_rows {
-                // Find next run of live or dead docs
-                let abs_pos = doc_offset + i;
-                let word_idx = abs_pos / 64;
-                let bit_idx = abs_pos % 64;
-                let is_live = word_idx < live_docs.len() && (live_docs[word_idx] >> bit_idx) & 1 == 1;
-
-                let run_start = i;
-                while i < rg_rows {
-                    let abs = doc_offset + i;
-                    let w = abs / 64;
-                    let b = abs % 64;
-                    let live = w < live_docs.len() && (live_docs[w] >> b) & 1 == 1;
-                    if live != is_live {
-                        break;
-                    }
-                    i += 1;
-                }
-                let run_len = i - run_start;
-                if is_live {
-                    selectors.push(RowSelector::select(run_len));
-                } else {
-                    selectors.push(RowSelector::skip(run_len));
-                }
-            }
+            let rg_start = doc_offset;
             doc_offset += rg_rows;
+            if rg_rows == 0 {
+                continue;
+            }
 
-            // If all rows are live, keep as Scan (no selection needed)
-            let all_live = selectors.len() == 1
-                && matches!(selectors.first(), Some(s) if s.row_count == rg_rows && !s.skip);
-            if !all_live {
+            let (selectors, any_dead) = Self::rg_selectors(live_docs, rg_start, rg_rows);
+            // If no deleted rows, leave the row group as Scan (no selection needed) so the
+            // parquet reader keeps its efficient full-RG decode path.
+            if any_dead {
                 access_plan.set(rg_idx, RowGroupAccess::Selection(RowSelection::from(selectors)));
             }
         }
         access_plan
+    }
+
+    /// Compute the select/skip run selectors for one row group's slice
+    /// `[rg_start, rg_start + rg_rows)` of the doc-level liveDocs bitset. Returns the selectors
+    /// and whether any row in the range was deleted (`false` → the caller keeps the RG as Scan).
+    ///
+    /// Words that are entirely alive (all-ones) or entirely deleted (all-zeros) advance 64 rows
+    /// at once; only "mixed" words straddling a deletion boundary are walked bit-by-bit. `cur_len`
+    /// starts at 0 on a (nominal) live run so the initial empty run is never emitted.
+    fn rg_selectors(live_docs: &[u64], rg_start: usize, rg_rows: usize) -> (Vec<RowSelector>, bool) {
+        let mut selectors: Vec<RowSelector> = Vec::new();
+        let mut cur_live = true;
+        let mut cur_len: usize = 0;
+        let mut any_dead = false;
+
+        let flush = |sel: &mut Vec<RowSelector>, live: bool, len: usize| {
+            if len == 0 {
+                return;
+            }
+            if live {
+                sel.push(RowSelector::select(len));
+            } else {
+                sel.push(RowSelector::skip(len));
+            }
+        };
+
+        let mut i = 0usize;
+        while i < rg_rows {
+            let abs = rg_start + i;
+            let word_idx = abs >> 6;
+            let bit = abs & 63;
+            let word = if word_idx < live_docs.len() {
+                live_docs[word_idx]
+            } else {
+                0
+            };
+            // Bits to consider from this word: bounded by the word boundary and the RG end.
+            let chunk = (64 - bit).min(rg_rows - i);
+            let mask: u64 = if chunk == 64 { u64::MAX } else { (1u64 << chunk) - 1 };
+            let seg = (word >> bit) & mask;
+
+            if seg == mask {
+                // All `chunk` rows alive.
+                if cur_live {
+                    cur_len += chunk;
+                } else {
+                    flush(&mut selectors, false, cur_len);
+                    cur_live = true;
+                    cur_len = chunk;
+                }
+            } else if seg == 0 {
+                // All `chunk` rows deleted.
+                any_dead = true;
+                if !cur_live {
+                    cur_len += chunk;
+                } else {
+                    flush(&mut selectors, true, cur_len);
+                    cur_live = false;
+                    cur_len = chunk;
+                }
+            } else {
+                // Mixed word — walk the `chunk` bits individually.
+                for k in 0..chunk {
+                    let live = (seg >> k) & 1 == 1;
+                    if !live {
+                        any_dead = true;
+                    }
+                    if live == cur_live {
+                        cur_len += 1;
+                    } else {
+                        flush(&mut selectors, cur_live, cur_len);
+                        cur_live = live;
+                        cur_len = 1;
+                    }
+                }
+            }
+            i += chunk;
+        }
+        flush(&mut selectors, cur_live, cur_len);
+        (selectors, any_dead)
     }
 }
 
@@ -227,5 +290,116 @@ impl TableProvider for LiveDocsTableProvider {
 
     fn statistics(&self) -> Option<Statistics> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Naive reference: per-bit run builder (the pre-optimization logic).
+    fn rg_selectors_naive(live_docs: &[u64], rg_start: usize, rg_rows: usize) -> (Vec<RowSelector>, bool) {
+        let mut selectors: Vec<RowSelector> = Vec::new();
+        let mut any_dead = false;
+        let mut i = 0usize;
+        while i < rg_rows {
+            let abs0 = rg_start + i;
+            let is_live = (live_docs[abs0 / 64] >> (abs0 % 64)) & 1 == 1;
+            let run_start = i;
+            while i < rg_rows {
+                let abs = rg_start + i;
+                let live = (live_docs[abs / 64] >> (abs % 64)) & 1 == 1;
+                if live != is_live {
+                    break;
+                }
+                i += 1;
+            }
+            let run_len = i - run_start;
+            if is_live {
+                selectors.push(RowSelector::select(run_len));
+            } else {
+                any_dead = true;
+                selectors.push(RowSelector::skip(run_len));
+            }
+        }
+        (selectors, any_dead)
+    }
+
+    /// Expand selectors to a per-row alive/dead vector for comparison.
+    fn expand(selectors: &[RowSelector]) -> Vec<bool> {
+        let mut out = Vec::new();
+        for s in selectors {
+            for _ in 0..s.row_count {
+                out.push(!s.skip);
+            }
+        }
+        out
+    }
+
+    /// The alive vector implied directly by the bitset over [rg_start, rg_start+rg_rows).
+    fn alive_slice(live_docs: &[u64], rg_start: usize, rg_rows: usize) -> Vec<bool> {
+        (0..rg_rows)
+            .map(|i| {
+                let abs = rg_start + i;
+                (live_docs[abs / 64] >> (abs % 64)) & 1 == 1
+            })
+            .collect()
+    }
+
+    // Deterministic xorshift so the test needs no rng dependency (Math.random-style is banned).
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    #[test]
+    fn rg_selectors_matches_naive_and_bitset() {
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        for _ in 0..2000 {
+            let rg_rows = (rng.next() % 600) as usize + 1; // 1..=600
+            let rg_start = (rng.next() % 200) as usize; // exercise unaligned starts
+            let total_bits = rg_start + rg_rows;
+            let words = total_bits.div_ceil(64);
+            // Mostly-alive bitset with a sprinkling of deletions (the real-world shape).
+            let mut live: Vec<u64> = vec![u64::MAX; words + 1];
+            let deletes = (rng.next() % 40) as usize;
+            for _ in 0..deletes {
+                let pos = rg_start + (rng.next() as usize % rg_rows);
+                live[pos / 64] &= !(1u64 << (pos % 64));
+            }
+
+            let (opt, opt_dead) = LiveDocsTableProvider::rg_selectors(&live, rg_start, rg_rows);
+            let (nai, nai_dead) = rg_selectors_naive(&live, rg_start, rg_rows);
+            let expected = alive_slice(&live, rg_start, rg_rows);
+
+            assert_eq!(expand(&opt), expected, "optimized selectors mismatch bitset");
+            assert_eq!(expand(&nai), expected, "naive selectors mismatch bitset");
+            assert_eq!(opt_dead, nai_dead, "any_dead mismatch");
+            assert_eq!(
+                expand(&opt),
+                expand(&nai),
+                "optimized vs naive selectors differ (rg_start={rg_start}, rg_rows={rg_rows})"
+            );
+        }
+    }
+
+    #[test]
+    fn rg_selectors_all_alive_and_all_dead() {
+        let live_all = vec![u64::MAX; 4];
+        let (sel, dead) = LiveDocsTableProvider::rg_selectors(&live_all, 0, 200);
+        assert!(!dead);
+        assert_eq!(expand(&sel), vec![true; 200]);
+
+        let dead_all = vec![0u64; 4];
+        let (sel, dead) = LiveDocsTableProvider::rg_selectors(&dead_all, 0, 200);
+        assert!(dead);
+        assert_eq!(expand(&sel), vec![false; 200]);
     }
 }
