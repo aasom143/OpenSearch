@@ -331,6 +331,45 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             return -2;
         }
         int wordCount = (span + 63) >>> 6;
+
+        // Fast path: direct word-level copy from the FixedBitSet backing array — O(words)
+        // instead of O(span) per-bit reads. This removes the per-segment build cost that
+        // dominated large deletion-bearing segments; the ListingTable path passes minDoc=0,
+        // so the word-aligned branch is taken.
+        if (liveDocs instanceof FixedBitSet fbs) {
+            long[] srcWords = fbs.getBits();
+            int startWord = effectiveMinDoc >>> 6;
+            int bitOffset = effectiveMinDoc & 63;
+
+            if (bitOffset == 0) {
+                // Word-aligned: bulk-copy the relevant slice (bounded by the backing length).
+                int availWords = Math.max(0, srcWords.length - startWord);
+                int copyWords = Math.min(wordCount, availWords);
+                if (copyWords > 0) {
+                    MemorySegment.copy(srcWords, startWord, out, ValueLayout.JAVA_LONG, 0L, copyWords);
+                }
+                for (int w = copyWords; w < wordCount; w++) {
+                    out.setAtIndex(ValueLayout.JAVA_LONG, w, 0L);
+                }
+            } else {
+                // Unaligned start: shift pairs of source words to produce each output word.
+                for (int i = 0; i < wordCount; i++) {
+                    long lo = (startWord + i < srcWords.length) ? srcWords[startWord + i] >>> bitOffset : 0L;
+                    long hi = (startWord + i + 1 < srcWords.length) ? srcWords[startWord + i + 1] << (64 - bitOffset) : 0L;
+                    out.setAtIndex(ValueLayout.JAVA_LONG, i, lo | hi);
+                }
+            }
+            // Clear bits beyond `span` in the final word so alive docs past effectiveMaxDoc
+            // don't leak into the result.
+            int trailing = span & 63;
+            if (trailing != 0) {
+                long lastWord = out.getAtIndex(ValueLayout.JAVA_LONG, wordCount - 1);
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, lastWord & ((1L << trailing) - 1));
+            }
+            return wordCount;
+        }
+
+        // Fallback: per-bit loop for non-FixedBitSet Bits implementations.
         long word = 0;
         int wordIdx = 0;
         for (int i = 0; i < span; i++) {
