@@ -332,10 +332,38 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         }
         int wordCount = (span + 63) >>> 6;
 
-        // Fast path: direct word-level copy from the FixedBitSet backing array — O(words)
-        // instead of O(span) per-bit reads. This removes the per-segment build cost that
-        // dominated large deletion-bearing segments; the ListingTable path passes minDoc=0,
-        // so the word-aligned branch is taken.
+        // Primary fast path: OpenSearch's LiveDocs (SparseLiveDocs for <=1% deletion,
+        // DenseLiveDocs otherwise — the actual type getLiveDocs() returns) exposes an
+        // O(deletedCount) iterator over DELETED docs. Fill the range all-alive, then clear only
+        // the deleted bits — O(words + deletions) — instead of O(span) per-bit reads. This is the
+        // path that matters: per-bit SparseLiveDocs.get() over tens of millions of docs was the
+        // dominant query overhead.
+        if (liveDocs instanceof org.apache.lucene.util.LiveDocs ld) {
+            for (int w = 0; w < wordCount; w++) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, w, -1L);
+            }
+            int trailingBits = span & 63;
+            if (trailingBits != 0) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, (1L << trailingBits) - 1);
+            }
+            try {
+                DocIdSetIterator deleted = ld.deletedDocsIterator();
+                int doc = deleted.advance(effectiveMinDoc);
+                while (doc != DocIdSetIterator.NO_MORE_DOCS && doc < effectiveMaxDoc) {
+                    int rel = doc - effectiveMinDoc;
+                    int w = rel >>> 6;
+                    long cur = out.getAtIndex(ValueLayout.JAVA_LONG, w);
+                    out.setAtIndex(ValueLayout.JAVA_LONG, w, cur & ~(1L << (rel & 63)));
+                    doc = deleted.nextDoc();
+                }
+                return wordCount;
+            } catch (IOException e) {
+                LOGGER.warn("[scf] getLiveDocs deletedDocsIterator failed; falling back to per-bit", e);
+                // fall through to the per-bit loop below (re-fills the buffer correctly)
+            }
+        }
+
+        // Fallback: direct word-level copy from a raw FixedBitSet backing array — O(words).
         if (liveDocs instanceof FixedBitSet fbs) {
             long[] srcWords = fbs.getBits();
             int startWord = effectiveMinDoc >>> 6;
