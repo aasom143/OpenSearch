@@ -1120,7 +1120,9 @@ public class DataFormatAwareEngine implements Indexer {
         long ifSeqNo,
         long ifPrimaryTerm
     ) {
-        throw new UnsupportedOperationException("delete operation not supported.");
+        long startTime = System.nanoTime();
+        final Term uid = new Term(IdFieldMapper.NAME, Uid.encodeId(id));
+        return new Engine.Delete(id, uid, seqNo, primaryTerm, version, versionType, origin, startTime, ifSeqNo, ifPrimaryTerm, routing);
     }
 
     /**
