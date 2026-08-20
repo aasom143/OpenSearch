@@ -834,9 +834,11 @@ public class AnalyticsSearchService implements AutoCloseable {
                 // queries have isolated FFM callback bindings. The returned cleanup removes the
                 // binding after query execution completes.
                 trackerCleanup = backend.configureFilterDelegation(contextId, handle, tracker, backendContext);
-            } else if (luceneBackend != null && task != null) {
-                // No delegation but shard has deletions — register a handle so Rust's
-                // getLiveDocs FFM callback can resolve liveDocs for the ListingTable path.
+            } else if (luceneBackend != null && task != null && !"lucene".equals(resolved.plan.getBackendId())) {
+                // No delegation, but a non-Lucene driving backend (e.g. DataFusion) needs a Lucene
+                // handle registered so Rust's getLiveDocs FFM callback can resolve liveDocs for the
+                // ListingTable path. Skip when Lucene is the driving backend: it applies liveDocs
+                // natively via its Collector and does not implement configureFilterDelegation.
                 long contextId = task.getId();
                 FilterDelegationHandle handle = luceneBackend.getFilterDelegationHandle(java.util.List.of(), ctx);
                 trackerCleanup = backend.configureFilterDelegation(contextId, handle, null, backendContext);
