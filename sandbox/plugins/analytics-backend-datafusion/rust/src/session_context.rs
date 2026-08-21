@@ -380,45 +380,72 @@ pub async unsafe fn create_session_context(
     };
 
     if deleted_doc_filtering_required {
-        // Register LiveDocsTableProvider: attaches per-file liveDocs RowSelection
-        // so parquet physically skips deleted rows during I/O.
-        let files: Vec<crate::live_docs_table_provider::LiveDocsFileInfo> = shard_view
-            .object_metas
-            .iter()
-            .enumerate()
-            .map(|(i, meta)| {
-                let writer_gen = shard_view.writer_generations.get(i).copied().unwrap_or(0);
-                let (num_rows, rg_counts) = match &shard_view.file_metadata {
-                    Some(fm) if i < fm.len() => {
-                        let rg = &fm[i].row_group_row_counts;
-                        (rg.iter().sum::<u64>(), rg.clone())
+        // QTF-like path (Approach 3): register LiveDocsRowIdTableProvider. It projects the stored
+        // __row_id__ + a row_base partition column and drops deleted rows by global id via a value
+        // filter — no RowSelection, so no reader run-overhead when deletions are scattered.
+        let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
+        let store = Arc::clone(&shard_view.store);
+        let mut files: Vec<crate::live_docs_rowid_filter::ShardFileInfo> =
+            Vec::with_capacity(shard_view.object_metas.len());
+        let mut deleted = roaring::RoaringTreemap::new();
+        let mut row_base: i64 = 0;
+        for (i, meta) in shard_view.object_metas.iter().enumerate() {
+            let writer_gen = shard_view.writer_generations.get(i).copied().unwrap_or(0);
+            let (_fschema, _size, pq_meta) =
+                crate::indexed_table::parquet_bridge::load_parquet_metadata_with_meta(
+                    Arc::clone(&store),
+                    &meta.location,
+                    meta.clone(),
+                    Arc::clone(&metadata_cache),
+                )
+                .await
+                .map_err(|e| DataFusionError::Internal(format!("load parquet metadata: {}", e)))?;
+            let rg_counts: Vec<u64> = pq_meta.row_groups().iter().map(|rg| rg.num_rows() as u64).collect();
+            let num_rows: u64 = rg_counts.iter().sum();
+
+            // Fold this segment's deleted docs into the shard-global bitmap (local + row_base).
+            // getLiveDocs returns the alive bitset (or None if all alive); scan its zero bits.
+            if let Ok(Some(alive)) =
+                crate::indexed_table::ffm_callbacks::get_live_docs(context_id, writer_gen, 0, num_rows as i32)
+            {
+                for (w, &word) in alive.iter().enumerate() {
+                    if word == u64::MAX {
+                        continue; // whole word alive
                     }
-                    _ => (meta.size as u64, vec![]),
-                };
-                crate::live_docs_table_provider::LiveDocsFileInfo {
-                    object_meta: meta.clone(),
-                    writer_generation: writer_gen,
-                    num_rows,
-                    row_group_row_counts: rg_counts,
+                    let base = (w as u64) * 64;
+                    let mut dead = !word;
+                    while dead != 0 {
+                        let local = base + dead.trailing_zeros() as u64;
+                        if local < num_rows {
+                            deleted.insert(row_base as u64 + local);
+                        }
+                        dead &= dead - 1;
+                    }
                 }
-            })
-            .collect();
+            }
+
+            files.push(crate::live_docs_rowid_filter::ShardFileInfo {
+                object_meta: meta.clone(),
+                row_base,
+                num_rows,
+                row_group_row_counts: rg_counts,
+                access_plan: None,
+            });
+            row_base += num_rows as i64;
+        }
         let store_url = ObjectStoreUrl::parse("file://").map_err(|e| {
             DataFusionError::Internal(format!("failed to parse store URL: {}", e))
         })?;
-        let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
-        let provider = Arc::new(crate::live_docs_table_provider::LiveDocsTableProvider::new(
+        let provider = Arc::new(crate::live_docs_rowid_filter::LiveDocsRowIdTableProvider::new(
             resolved_schema,
             files,
             store_url,
-            Arc::clone(&shard_view.store),
-            metadata_cache,
-            context_id,
+            Arc::new(deleted),
         ));
         ctx.register_table(register_name.as_str(), provider)
             .map_err(|e| {
                 error!(
-                    "create_session_context: failed to register LiveDocsTableProvider '{}': {}",
+                    "create_session_context: failed to register LiveDocsRowIdTableProvider '{}': {}",
                     register_name, e
                 );
                 e
