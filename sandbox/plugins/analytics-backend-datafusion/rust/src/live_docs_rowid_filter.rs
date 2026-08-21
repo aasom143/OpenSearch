@@ -230,17 +230,20 @@ pub struct LiveDocsRowIdTableProvider {
     /// Table schema = file_schema + `row_base` (partition col appended last).
     table_schema: SchemaRef,
     files: Vec<ShardFileInfo>,
+    /// Writer generation per file (aligned with `files`), used to resolve liveDocs at scan time.
+    writer_generations: Vec<i64>,
     store_url: ObjectStoreUrl,
-    /// Shard-global ids of deleted docs (`local __row_id__ + row_base`).
-    deleted: Arc<RoaringTreemap>,
+    /// Query context id for the getLiveDocs FFM callback.
+    context_id: i64,
 }
 
 impl LiveDocsRowIdTableProvider {
     pub fn new(
         file_schema: SchemaRef,
         files: Vec<ShardFileInfo>,
+        writer_generations: Vec<i64>,
         store_url: ObjectStoreUrl,
-        deleted: Arc<RoaringTreemap>,
+        context_id: i64,
     ) -> Self {
         let mut fields: Vec<Arc<Field>> = file_schema.fields().iter().cloned().collect();
         fields.push(Arc::new(Field::new(ROW_BASE_COL, DataType::Int64, true)));
@@ -249,9 +252,39 @@ impl LiveDocsRowIdTableProvider {
             file_schema,
             table_schema,
             files,
+            writer_generations,
             store_url,
-            deleted,
+            context_id,
         }
+    }
+
+    /// Build the shard-global deleted-docs bitmap by folding each segment's liveDocs
+    /// (`local __row_id__ + row_base`). Called at scan time so the getLiveDocs FFM binding
+    /// (registered by `configureFilterDelegation`) is available — building it at session-context
+    /// creation time is too early (the handle isn't registered yet).
+    fn build_deleted(&self) -> RoaringTreemap {
+        let mut deleted = RoaringTreemap::new();
+        for (file, &gen) in self.files.iter().zip(self.writer_generations.iter()) {
+            if let Ok(Some(alive)) =
+                crate::indexed_table::ffm_callbacks::get_live_docs(self.context_id, gen, 0, file.num_rows as i32)
+            {
+                for (w, &word) in alive.iter().enumerate() {
+                    if word == u64::MAX {
+                        continue;
+                    }
+                    let base = (w as u64) * 64;
+                    let mut dead = !word;
+                    while dead != 0 {
+                        let local = base + dead.trailing_zeros() as u64;
+                        if local < file.num_rows {
+                            deleted.insert(file.row_base as u64 + local);
+                        }
+                        dead &= dead - 1;
+                    }
+                }
+            }
+        }
+        deleted
     }
 }
 
@@ -259,7 +292,6 @@ impl std::fmt::Debug for LiveDocsRowIdTableProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveDocsRowIdTableProvider")
             .field("files", &self.files.len())
-            .field("deleted", &self.deleted.len())
             .finish()
     }
 }
@@ -338,9 +370,11 @@ impl TableProvider for LiveDocsRowIdTableProvider {
                 .build();
 
         let scan = DataSourceExec::from_data_source(file_scan_config);
+        // Build the deleted bitmap now (scan time — the getLiveDocs binding exists).
+        let deleted = Arc::new(self.build_deleted());
         let filter = LiveDocsRowIdFilterExec::try_new(
             scan,
-            Arc::clone(&self.deleted),
+            deleted,
             crate::ROW_ID_COLUMN_NAME,
             ROW_BASE_COL,
         )?;
