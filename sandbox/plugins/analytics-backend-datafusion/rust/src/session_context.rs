@@ -387,7 +387,7 @@ pub async unsafe fn create_session_context(
         let store = Arc::clone(&shard_view.store);
         let mut files: Vec<crate::live_docs_rowid_filter::ShardFileInfo> =
             Vec::with_capacity(shard_view.object_metas.len());
-        let mut deleted = roaring::RoaringTreemap::new();
+        let mut writer_gens: Vec<i64> = Vec::with_capacity(shard_view.object_metas.len());
         let mut row_base: i64 = 0;
         for (i, meta) in shard_view.object_metas.iter().enumerate() {
             let writer_gen = shard_view.writer_generations.get(i).copied().unwrap_or(0);
@@ -403,27 +403,6 @@ pub async unsafe fn create_session_context(
             let rg_counts: Vec<u64> = pq_meta.row_groups().iter().map(|rg| rg.num_rows() as u64).collect();
             let num_rows: u64 = rg_counts.iter().sum();
 
-            // Fold this segment's deleted docs into the shard-global bitmap (local + row_base).
-            // getLiveDocs returns the alive bitset (or None if all alive); scan its zero bits.
-            if let Ok(Some(alive)) =
-                crate::indexed_table::ffm_callbacks::get_live_docs(context_id, writer_gen, 0, num_rows as i32)
-            {
-                for (w, &word) in alive.iter().enumerate() {
-                    if word == u64::MAX {
-                        continue; // whole word alive
-                    }
-                    let base = (w as u64) * 64;
-                    let mut dead = !word;
-                    while dead != 0 {
-                        let local = base + dead.trailing_zeros() as u64;
-                        if local < num_rows {
-                            deleted.insert(row_base as u64 + local);
-                        }
-                        dead &= dead - 1;
-                    }
-                }
-            }
-
             files.push(crate::live_docs_rowid_filter::ShardFileInfo {
                 object_meta: meta.clone(),
                 row_base,
@@ -431,16 +410,20 @@ pub async unsafe fn create_session_context(
                 row_group_row_counts: rg_counts,
                 access_plan: None,
             });
+            writer_gens.push(writer_gen);
             row_base += num_rows as i64;
         }
         let store_url = ObjectStoreUrl::parse("file://").map_err(|e| {
             DataFusionError::Internal(format!("failed to parse store URL: {}", e))
         })?;
+        // The deleted bitmap is built lazily in the provider's scan() (query time), when the
+        // getLiveDocs FFM binding is registered — building it here would be too early.
         let provider = Arc::new(crate::live_docs_rowid_filter::LiveDocsRowIdTableProvider::new(
             resolved_schema,
             files,
+            writer_gens,
             store_url,
-            Arc::new(deleted),
+            context_id,
         ));
         ctx.register_table(register_name.as_str(), provider)
             .map_err(|e| {
