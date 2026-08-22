@@ -205,12 +205,15 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::stats::Precision;
-use datafusion::common::{ScalarValue, Statistics};
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{Column, DFSchema, ScalarValue, Statistics};
 use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::TableType;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::table_schema::TableSchema;
@@ -315,9 +318,9 @@ impl TableProvider for LiveDocsRowIdTableProvider {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         debug_assert!(
@@ -361,7 +364,33 @@ impl TableProvider for LiveDocsRowIdTableProvider {
 
         let table_schema =
             TableSchema::new(self.file_schema.clone(), vec![Arc::new(Field::new(ROW_BASE_COL, DataType::Int64, true))]);
-        let parquet_source = ParquetSource::new(table_schema);
+        let mut parquet_source = ParquetSource::new(table_schema);
+
+        // Push the query predicate into the parquet reader as a RowFilter so it filters rows
+        // during decode and late-materializes __row_id__ only for survivors — otherwise the scan
+        // reads __row_id__ for every row before the predicate (a FilterExec above) trims them.
+        // The predicate is over the file schema; strip qualifiers so it binds unqualified. Any
+        // filter we can't lower is left to the (Inexact) FilterExec above — correctness holds.
+        if let Some(pred_expr) = conjunction(filters.iter().cloned()) {
+            let stripped = pred_expr
+                .transform(|node| match node {
+                    Expr::Column(c) => Ok(Transformed::yes(Expr::Column(Column::new_unqualified(c.name)))),
+                    other => Ok(Transformed::no(other)),
+                })
+                .map(|t| t.data);
+            if let Ok(stripped) = stripped {
+                if let Ok(df_schema) = DFSchema::try_from(self.file_schema.as_ref().clone()) {
+                    if let Ok(pred) = state.create_physical_expr(stripped, &df_schema) {
+                        let pred: Arc<dyn PhysicalExpr> = pred;
+                        parquet_source = parquet_source
+                            .with_predicate(pred)
+                            .with_pushdown_filters(true)
+                            .with_reorder_filters(true);
+                    }
+                }
+            }
+        }
+
         let file_scan_config =
             FileScanConfigBuilder::new(self.store_url.clone(), Arc::new(parquet_source))
                 .with_file_groups(vec![FileGroup::new(partitioned_files)])
