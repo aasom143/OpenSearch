@@ -202,19 +202,28 @@ impl ExecutionPlan for LiveDocsRowIdFilterExec {
 // ── LiveDocsRowIdTableProvider ───────────────────────────────────────────────
 
 use async_trait::async_trait;
+use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::stats::Precision;
-use datafusion::common::{ScalarValue, Statistics};
-use datafusion::datasource::physical_plan::ParquetSource;
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::common::Statistics;
 use datafusion::datasource::TableType;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion_datasource::file_groups::FileGroup;
-use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
-use datafusion_datasource::table_schema::TableSchema;
-use datafusion_datasource::PartitionedFile;
+use datafusion::parquet::arrow::arrow_reader::ArrowReaderOptions;
+use datafusion::parquet::arrow::async_reader::ParquetObjectReader;
+use datafusion::parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
+use datafusion::physical_plan::Partitioning;
+use futures::{stream, TryStreamExt};
+
+/// Name of the appended virtual row-number column (0-based physical row position within the file,
+/// produced by the parquet reader from row-group metadata with zero column I/O).
+const ROW_NUMBER_COL: &str = "__row_number__";
+/// Arrow extension-type name the parquet reader recognizes as the row-number virtual column.
+/// (The `RowNumber` extension type lives in a feature-gated module, so we set the name directly;
+/// the reader keys off this exact string — see `parquet::arrow::schema::virtual_type`.)
+const VIRTUAL_ROW_NUMBER_EXT: &str = "parquet.virtual.row_number";
+/// Arrow metadata key that carries an extension type's name.
+const ARROW_EXTENSION_NAME_KEY: &str = "ARROW:extension:name";
 
 pub use crate::api::ShardFileInfo;
 
@@ -325,68 +334,232 @@ impl TableProvider for LiveDocsRowIdTableProvider {
             "LiveDocsRowIdTableProvider: files not ordered by row_base — global ids would be wrong"
         );
         let num_file_cols = self.file_schema.fields().len();
-        let row_id_file_idx = self.file_schema.index_of(crate::ROW_ID_COLUMN_NAME)?;
-        let row_base_idx = num_file_cols;
 
-        let partitioned_files: Vec<PartitionedFile> = self
-            .files
-            .iter()
-            .map(|file_info| {
-                let mut pf = PartitionedFile::from(file_info.object_meta.clone());
-                pf.partition_values = vec![ScalarValue::Int64(Some(file_info.row_base))];
-                let file_stats = Arc::new(Statistics {
-                    num_rows: Precision::Exact(file_info.num_rows as usize),
-                    total_byte_size: Precision::Inexact(file_info.object_meta.size as usize),
-                    column_statistics: vec![
-                        datafusion::common::ColumnStatistics::new_unknown();
-                        num_file_cols
-                    ],
-                });
-                pf.with_statistics(file_stats)
-            })
-            .collect();
-
-        // Read projection = requested columns, then the two helpers (__row_id__, row_base) so the
-        // filter can compute the global id. The filter strips both, leaving the requested columns.
-        let mut read_proj: Vec<usize> = match projection {
-            Some(proj) => proj.clone(),
+        // Requested columns as indices into `file_schema`. `row_base` (the trailing partition
+        // column in `table_schema`) is never read from parquet — it is folded into the global id
+        // per file — so drop it if referenced. `__row_id__` is also NOT read: the row's physical
+        // position now comes from the zero-I/O virtual row-number column instead of a stored column.
+        let proj: Vec<usize> = match projection {
+            Some(p) => p.iter().copied().filter(|&i| i < num_file_cols).collect(),
             None => (0..num_file_cols).collect(),
         };
-        if !read_proj.contains(&row_id_file_idx) {
-            read_proj.push(row_id_file_idx);
-        }
-        if !read_proj.contains(&row_base_idx) {
-            read_proj.push(row_base_idx);
-        }
 
-        let table_schema =
-            TableSchema::new(self.file_schema.clone(), vec![Arc::new(Field::new(ROW_BASE_COL, DataType::Int64, true))]);
-        // No predicate pushdown into the parquet reader: for scattered predicates (the common
-        // pure-DF case, e.g. RegionID=229) late materialization skips no __row_id__ pages, so it
-        // reads the same bytes AND adds fragmented-decode + RowFilter overhead — a net loss. The
-        // query predicate is applied by the (Inexact) FilterExec above the scan instead.
-        let parquet_source = ParquetSource::new(table_schema);
+        // Output schema = requested file columns, in the requested order.
+        let out_fields: Vec<Arc<Field>> =
+            proj.iter().map(|&i| self.file_schema.fields()[i].clone()).collect();
+        let output_schema = Arc::new(Schema::new(out_fields));
 
-        let file_scan_config =
-            FileScanConfigBuilder::new(self.store_url.clone(), Arc::new(parquet_source))
-                .with_file_groups(vec![FileGroup::new(partitioned_files)])
-                .with_projection_indices(Some(read_proj))
-                .map_err(|e| DataFusionError::Internal(format!("{}", e)))?
-                .build();
+        // The parquet reader returns projected leaves in ascending file order. Read = sorted-unique
+        // proj; `out_col_positions[k]` maps the k-th requested column to its slot in the read batch
+        // so we can re-emit in the caller's requested order. (Assumes a flat schema — arrow field
+        // index == parquet leaf index — which holds for these analytics tables.)
+        let mut read_leaf_indices = proj.clone();
+        read_leaf_indices.sort_unstable();
+        read_leaf_indices.dedup();
+        let out_col_positions: Vec<usize> = proj
+            .iter()
+            .map(|i| read_leaf_indices.binary_search(i).expect("proj is a subset of read_leaf_indices"))
+            .collect();
 
-        let scan = DataSourceExec::from_data_source(file_scan_config);
-        // Build the deleted bitmap now (scan time — the getLiveDocs binding exists).
+        // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
         let deleted = Arc::new(self.build_deleted());
-        let filter = LiveDocsRowIdFilterExec::try_new(
-            scan,
+
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(output_schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+
+        Ok(Arc::new(VirtualRowIdDeleteExec {
+            files: Arc::new(self.files.clone()),
+            store_url: self.store_url.clone(),
+            read_leaf_indices,
+            out_col_positions: Arc::new(out_col_positions),
+            output_schema,
             deleted,
-            crate::ROW_ID_COLUMN_NAME,
-            ROW_BASE_COL,
-        )?;
-        Ok(Arc::new(filter))
+            properties,
+        }))
     }
 
     fn statistics(&self) -> Option<Statistics> {
         None
+    }
+}
+
+// ── VirtualRowIdDeleteExec ───────────────────────────────────────────────────
+
+/// Leaf scan that reads the requested columns from each parquet file PLUS a zero-I/O virtual
+/// row-number column (physical 0-based row position within the file, produced by the parquet reader
+/// from row-group metadata — no column bytes read), drops shard-globally-deleted rows by value
+/// (`row_number + row_base` ∈ deleted), and emits only the requested columns.
+///
+/// This replaces reading the stored `__row_id__` column (see [`LiveDocsRowIdFilterExec`]): the
+/// position previously read from a ~6 B/row on-disk column is now free, so `bytes_scanned` falls
+/// back to the query columns only.
+#[derive(Debug)]
+pub struct VirtualRowIdDeleteExec {
+    files: Arc<Vec<ShardFileInfo>>,
+    store_url: ObjectStoreUrl,
+    /// Sorted, de-duplicated file-column indices to read (parquet leaf indices for a flat schema).
+    read_leaf_indices: Vec<usize>,
+    /// For each requested output column, its slot within the read batch (excludes row_number).
+    out_col_positions: Arc<Vec<usize>>,
+    output_schema: SchemaRef,
+    deleted: Arc<RoaringTreemap>,
+    properties: Arc<PlanProperties>,
+}
+
+impl VirtualRowIdDeleteExec {
+    /// Drop deleted rows (by `row_number + row_base`) and re-emit the requested columns in order.
+    fn mask_and_project(
+        batch: &RecordBatch,
+        deleted: &RoaringTreemap,
+        row_base: i64,
+        rownum_idx: usize,
+        out_col_positions: &[usize],
+        output_schema: &SchemaRef,
+    ) -> Result<RecordBatch> {
+        // Fast path: no deletions in this shard — just drop the virtual column and reorder.
+        if deleted.is_empty() {
+            let cols: Vec<ArrayRef> =
+                out_col_positions.iter().map(|&p| batch.column(p).clone()).collect();
+            return RecordBatch::try_new_with_options(
+                output_schema.clone(),
+                cols,
+                &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+            )
+            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
+        }
+
+        let n = batch.num_rows();
+        let rownum = batch
+            .column(rownum_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| DataFusionError::Internal("virtual row_number column is not Int64".into()))?;
+        let mut keep = Vec::with_capacity(n);
+        for i in 0..n {
+            let global = rownum.value(i) + row_base;
+            keep.push(!deleted.contains(global as u64));
+        }
+        let mask = BooleanArray::from(keep);
+        let filtered = filter_record_batch(batch, &mask)
+            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+        let cols: Vec<ArrayRef> =
+            out_col_positions.iter().map(|&p| filtered.column(p).clone()).collect();
+        RecordBatch::try_new_with_options(
+            output_schema.clone(),
+            cols,
+            &RecordBatchOptions::new().with_row_count(Some(filtered.num_rows())),
+        )
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    }
+}
+
+impl DisplayAs for VirtualRowIdDeleteExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "VirtualRowIdDeleteExec: files={}, deleted={}, position=virtual_row_number",
+            self.files.len(),
+            self.deleted.len()
+        )
+    }
+}
+
+impl ExecutionPlan for VirtualRowIdDeleteExec {
+    fn name(&self) -> &str {
+        "VirtualRowIdDeleteExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let store = context.runtime_env().object_store(&self.store_url)?;
+        let files = Arc::clone(&self.files);
+        let deleted = Arc::clone(&self.deleted);
+        let read_leaf_indices = self.read_leaf_indices.clone();
+        let rownum_idx = read_leaf_indices.len(); // virtual row_number is appended last
+        let out_col_positions = Arc::clone(&self.out_col_positions);
+        let output_schema = self.output_schema.clone();
+
+        // One record-batch stream per file, concatenated. Each file's virtual row_number is 0-based
+        // within that file, so we add that file's row_base to form the shard-global id.
+        let batches = stream::iter(files.as_ref().clone().into_iter())
+            .map(move |file| {
+                let store = Arc::clone(&store);
+                let deleted = Arc::clone(&deleted);
+                let read_leaf_indices = read_leaf_indices.clone();
+                let out_col_positions = Arc::clone(&out_col_positions);
+                let output_schema = output_schema.clone();
+                async move {
+                    let mut ext_md = std::collections::HashMap::new();
+                    ext_md.insert(
+                        ARROW_EXTENSION_NAME_KEY.to_string(),
+                        VIRTUAL_ROW_NUMBER_EXT.to_string(),
+                    );
+                    let row_number_field = Arc::new(
+                        Field::new(ROW_NUMBER_COL, DataType::Int64, false).with_metadata(ext_md),
+                    );
+                    let reader = ParquetObjectReader::new(store, file.object_meta.location.clone())
+                        .with_file_size(file.object_meta.size);
+                    let options = ArrowReaderOptions::new()
+                        .with_virtual_columns(vec![row_number_field])
+                        .map_err(|e| DataFusionError::Execution(format!("virtual column: {e}")))?;
+                    let builder = ParquetRecordBatchStreamBuilder::new_with_options(reader, options)
+                        .await
+                        .map_err(|e| DataFusionError::Execution(format!("open parquet: {e}")))?;
+                    let mask =
+                        ProjectionMask::leaves(builder.parquet_schema(), read_leaf_indices.iter().copied());
+                    let rb_stream = builder
+                        .with_projection(mask)
+                        .build()
+                        .map_err(|e| DataFusionError::Execution(format!("build parquet stream: {e}")))?;
+                    let row_base = file.row_base;
+                    let mapped = rb_stream.map(move |res| {
+                        res.map_err(|e| DataFusionError::Execution(format!("read parquet: {e}")))
+                            .and_then(|batch| {
+                                Self::mask_and_project(
+                                    &batch,
+                                    &deleted,
+                                    row_base,
+                                    rownum_idx,
+                                    &out_col_positions,
+                                    &output_schema,
+                                )
+                            })
+                    });
+                    Ok::<_, DataFusionError>(mapped)
+                }
+            })
+            .buffered(1)
+            .try_flatten();
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.output_schema.clone(),
+            batches,
+        )))
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.output_schema.clone()
     }
 }
