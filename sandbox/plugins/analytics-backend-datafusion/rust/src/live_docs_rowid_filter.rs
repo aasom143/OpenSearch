@@ -375,12 +375,8 @@ impl TableProvider for LiveDocsRowIdTableProvider {
                 .build();
 
         let scan = DataSourceExec::from_data_source(file_scan_config);
-        // EXPERIMENT: empty deleted bitmap — the node still reads __row_id__ + row_base and strips
-        // them (so the output schema is valid and the columns are not pruned), but filters ZERO
-        // rows. Isolates the read cost: if bytes_scanned stays ~457MB while 0 rows are dropped,
-        // the cost is the __row_id__ projection read, not the deletion filtering. Restore
-        // `self.build_deleted()` after measuring.
-        let deleted = Arc::new(RoaringTreemap::new());
+        // Build the deleted bitmap now (scan time — the getLiveDocs binding exists).
+        let deleted = Arc::new(self.build_deleted());
         let filter = LiveDocsRowIdFilterExec::try_new(
             scan,
             deleted,
