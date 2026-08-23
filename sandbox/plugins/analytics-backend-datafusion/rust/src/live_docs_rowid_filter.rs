@@ -324,7 +324,7 @@ impl TableProvider for LiveDocsRowIdTableProvider {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -364,9 +364,36 @@ impl TableProvider for LiveDocsRowIdTableProvider {
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
         let deleted = Arc::new(self.build_deleted());
 
+        // Balance row groups across `target_partitions` partitions by row count so the scan
+        // parallelizes across cores (a single partition reads all files serially — ~Nx slower).
+        let mut all_rgs: Vec<(usize, usize, u64)> = Vec::new();
+        let mut total_rows: u64 = 0;
+        for (fi, file) in self.files.iter().enumerate() {
+            for (ri, &rows) in file.row_group_row_counts.iter().enumerate() {
+                all_rgs.push((fi, ri, rows));
+                total_rows += rows;
+            }
+        }
+        let target_partitions = state.config().target_partitions().max(1);
+        let p = target_partitions.min(all_rgs.len().max(1));
+        let per_partition_rows = ((total_rows as f64) / (p as f64)).ceil() as u64;
+        let mut parts: Vec<Vec<(usize, usize)>> = vec![Vec::new(); p];
+        let mut bucket = 0usize;
+        let mut acc: u64 = 0;
+        for (fi, ri, rows) in all_rgs {
+            if acc >= per_partition_rows && bucket + 1 < p {
+                bucket += 1;
+                acc = 0;
+            }
+            parts[bucket].push((fi, ri));
+            acc += rows;
+        }
+        parts.retain(|v| !v.is_empty());
+        let num_parts = parts.len().max(1);
+
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema.clone()),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(num_parts),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
@@ -378,6 +405,7 @@ impl TableProvider for LiveDocsRowIdTableProvider {
             out_col_positions: Arc::new(out_col_positions),
             output_schema,
             deleted,
+            partitions: Arc::new(parts),
             properties,
         }))
     }
@@ -407,6 +435,9 @@ pub struct VirtualRowIdDeleteExec {
     out_col_positions: Arc<Vec<usize>>,
     output_schema: SchemaRef,
     deleted: Arc<RoaringTreemap>,
+    /// One entry per output partition: the `(file_idx, row_group_idx)` pairs it reads. Row groups
+    /// are balanced across partitions by row count so the scan parallelizes like `DataSourceExec`.
+    partitions: Arc<Vec<Vec<(usize, usize)>>>,
     properties: Arc<PlanProperties>,
 }
 
@@ -490,7 +521,7 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let store = context.runtime_env().object_store(&self.store_url)?;
@@ -501,15 +532,29 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
         let out_col_positions = Arc::clone(&self.out_col_positions);
         let output_schema = self.output_schema.clone();
 
-        // One record-batch stream per file, concatenated. Each file's virtual row_number is 0-based
-        // within that file, so we add that file's row_base to form the shard-global id.
-        let batches = stream::iter(files.as_ref().clone().into_iter())
-            .map(move |file| {
+        // Group this partition's (file_idx, row_group_idx) assignment by file, preserving order,
+        // so each file is opened once and read via `with_row_groups`.
+        let mut per_file: Vec<(usize, Vec<usize>)> = Vec::new();
+        for &(fi, ri) in self.partitions.get(partition).map(|v| v.as_slice()).unwrap_or(&[]) {
+            match per_file.last_mut() {
+                Some(last) if last.0 == fi => last.1.push(ri),
+                _ => per_file.push((fi, vec![ri])),
+            }
+        }
+
+        // One record-batch stream per file in this partition, concatenated. The virtual row_number
+        // is 0-based within its file (correct even for a row-group subset), so we add the file's
+        // row_base to form the shard-global id.
+        let batches = stream::iter(per_file.into_iter())
+            .map(move |(fi, row_groups)| {
                 let store = Arc::clone(&store);
                 let deleted = Arc::clone(&deleted);
                 let read_leaf_indices = read_leaf_indices.clone();
                 let out_col_positions = Arc::clone(&out_col_positions);
                 let output_schema = output_schema.clone();
+                let file_location = files[fi].object_meta.location.clone();
+                let file_size = files[fi].object_meta.size;
+                let row_base = files[fi].row_base;
                 async move {
                     let mut ext_md = std::collections::HashMap::new();
                     ext_md.insert(
@@ -519,8 +564,8 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
                     let row_number_field = Arc::new(
                         Field::new(ROW_NUMBER_COL, DataType::Int64, false).with_metadata(ext_md),
                     );
-                    let reader = ParquetObjectReader::new(store, file.object_meta.location.clone())
-                        .with_file_size(file.object_meta.size);
+                    let reader = ParquetObjectReader::new(store, file_location)
+                        .with_file_size(file_size);
                     let options = ArrowReaderOptions::new()
                         .with_virtual_columns(vec![row_number_field])
                         .map_err(|e| DataFusionError::Execution(format!("virtual column: {e}")))?;
@@ -531,9 +576,9 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
                         ProjectionMask::leaves(builder.parquet_schema(), read_leaf_indices.iter().copied());
                     let rb_stream = builder
                         .with_projection(mask)
+                        .with_row_groups(row_groups)
                         .build()
                         .map_err(|e| DataFusionError::Execution(format!("build parquet stream: {e}")))?;
-                    let row_base = file.row_base;
                     let mapped = rb_stream.map(move |res| {
                         res.map_err(|e| DataFusionError::Execution(format!("read parquet: {e}")))
                             .and_then(|batch| {
