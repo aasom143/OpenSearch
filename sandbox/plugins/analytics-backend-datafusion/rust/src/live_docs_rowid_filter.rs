@@ -23,7 +23,7 @@ use native_bridge_common::log_info;
 
 use datafusion::arrow::array::{Array, BooleanArray, Int64Array};
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::arrow::compute::filter_record_batch;
+use datafusion::arrow::compute::{filter_record_batch, FilterBuilder};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -612,15 +612,21 @@ impl VirtualRowIdDeleteExec {
         stats.deletes_cleared.fetch_add(cleared, Ordering::Relaxed);
 
         let filter_start = Instant::now();
+        let kept = n - cleared as usize;
+        // Build the filter predicate once, then apply it ONLY to the output columns — never to the
+        // virtual row_number (an Int64 we read solely to build the mask and then discard). Filtering
+        // the whole batch would copy ~kept row_number values for nothing (the largest column here).
         let mask = BooleanArray::from(keep);
-        let filtered = filter_record_batch(batch, &mask)
+        let predicate = FilterBuilder::new(&mask).optimize().build();
+        let cols: Vec<ArrayRef> = out_col_positions
+            .iter()
+            .map(|&p| predicate.filter(batch.column(p)))
+            .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
-        let cols: Vec<ArrayRef> =
-            out_col_positions.iter().map(|&p| filtered.column(p).clone()).collect();
         let out = RecordBatch::try_new_with_options(
             output_schema.clone(),
             cols,
-            &RecordBatchOptions::new().with_row_count(Some(filtered.num_rows())),
+            &RecordBatchOptions::new().with_row_count(Some(kept)),
         )
         .map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
         stats
