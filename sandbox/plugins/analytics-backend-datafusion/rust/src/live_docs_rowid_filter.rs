@@ -690,6 +690,10 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let store = context.runtime_env().object_store(&self.store_url)?;
+        // Match DataSourceExec's batch size — the parquet reader defaults to 1024 rows/batch, which
+        // would produce ~8x more (tiny) batches and inflate all per-batch costs (filter predicate
+        // build, mask alloc, reader overhead).
+        let batch_size = context.session_config().batch_size();
         let files = Arc::clone(&self.files);
         // Sorted (ascending) global deleted ids — built directly as a Vec (no RoaringTreemap),
         // used per batch with a range lookup instead of a per-row contains() over all scanned rows.
@@ -747,6 +751,7 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
                     let rb_stream = builder
                         .with_projection(mask)
                         .with_row_groups(row_groups)
+                        .with_batch_size(batch_size)
                         .build()
                         .map_err(|e| DataFusionError::Execution(format!("build parquet stream: {e}")))?;
                     let mapped = rb_stream.map(move |res| {
