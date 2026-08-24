@@ -205,6 +205,7 @@ use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::Statistics;
 use datafusion::datasource::TableType;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -324,7 +325,7 @@ impl TableProvider for LiveDocsRowIdTableProvider {
 
     async fn scan(
         &self,
-        state: &dyn Session,
+        _state: &dyn Session,
         projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -364,48 +365,20 @@ impl TableProvider for LiveDocsRowIdTableProvider {
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
         let deleted = Arc::new(self.build_deleted());
 
-        // Balance row groups across `target_partitions` partitions by row count so the scan
-        // parallelizes across cores (a single partition reads all files serially — ~Nx slower).
-        let mut all_rgs: Vec<(usize, usize, u64)> = Vec::new();
-        let mut total_rows: u64 = 0;
-        for (fi, file) in self.files.iter().enumerate() {
-            for (ri, &rows) in file.row_group_row_counts.iter().enumerate() {
-                all_rgs.push((fi, ri, rows));
-                total_rows += rows;
-            }
-        }
-        // EXPERIMENT: the delete session reports target_partitions=1, forcing a serial scan. Force
-        // RG-level parallelism (up to available cores) to disambiguate whether the slowness is lost
-        // parallelism vs. our reader lacking prefetch. Revert to `state.config().target_partitions()`
-        // once understood.
-        let configured = state.config().target_partitions().max(1);
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-        let target_partitions = configured.max(cores);
-        let p = target_partitions.min(all_rgs.len().max(1));
-        let per_partition_rows = ((total_rows as f64) / (p as f64)).ceil() as u64;
-        let mut parts: Vec<Vec<(usize, usize)>> = vec![Vec::new(); p];
-        let mut bucket = 0usize;
-        let mut acc: u64 = 0;
-        for (fi, ri, rows) in all_rgs {
-            if acc >= per_partition_rows && bucket + 1 < p {
-                bucket += 1;
-                acc = 0;
-            }
-            parts[bucket].push((fi, ri));
-            acc += rows;
-        }
-        parts.retain(|v| !v.is_empty());
-        let num_parts = parts.len().max(1);
-
+        // Start as a single partition (all row groups). DataFusion's EnforceDistribution rule
+        // repartitions us up to the session's target_partitions via `repartitioned()` — exactly
+        // like DataSourceExec — so parallelism is driven by the standard knob, not a hardcoded one.
+        let files = Arc::new(self.files.clone());
+        let parts = assign_row_groups(&files, 1);
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema.clone()),
-            Partitioning::UnknownPartitioning(num_parts),
+            Partitioning::UnknownPartitioning(parts.len().max(1)),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
 
         Ok(Arc::new(VirtualRowIdDeleteExec {
-            files: Arc::new(self.files.clone()),
+            files,
             store_url: self.store_url.clone(),
             read_leaf_indices,
             out_col_positions: Arc::new(out_col_positions),
@@ -422,6 +395,38 @@ impl TableProvider for LiveDocsRowIdTableProvider {
 }
 
 // ── VirtualRowIdDeleteExec ───────────────────────────────────────────────────
+
+/// Balance all `(file_idx, row_group_idx)` pairs across `num_partitions` buckets by row count,
+/// mirroring DataFusion's file-group partitioner. Used both for the initial single-partition plan
+/// and by `repartitioned()` when EnforceDistribution asks for more partitions.
+fn assign_row_groups(files: &[ShardFileInfo], num_partitions: usize) -> Vec<Vec<(usize, usize)>> {
+    let mut all_rgs: Vec<(usize, usize, u64)> = Vec::new();
+    let mut total_rows: u64 = 0;
+    for (fi, file) in files.iter().enumerate() {
+        for (ri, &rows) in file.row_group_row_counts.iter().enumerate() {
+            all_rgs.push((fi, ri, rows));
+            total_rows += rows;
+        }
+    }
+    let p = num_partitions.max(1).min(all_rgs.len().max(1));
+    let per_partition_rows = ((total_rows as f64) / (p as f64)).ceil().max(1.0) as u64;
+    let mut parts: Vec<Vec<(usize, usize)>> = vec![Vec::new(); p];
+    let mut bucket = 0usize;
+    let mut acc: u64 = 0;
+    for (fi, ri, rows) in all_rgs {
+        if acc >= per_partition_rows && bucket + 1 < p {
+            bucket += 1;
+            acc = 0;
+        }
+        parts[bucket].push((fi, ri));
+        acc += rows;
+    }
+    parts.retain(|v| !v.is_empty());
+    if parts.is_empty() {
+        parts.push(Vec::new());
+    }
+    parts
+}
 
 /// Leaf scan that reads the requested columns from each parquet file PLUS a zero-I/O virtual
 /// row-number column (physical 0-based row position within the file, produced by the parquet reader
@@ -448,6 +453,26 @@ pub struct VirtualRowIdDeleteExec {
 }
 
 impl VirtualRowIdDeleteExec {
+    /// Clone this exec with a new partition assignment (used by `repartitioned()`).
+    fn with_partitions(&self, parts: Vec<Vec<(usize, usize)>>) -> Arc<dyn ExecutionPlan> {
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(self.output_schema.clone()),
+            Partitioning::UnknownPartitioning(parts.len().max(1)),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Arc::new(VirtualRowIdDeleteExec {
+            files: Arc::clone(&self.files),
+            store_url: self.store_url.clone(),
+            read_leaf_indices: self.read_leaf_indices.clone(),
+            out_col_positions: Arc::clone(&self.out_col_positions),
+            output_schema: self.output_schema.clone(),
+            deleted: Arc::clone(&self.deleted),
+            partitions: Arc::new(parts),
+            properties,
+        })
+    }
+
     /// Drop deleted rows (by `row_number + row_base`) and re-emit the requested columns in order.
     fn mask_and_project(
         batch: &RecordBatch,
@@ -523,6 +548,23 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(self)
+    }
+
+    /// Split the row groups across `target_partitions` so EnforceDistribution can parallelize the
+    /// scan — same mechanism DataSourceExec uses. Returns `None` when it wouldn't add partitions.
+    fn repartitioned(
+        &self,
+        target_partitions: usize,
+        _config: &ConfigOptions,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+        if target_partitions <= self.partitions.len() {
+            return Ok(None);
+        }
+        let parts = assign_row_groups(&self.files, target_partitions);
+        if parts.len() <= self.partitions.len() {
+            return Ok(None);
+        }
+        Ok(Some(self.with_partitions(parts)))
     }
 
     fn execute(
