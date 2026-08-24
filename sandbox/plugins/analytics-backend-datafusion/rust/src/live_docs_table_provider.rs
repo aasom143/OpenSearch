@@ -12,6 +12,10 @@
 
 use std::sync::Arc;
 
+use std::time::{Duration, Instant};
+
+use native_bridge_common::log_info;
+
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
@@ -34,6 +38,16 @@ use datafusion::datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroup
 use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::indexed_table::parquet_bridge;
 use datafusion::execution::cache::cache_manager::FileMetadataCache;
+
+/// Instrumentation: per-file RowSelection stats, aggregated in `scan()` to attribute cost.
+/// `selectors` (the total RowSelector run count) is the key metric — it drives the parquet
+/// reader's fragmented-decode overhead when deletes are scattered.
+#[derive(Default)]
+struct AccessPlanStats {
+    selectors: usize,
+    rgs_with_selection: usize,
+    skipped_rows: usize,
+}
 
 /// Per-file info needed to build the liveDocs RowSelection.
 pub struct LiveDocsFileInfo {
@@ -82,10 +96,11 @@ impl LiveDocsTableProvider {
     fn build_access_plan(
         live_docs: &[u64],
         row_group_row_counts: &[u64],
-    ) -> ParquetAccessPlan {
+    ) -> (ParquetAccessPlan, AccessPlanStats) {
 
         let num_rgs = row_group_row_counts.len();
         let mut access_plan = ParquetAccessPlan::new_all(num_rgs);
+        let mut stats = AccessPlanStats::default();
 
         let mut doc_offset: usize = 0;
         for (rg_idx, &rg_rows) in row_group_row_counts.iter().enumerate() {
@@ -100,10 +115,19 @@ impl LiveDocsTableProvider {
             // If no deleted rows, leave the row group as Scan (no selection needed) so the
             // parquet reader keeps its efficient full-RG decode path.
             if any_dead {
+                // Instrumentation: the RowSelector run count is what drives the parquet
+                // reader's fragmented-decode overhead for scattered deletes.
+                stats.selectors += selectors.len();
+                stats.rgs_with_selection += 1;
+                stats.skipped_rows += selectors
+                    .iter()
+                    .filter(|s| s.skip)
+                    .map(|s| s.row_count)
+                    .sum::<usize>();
                 access_plan.set(rg_idx, RowGroupAccess::Selection(RowSelection::from(selectors)));
             }
         }
-        access_plan
+        (access_plan, stats)
     }
 
     /// Compute the select/skip run selectors for one row group's slice
@@ -221,10 +245,18 @@ impl TableProvider for LiveDocsTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let mut partitioned_files: Vec<PartitionedFile> = Vec::with_capacity(self.files.len());
 
+        // INSTRUMENTATION: attribute scan-setup cost across files.
+        let setup_start = Instant::now();
+        let (mut meta_dur, mut livedocs_dur, mut build_dur) =
+            (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut files_with_deletes = 0usize;
+        let mut tot = AccessPlanStats::default();
+
         for file_info in &self.files {
             let mut pf = PartitionedFile::from(file_info.object_meta.clone());
 
             // Load parquet metadata from cache to get RG row counts and actual num_rows.
+            let t_meta = Instant::now();
             let pq_meta_result = parquet_bridge::load_parquet_metadata_with_meta(
                 Arc::clone(&self.store),
                 &file_info.object_meta.location,
@@ -232,6 +264,7 @@ impl TableProvider for LiveDocsTableProvider {
                 Arc::clone(&self.metadata_cache),
             )
             .await;
+            meta_dur += t_meta.elapsed();
 
             if let Ok((_schema, _size, pq_meta)) = pq_meta_result {
                 let num_rows: i64 = pq_meta
@@ -246,16 +279,24 @@ impl TableProvider for LiveDocsTableProvider {
                     .collect();
 
                 // Fetch liveDocs for this file's segment
+                let t_ld = Instant::now();
                 let live_docs_result = get_live_docs(
                     self.context_id,
                     file_info.writer_generation,
                     0,
                     num_rows as i32,
                 );
+                livedocs_dur += t_ld.elapsed();
 
                 match live_docs_result {
                     Ok(Some(bitset)) => {
-                        let access_plan = Self::build_access_plan(&bitset, &rg_row_counts);
+                        let t_bp = Instant::now();
+                        let (access_plan, stats) = Self::build_access_plan(&bitset, &rg_row_counts);
+                        build_dur += t_bp.elapsed();
+                        files_with_deletes += 1;
+                        tot.selectors += stats.selectors;
+                        tot.rgs_with_selection += stats.rgs_with_selection;
+                        tot.skipped_rows += stats.skipped_rows;
                         pf = pf.with_extensions(Arc::new(access_plan));
                     }
                     Ok(None) => {
@@ -269,6 +310,20 @@ impl TableProvider for LiveDocsTableProvider {
 
             partitioned_files.push(pf);
         }
+
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        log_info!(
+            "[rowselection] scan setup: files={} files_with_deletes={} | meta_load={:.1}ms get_live_docs={:.1}ms build_access_plan={:.1}ms setup_total={:.1}ms | deleted_rows={} rgs_with_selection={} total_selectors(run_count)={}",
+            self.files.len(),
+            files_with_deletes,
+            ms(meta_dur),
+            ms(livedocs_dur),
+            ms(build_dur),
+            ms(setup_start.elapsed()),
+            tot.skipped_rows,
+            tot.rgs_with_selection,
+            tot.selectors,
+        );
 
         let file_groups = vec![FileGroup::new(partitioned_files)];
         let table_schema = TableSchema::new(self.schema.clone(), vec![]);
