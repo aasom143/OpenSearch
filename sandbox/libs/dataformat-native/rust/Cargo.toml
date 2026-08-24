@@ -97,3 +97,10 @@ codegen-units = 16
 incremental = true
 debug = "full"
 strip = false
+
+# Forward-port of upstream DataFusion 55's parquet virtual-column support onto the pinned 54.0.0
+# crate. The vendored copy is verbatim upstream; our change is a small diff enabling the
+# `row_number` virtual column so DataSourceExec can emit a zero-I/O physical row position
+# (used for deleted-doc filtering). Remove when the workspace bumps to DataFusion 55.
+[patch.crates-io]
+datafusion-datasource-parquet = { path = "vendor/datafusion-datasource-parquet" }
