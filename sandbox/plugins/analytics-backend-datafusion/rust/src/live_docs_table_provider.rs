@@ -137,8 +137,40 @@ impl LiveDocsTableProvider {
     /// Words that are entirely alive (all-ones) or entirely deleted (all-zeros) advance 64 rows
     /// at once; only "mixed" words straddling a deletion boundary are walked bit-by-bit. `cur_len`
     /// starts at 0 on a (nominal) live run so the initial empty run is never emitted.
+    /// Count deleted rows (cleared bits) in `[rg_start, rg_start + rg_rows)` of the liveDocs bitset.
+    /// Word-level popcount: mask off the partial leading/trailing words and count set (alive) bits,
+    /// subtracting from the chunk width to get deletions. Used only to pre-size the selector Vec.
+    fn count_deleted(live_docs: &[u64], rg_start: usize, rg_rows: usize) -> usize {
+        let mut deleted = 0usize;
+        let mut i = 0usize;
+        while i < rg_rows {
+            let abs = rg_start + i;
+            let word_idx = abs >> 6;
+            let bit = abs & 63;
+            let word = if word_idx < live_docs.len() {
+                live_docs[word_idx]
+            } else {
+                0
+            };
+            let chunk = (64 - bit).min(rg_rows - i);
+            let mask: u64 = if chunk == 64 { u64::MAX } else { (1u64 << chunk) - 1 };
+            let seg = (word >> bit) & mask;
+            deleted += chunk - seg.count_ones() as usize;
+            i += chunk;
+        }
+        deleted
+    }
+
     fn rg_selectors(live_docs: &[u64], rg_start: usize, rg_rows: usize) -> (Vec<RowSelector>, bool) {
-        let mut selectors: Vec<RowSelector> = Vec::new();
+        // Pre-size the selector Vec so scattered deletes don't trigger repeated reallocation.
+        // Each deleted row contributes at most two runs (a skip and the following select), so
+        // `2 * deleted + 2` bounds the selector count. Cap the pre-allocation at 64Ki entries so a
+        // single large contiguous deletion (few runs, but a huge deleted count) can't over-allocate;
+        // pathological groups beyond the cap simply grow as before. The popcount scan is O(words)
+        // and autovectorizes, so it's cheap next to the bit-walk and the RowSelection::from below.
+        let deleted = Self::count_deleted(live_docs, rg_start, rg_rows);
+        let cap = (2 * deleted + 2).min(1 << 16);
+        let mut selectors: Vec<RowSelector> = Vec::with_capacity(cap);
         let mut cur_live = true;
         let mut cur_len: usize = 0;
         let mut any_dead = false;
@@ -433,6 +465,14 @@ mod tests {
             let (opt, opt_dead) = LiveDocsTableProvider::rg_selectors(&live, rg_start, rg_rows);
             let (nai, nai_dead) = rg_selectors_naive(&live, rg_start, rg_rows);
             let expected = alive_slice(&live, rg_start, rg_rows);
+
+            // count_deleted (used to pre-size the selector Vec) must match the true deletion count.
+            let expected_deleted = expected.iter().filter(|&&alive| alive == false).count();
+            assert_eq!(
+                LiveDocsTableProvider::count_deleted(&live, rg_start, rg_rows),
+                expected_deleted,
+                "count_deleted mismatch (rg_start={rg_start}, rg_rows={rg_rows})"
+            );
 
             assert_eq!(expand(&opt), expected, "optimized selectors mismatch bitset");
             assert_eq!(expand(&nai), expected, "naive selectors mismatch bitset");

@@ -332,13 +332,22 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         }
         int wordCount = (span + 63) >>> 6;
 
-        // Primary fast path: OpenSearch's LiveDocs (SparseLiveDocs for <=1% deletion,
-        // DenseLiveDocs otherwise — the actual type getLiveDocs() returns) exposes an
-        // O(deletedCount) iterator over DELETED docs. Fill the range all-alive, then clear only
-        // the deleted bits — O(words + deletions) — instead of O(span) per-bit reads. This is the
-        // path that matters: per-bit SparseLiveDocs.get() over tens of millions of docs was the
-        // dominant query overhead.
         if (liveDocs instanceof org.apache.lucene.util.LiveDocs ld) {
+            // Dense segment fast path: DenseLiveDocs.liveDocsIterator() wraps the LIVE-docs
+            // FixedBitSet in a BitSetIterator. Recover that bitset and bulk-copy its words —
+            // O(words) — instead of walking deletedDocsIterator(), which for dense segments is a
+            // FilteredDocIdSetIterator that probes every doc in [0, maxDoc). Returns null for
+            // SparseLiveDocs (its liveDocsIterator is a FilteredDocIdSetIterator, not a
+            // BitSetIterator), so we fall through to the sparse path below.
+            FixedBitSet liveBits = org.apache.lucene.util.BitSetIterator.getFixedBitSetOrNull(ld.liveDocsIterator());
+            if (liveBits != null) {
+                copyLiveWords(liveBits, out, effectiveMinDoc, span, wordCount);
+                return wordCount;
+            }
+
+            // Sparse segment fast path: SparseLiveDocs stores DELETED docs in a SparseFixedBitSet
+            // and exposes a genuinely O(deletedCount) iterator over them. Fill the range all-alive,
+            // then clear only the deleted bits — O(words + deletions) — instead of O(span) per-bit.
             for (int w = 0; w < wordCount; w++) {
                 out.setAtIndex(ValueLayout.JAVA_LONG, w, -1L);
             }
@@ -365,35 +374,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
         // Fallback: direct word-level copy from a raw FixedBitSet backing array — O(words).
         if (liveDocs instanceof FixedBitSet fbs) {
-            long[] srcWords = fbs.getBits();
-            int startWord = effectiveMinDoc >>> 6;
-            int bitOffset = effectiveMinDoc & 63;
-
-            if (bitOffset == 0) {
-                // Word-aligned: bulk-copy the relevant slice (bounded by the backing length).
-                int availWords = Math.max(0, srcWords.length - startWord);
-                int copyWords = Math.min(wordCount, availWords);
-                if (copyWords > 0) {
-                    MemorySegment.copy(srcWords, startWord, out, ValueLayout.JAVA_LONG, 0L, copyWords);
-                }
-                for (int w = copyWords; w < wordCount; w++) {
-                    out.setAtIndex(ValueLayout.JAVA_LONG, w, 0L);
-                }
-            } else {
-                // Unaligned start: shift pairs of source words to produce each output word.
-                for (int i = 0; i < wordCount; i++) {
-                    long lo = (startWord + i < srcWords.length) ? srcWords[startWord + i] >>> bitOffset : 0L;
-                    long hi = (startWord + i + 1 < srcWords.length) ? srcWords[startWord + i + 1] << (64 - bitOffset) : 0L;
-                    out.setAtIndex(ValueLayout.JAVA_LONG, i, lo | hi);
-                }
-            }
-            // Clear bits beyond `span` in the final word so alive docs past effectiveMaxDoc
-            // don't leak into the result.
-            int trailing = span & 63;
-            if (trailing != 0) {
-                long lastWord = out.getAtIndex(ValueLayout.JAVA_LONG, wordCount - 1);
-                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, lastWord & ((1L << trailing) - 1));
-            }
+            copyLiveWords(fbs, out, effectiveMinDoc, span, wordCount);
             return wordCount;
         }
 
@@ -414,6 +395,43 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
         }
         return wordCount;
+    }
+
+    /**
+     * Copy the LIVE-docs slice {@code [effectiveMinDoc, effectiveMinDoc + span)} of a
+     * {@link FixedBitSet} into {@code out} as {@code wordCount} packed longs (a set bit == live).
+     * Word-aligned starts bulk-copy the backing array; unaligned starts shift adjacent word pairs.
+     * Bits beyond {@code span} in the final word are cleared so alive docs past the range don't leak.
+     */
+    private static void copyLiveWords(FixedBitSet fbs, MemorySegment out, int effectiveMinDoc, int span, int wordCount) {
+        long[] srcWords = fbs.getBits();
+        int startWord = effectiveMinDoc >>> 6;
+        int bitOffset = effectiveMinDoc & 63;
+
+        if (bitOffset == 0) {
+            // Word-aligned: bulk-copy the relevant slice (bounded by the backing length).
+            int availWords = Math.max(0, srcWords.length - startWord);
+            int copyWords = Math.min(wordCount, availWords);
+            if (copyWords > 0) {
+                MemorySegment.copy(srcWords, startWord, out, ValueLayout.JAVA_LONG, 0L, copyWords);
+            }
+            for (int w = copyWords; w < wordCount; w++) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, w, 0L);
+            }
+        } else {
+            // Unaligned start: shift pairs of source words to produce each output word.
+            for (int i = 0; i < wordCount; i++) {
+                long lo = (startWord + i < srcWords.length) ? srcWords[startWord + i] >>> bitOffset : 0L;
+                long hi = (startWord + i + 1 < srcWords.length) ? srcWords[startWord + i + 1] << (64 - bitOffset) : 0L;
+                out.setAtIndex(ValueLayout.JAVA_LONG, i, lo | hi);
+            }
+        }
+        // Clear bits beyond `span` in the final word so alive docs past effectiveMaxDoc don't leak.
+        int trailing = span & 63;
+        if (trailing != 0) {
+            long lastWord = out.getAtIndex(ValueLayout.JAVA_LONG, wordCount - 1);
+            out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, lastWord & ((1L << trailing) - 1));
+        }
     }
 
     @Override
