@@ -362,8 +362,11 @@ impl TableProvider for LiveDocsRowIdTableProvider {
             .map(|i| read_leaf_indices.binary_search(i).expect("proj is a subset of read_leaf_indices"))
             .collect();
 
-        // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
-        let deleted = Arc::new(self.build_deleted());
+        // DIAGNOSTIC: force an empty deleted bitmap so mask_and_project takes the is_empty() fast
+        // path (skips the scalar contains() loop + filter_record_batch on all 118M rows). Isolates
+        // reader cost vs. scalar-mask cost. Query results will be WRONG (deletes not applied).
+        // Restore `self.build_deleted()` after measuring.
+        let deleted = Arc::new(RoaringTreemap::new());
 
         // Start as a single partition (all row groups). DataFusion's EnforceDistribution rule
         // repartitions us up to the session's target_partitions via `repartitioned()` — exactly
