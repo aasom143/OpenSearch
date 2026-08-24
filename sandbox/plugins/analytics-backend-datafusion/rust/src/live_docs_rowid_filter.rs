@@ -15,7 +15,11 @@
 //! O(1) per surviving row, no `RowSelection` runs and no reader run-overhead, so it stays flat as
 //! deletions scatter — the pathological case for the RowSelection path.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
+
+use native_bridge_common::log_info;
 
 use datafusion::arrow::array::{Array, BooleanArray, Int64Array};
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
@@ -363,7 +367,13 @@ impl TableProvider for LiveDocsRowIdTableProvider {
             .collect();
 
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
+        let build_start = Instant::now();
         let deleted = Arc::new(self.build_deleted());
+        log_info!(
+            "[virtual-rowid] build_deleted: deleted={} took {:.1}ms",
+            deleted.len(),
+            build_start.elapsed().as_secs_f64() * 1000.0
+        );
 
         // Start as a single partition (all row groups). DataFusion's EnforceDistribution rule
         // repartitions us up to the session's target_partitions via `repartitioned()` — exactly
@@ -426,6 +436,49 @@ fn assign_row_groups(files: &[ShardFileInfo], num_partitions: usize) -> Vec<Vec<
         parts.push(Vec::new());
     }
     parts
+}
+
+/// INSTRUMENTATION: per-partition mask accounting. Logs a summary on Drop (i.e. when the
+/// partition's stream is exhausted/dropped) so we can attribute the delete-scaling cost:
+/// how many batches ran `filter_record_batch` vs. took the project-only fast path, and how long
+/// the filter kernel took in aggregate.
+struct MaskStats {
+    partition: usize,
+    batches: AtomicU64,
+    filtered: AtomicU64,
+    skipped: AtomicU64,
+    rows_in: AtomicU64,
+    deletes_cleared: AtomicU64,
+    filter_nanos: AtomicU64,
+}
+
+impl MaskStats {
+    fn new(partition: usize) -> Self {
+        Self {
+            partition,
+            batches: AtomicU64::new(0),
+            filtered: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+            rows_in: AtomicU64::new(0),
+            deletes_cleared: AtomicU64::new(0),
+            filter_nanos: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Drop for MaskStats {
+    fn drop(&mut self) {
+        log_info!(
+            "[virtual-rowid] partition={} batches={} filtered={} skipped(fast-path)={} rows_in={} deletes_cleared={} filter_kernel_ms={:.1}",
+            self.partition,
+            self.batches.load(Ordering::Relaxed),
+            self.filtered.load(Ordering::Relaxed),
+            self.skipped.load(Ordering::Relaxed),
+            self.rows_in.load(Ordering::Relaxed),
+            self.deletes_cleared.load(Ordering::Relaxed),
+            self.filter_nanos.load(Ordering::Relaxed) as f64 / 1.0e6,
+        );
+    }
 }
 
 /// Leaf scan that reads the requested columns from each parquet file PLUS a zero-I/O virtual
@@ -501,9 +554,13 @@ impl VirtualRowIdDeleteExec {
         rownum_idx: usize,
         out_col_positions: &[usize],
         output_schema: &SchemaRef,
+        stats: &MaskStats,
     ) -> Result<RecordBatch> {
         let n = batch.num_rows();
+        stats.batches.fetch_add(1, Ordering::Relaxed);
+        stats.rows_in.fetch_add(n as u64, Ordering::Relaxed);
         if deleted.is_empty() || n == 0 {
+            stats.skipped.fetch_add(1, Ordering::Relaxed);
             return Self::project_only(batch, out_col_positions, output_schema);
         }
 
@@ -518,7 +575,7 @@ impl VirtualRowIdDeleteExec {
         let contiguous = g_last - g0 == (n as i64 - 1);
 
         let mut keep = vec![true; n];
-        let mut any_deleted = false;
+        let mut cleared: u64 = 0;
         if contiguous {
             // Clear the deleted ids in [g0, g0 + n) via a range lookup on the sorted slice.
             let gn = g0 + n as i64;
@@ -526,7 +583,7 @@ impl VirtualRowIdDeleteExec {
             let mut idx = start;
             while idx < deleted.len() && (deleted[idx] as i64) < gn {
                 keep[(deleted[idx] as i64 - g0) as usize] = false;
-                any_deleted = true;
+                cleared += 1;
                 idx += 1;
             }
         } else {
@@ -535,26 +592,35 @@ impl VirtualRowIdDeleteExec {
                 let g = (rownum.value(i) + row_base) as u64;
                 if deleted.binary_search(&g).is_ok() {
                     keep[i] = false;
-                    any_deleted = true;
+                    cleared += 1;
                 }
             }
         }
 
-        if any_deleted == false {
+        if cleared == 0 {
+            stats.skipped.fetch_add(1, Ordering::Relaxed);
             return Self::project_only(batch, out_col_positions, output_schema);
         }
 
+        stats.filtered.fetch_add(1, Ordering::Relaxed);
+        stats.deletes_cleared.fetch_add(cleared, Ordering::Relaxed);
+
+        let filter_start = Instant::now();
         let mask = BooleanArray::from(keep);
         let filtered = filter_record_batch(batch, &mask)
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
         let cols: Vec<ArrayRef> =
             out_col_positions.iter().map(|&p| filtered.column(p).clone()).collect();
-        RecordBatch::try_new_with_options(
+        let out = RecordBatch::try_new_with_options(
             output_schema.clone(),
             cols,
             &RecordBatchOptions::new().with_row_count(Some(filtered.num_rows())),
         )
-        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
+        stats
+            .filter_nanos
+            .fetch_add(filter_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        out
     }
 }
 
@@ -615,7 +681,16 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
         let files = Arc::clone(&self.files);
         // Sorted (ascending) global deleted ids — RoaringTreemap::iter() yields ascending. We use
         // this per batch with a range lookup instead of a per-row contains() over all scanned rows.
+        let vec_start = Instant::now();
         let deleted: Arc<Vec<u64>> = Arc::new(self.deleted.iter().collect());
+        log_info!(
+            "[virtual-rowid] partition={} sorted-vec build: n={} took {:.2}ms",
+            partition,
+            deleted.len(),
+            vec_start.elapsed().as_secs_f64() * 1000.0
+        );
+        // Per-partition mask accounting; logs a summary when the stream is dropped.
+        let stats = Arc::new(MaskStats::new(partition));
         let read_leaf_indices = self.read_leaf_indices.clone();
         let rownum_idx = read_leaf_indices.len(); // virtual row_number is appended last
         let out_col_positions = Arc::clone(&self.out_col_positions);
@@ -638,6 +713,7 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
             .map(move |(fi, row_groups)| {
                 let store = Arc::clone(&store);
                 let deleted = Arc::clone(&deleted);
+                let stats = Arc::clone(&stats);
                 let read_leaf_indices = read_leaf_indices.clone();
                 let out_col_positions = Arc::clone(&out_col_positions);
                 let output_schema = output_schema.clone();
@@ -678,6 +754,7 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
                                     rownum_idx,
                                     &out_col_positions,
                                     &output_schema,
+                                    &stats,
                                 )
                             })
                     });
