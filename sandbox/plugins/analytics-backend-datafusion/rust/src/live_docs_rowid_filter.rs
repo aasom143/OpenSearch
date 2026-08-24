@@ -374,7 +374,13 @@ impl TableProvider for LiveDocsRowIdTableProvider {
                 total_rows += rows;
             }
         }
-        let target_partitions = state.config().target_partitions().max(1);
+        // EXPERIMENT: the delete session reports target_partitions=1, forcing a serial scan. Force
+        // RG-level parallelism (up to available cores) to disambiguate whether the slowness is lost
+        // parallelism vs. our reader lacking prefetch. Revert to `state.config().target_partitions()`
+        // once understood.
+        let configured = state.config().target_partitions().max(1);
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+        let target_partitions = configured.max(cores);
         let p = target_partitions.min(all_rgs.len().max(1));
         let per_partition_rows = ((total_rows as f64) / (p as f64)).ceil() as u64;
         let mut parts: Vec<Vec<(usize, usize)>> = vec![Vec::new(); p];
