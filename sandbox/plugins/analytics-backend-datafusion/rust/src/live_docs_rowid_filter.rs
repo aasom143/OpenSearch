@@ -276,8 +276,12 @@ impl LiveDocsRowIdTableProvider {
     /// (`local __row_id__ + row_base`). Called at scan time so the getLiveDocs FFM binding
     /// (registered by `configureFilterDelegation`) is available — building it at session-context
     /// creation time is too early (the handle isn't registered yet).
-    fn build_deleted(&self) -> RoaringTreemap {
-        let mut deleted = RoaringTreemap::new();
+    fn build_deleted(&self) -> Vec<u64> {
+        // Global deleted ids, produced strictly ascending: files are ordered by row_base
+        // (asserted in scan), locals ascending within a file (word index ascending, and
+        // trailing_zeros yields bits ascending). So the result is already sorted — no treemap,
+        // no sort — and we use it directly as a sorted slice for the per-batch range lookup.
+        let mut deleted: Vec<u64> = Vec::new();
         for (file, &gen) in self.files.iter().zip(self.writer_generations.iter()) {
             if let Ok(Some(alive)) =
                 crate::indexed_table::ffm_callbacks::get_live_docs(self.context_id, gen, 0, file.num_rows as i32)
@@ -291,13 +295,14 @@ impl LiveDocsRowIdTableProvider {
                     while dead != 0 {
                         let local = base + dead.trailing_zeros() as u64;
                         if local < file.num_rows {
-                            deleted.insert(file.row_base as u64 + local);
+                            deleted.push(file.row_base as u64 + local);
                         }
                         dead &= dead - 1;
                     }
                 }
             }
         }
+        debug_assert!(deleted.windows(2).all(|w| w[0] < w[1]), "deleted ids must be strictly ascending");
         deleted
     }
 }
@@ -498,7 +503,8 @@ pub struct VirtualRowIdDeleteExec {
     /// For each requested output column, its slot within the read batch (excludes row_number).
     out_col_positions: Arc<Vec<usize>>,
     output_schema: SchemaRef,
-    deleted: Arc<RoaringTreemap>,
+    /// Sorted (ascending) global deleted ids; used as a slice for per-batch range lookups.
+    deleted: Arc<Vec<u64>>,
     /// One entry per output partition: the `(file_idx, row_group_idx)` pairs it reads. Row groups
     /// are balanced across partitions by row count so the scan parallelizes like `DataSourceExec`.
     partitions: Arc<Vec<Vec<(usize, usize)>>>,
@@ -679,16 +685,9 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
     ) -> Result<SendableRecordBatchStream> {
         let store = context.runtime_env().object_store(&self.store_url)?;
         let files = Arc::clone(&self.files);
-        // Sorted (ascending) global deleted ids — RoaringTreemap::iter() yields ascending. We use
-        // this per batch with a range lookup instead of a per-row contains() over all scanned rows.
-        let vec_start = Instant::now();
-        let deleted: Arc<Vec<u64>> = Arc::new(self.deleted.iter().collect());
-        log_info!(
-            "[virtual-rowid] partition={} sorted-vec build: n={} took {:.2}ms",
-            partition,
-            deleted.len(),
-            vec_start.elapsed().as_secs_f64() * 1000.0
-        );
+        // Sorted (ascending) global deleted ids — built directly as a Vec (no RoaringTreemap),
+        // used per batch with a range lookup instead of a per-row contains() over all scanned rows.
+        let deleted = Arc::clone(&self.deleted);
         // Per-partition mask accounting; logs a summary when the stream is dropped.
         let stats = Arc::new(MaskStats::new(partition));
         let read_leaf_indices = self.read_leaf_indices.clone();
