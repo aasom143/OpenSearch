@@ -40,6 +40,7 @@ mod sink;
 mod sort;
 pub mod source;
 mod supported_predicates;
+mod virtual_column;
 #[cfg(test)]
 mod test_util;
 mod writer;
