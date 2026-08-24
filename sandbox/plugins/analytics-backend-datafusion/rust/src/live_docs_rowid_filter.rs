@@ -362,11 +362,8 @@ impl TableProvider for LiveDocsRowIdTableProvider {
             .map(|i| read_leaf_indices.binary_search(i).expect("proj is a subset of read_leaf_indices"))
             .collect();
 
-        // DIAGNOSTIC: force an empty deleted bitmap so mask_and_project takes the is_empty() fast
-        // path (skips the scalar contains() loop + filter_record_batch on all 118M rows). Isolates
-        // reader cost vs. scalar-mask cost. Query results will be WRONG (deletes not applied).
-        // Restore `self.build_deleted()` after measuring.
-        let deleted = Arc::new(RoaringTreemap::new());
+        // Build the deleted-docs bitmap now (scan time — the getLiveDocs binding exists).
+        let deleted = Arc::new(self.build_deleted());
 
         // Start as a single partition (all row groups). DataFusion's EnforceDistribution rule
         // repartitions us up to the session's target_partitions via `repartitioned()` — exactly
@@ -476,38 +473,77 @@ impl VirtualRowIdDeleteExec {
         })
     }
 
-    /// Drop deleted rows (by `row_number + row_base`) and re-emit the requested columns in order.
+    /// Emit only the requested columns for `batch`, cheaply (no filtering).
+    fn project_only(
+        batch: &RecordBatch,
+        out_col_positions: &[usize],
+        output_schema: &SchemaRef,
+    ) -> Result<RecordBatch> {
+        let cols: Vec<ArrayRef> =
+            out_col_positions.iter().map(|&p| batch.column(p).clone()).collect();
+        RecordBatch::try_new_with_options(
+            output_schema.clone(),
+            cols,
+            &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+        )
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    }
+
+    /// Drop deleted rows and re-emit the requested columns in order. `deleted` is the sorted
+    /// (ascending) list of global deleted ids. The virtual `row_number` is contiguous within a
+    /// batch (whole-row-group reads, no RowSelection), so we clear only the deleted ids that fall
+    /// in the batch's `[first, first+n)` global range — O(deletes-in-batch), not O(rows). Batches
+    /// with no deleted rows skip `filter_record_batch` entirely.
     fn mask_and_project(
         batch: &RecordBatch,
-        deleted: &RoaringTreemap,
+        deleted: &[u64],
         row_base: i64,
         rownum_idx: usize,
         out_col_positions: &[usize],
         output_schema: &SchemaRef,
     ) -> Result<RecordBatch> {
-        // Fast path: no deletions in this shard — just drop the virtual column and reorder.
-        if deleted.is_empty() {
-            let cols: Vec<ArrayRef> =
-                out_col_positions.iter().map(|&p| batch.column(p).clone()).collect();
-            return RecordBatch::try_new_with_options(
-                output_schema.clone(),
-                cols,
-                &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
-            )
-            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None));
+        let n = batch.num_rows();
+        if deleted.is_empty() || n == 0 {
+            return Self::project_only(batch, out_col_positions, output_schema);
         }
 
-        let n = batch.num_rows();
         let rownum = batch
             .column(rownum_idx)
             .as_any()
             .downcast_ref::<Int64Array>()
             .ok_or_else(|| DataFusionError::Internal("virtual row_number column is not Int64".into()))?;
-        let mut keep = Vec::with_capacity(n);
-        for i in 0..n {
-            let global = rownum.value(i) + row_base;
-            keep.push(!deleted.contains(global as u64));
+
+        let g0 = rownum.value(0) + row_base;
+        let g_last = rownum.value(n - 1) + row_base;
+        let contiguous = g_last - g0 == (n as i64 - 1);
+
+        let mut keep = vec![true; n];
+        let mut any_deleted = false;
+        if contiguous {
+            // Clear the deleted ids in [g0, g0 + n) via a range lookup on the sorted slice.
+            let gn = g0 + n as i64;
+            let start = deleted.partition_point(|&x| (x as i64) < g0);
+            let mut idx = start;
+            while idx < deleted.len() && (deleted[idx] as i64) < gn {
+                keep[(deleted[idx] as i64 - g0) as usize] = false;
+                any_deleted = true;
+                idx += 1;
+            }
+        } else {
+            // Defensive fallback (should not happen with whole-RG reads): per-row binary search.
+            for i in 0..n {
+                let g = (rownum.value(i) + row_base) as u64;
+                if deleted.binary_search(&g).is_ok() {
+                    keep[i] = false;
+                    any_deleted = true;
+                }
+            }
         }
+
+        if any_deleted == false {
+            return Self::project_only(batch, out_col_positions, output_schema);
+        }
+
         let mask = BooleanArray::from(keep);
         let filtered = filter_record_batch(batch, &mask)
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
@@ -577,7 +613,9 @@ impl ExecutionPlan for VirtualRowIdDeleteExec {
     ) -> Result<SendableRecordBatchStream> {
         let store = context.runtime_env().object_store(&self.store_url)?;
         let files = Arc::clone(&self.files);
-        let deleted = Arc::clone(&self.deleted);
+        // Sorted (ascending) global deleted ids — RoaringTreemap::iter() yields ascending. We use
+        // this per batch with a range lookup instead of a per-row contains() over all scanned rows.
+        let deleted: Arc<Vec<u64>> = Arc::new(self.deleted.iter().collect());
         let read_leaf_indices = self.read_leaf_indices.clone();
         let rownum_idx = read_leaf_indices.len(); // virtual row_number is appended last
         let out_col_positions = Arc::clone(&self.out_col_positions);
