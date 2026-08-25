@@ -311,6 +311,14 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = Instant::now();
 
+        // [HACK: measurement only — WRONG RESULTS (returns 0 rows)] Skip every row group so no rows
+        // flow to the scan/refinement/aggregate. Measures the fixed floor (session + plan + per-RG
+        // prefetch setup) with 0 rows processed, to see how much of the ~670 ms is the 100M-row work.
+        const HACK_EMPTY_CANDIDATE: bool = true;
+        if HACK_EMPTY_CANDIDATE {
+            return Ok(None);
+        }
+
         // RG-level early-exit: precomputed from column stats at construction.
         if let Some(ref spt) = self.stats_prune_tree {
             if let Some(&pos) = self.rg_index_to_pos.get(&rg.index) {
