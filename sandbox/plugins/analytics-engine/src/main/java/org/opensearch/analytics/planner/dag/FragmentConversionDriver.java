@@ -283,7 +283,11 @@ public class FragmentConversionDriver {
                     delegated.size(),
                     requestsRowIds,
                     logicalTableName,
-                    FilterTreeShapeDeriver.requiresDeletedDocFiltering(filter, backend.name())
+                    // The injected live-docs Collector already returns only live docs (its candidate
+                    // bitmap IS the liveDocs), so the indexed path's prefetch_rg getLiveDocs AND would
+                    // be a redundant second fetch. Set the node flag false so the data node skips it and
+                    // relies solely on the collector for deleted-doc filtering.
+                    false
                 ).ifPresent(instructions::add);
             } else {
                 factory.createShardScanNode(requestsRowIds, logicalTableName).ifPresent(instructions::add);
