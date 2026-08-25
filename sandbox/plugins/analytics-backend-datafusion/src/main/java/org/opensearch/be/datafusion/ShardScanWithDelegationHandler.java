@@ -77,7 +77,7 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 delegatedPredicateCount,
                 node.requestsRowIds(),
                 context.hasPartialAggregate(),
-                true,
+                node.requiresDeletedDocFiltering(),
                 segment.address(),
                 context.getFragmentBytes()
             );
