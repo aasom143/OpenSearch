@@ -35,6 +35,7 @@ import org.opensearch.analytics.planner.rel.OpenSearchValues;
 import org.opensearch.analytics.planner.rel.OperatorAnnotation;
 import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.analytics.spi.DelegatedExpression;
+import org.opensearch.analytics.spi.DelegatedPredicateFunction;
 import org.opensearch.analytics.spi.DelegatedPredicateSerializer;
 import org.opensearch.analytics.spi.DelegationPossibleFunction;
 import org.opensearch.analytics.spi.FieldStorageInfo;
@@ -131,10 +132,25 @@ public class FragmentConversionDriver {
                 && FilterTreeShapeDeriver.requiresDeletedDocFiltering(filter, plan.backendId());
 
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
-            byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
+
+            // A2 experiment: route pure-DF queries through the indexed path by injecting a MatchAll
+            // live-docs Collector (delegated_predicate(INT_MAX)). When deleted-doc filtering is
+            // required and no covering Collector exists, augment the fragment before conversion so
+            // Rust classifies it as SingleCollector and applies liveDocs per-RG (prefetch_rg AND).
+            RelNode fragmentForConversion = plan.resolvedFragment();
+            if (requiresDeletedDocFiltering) {
+                fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
+                if (treeShape == FilterTreeShape.NO_DELEGATION) {
+                    treeShape = FilterTreeShape.CONJUNCTIVE;
+                }
+            }
+            byte[] bytes = convert(fragmentForConversion, convertor, delegationBytes);
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = new ArrayList<>(delegationBytes.getResult());
+            if (requiresDeletedDocFiltering) {
+                delegated.add(createMatchAllDelegatedExpression());
+            }
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegated);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
@@ -634,6 +650,75 @@ public class FragmentConversionDriver {
             }
         }
         return childrenChanged ? node.copy(node.getTraitSet(), strippedChildren) : node;
+    }
+
+    /**
+     * Sentinel annotation ID for the injected MatchAll live-docs delegation.
+     * Uses Integer.MAX_VALUE to avoid collision with coordinator-assigned IDs (which start at 0).
+     */
+    static final int LIVE_DOCS_MATCHALL_ANNOTATION_ID = Integer.MAX_VALUE;
+
+    /**
+     * Injects {@code AND(existingCondition, delegated_predicate(LIVE_DOCS_MATCHALL_ANNOTATION_ID))}
+     * into the filter. For Path A (no filter), inserts a new Filter above the leaf scan. The
+     * INT_MAX Collector matches all docs; the indexed path's per-RG liveDocs AND does the actual
+     * deleted-row filtering.
+     */
+    private static RelNode injectMatchAllDelegation(RelNode fragment, OpenSearchFilter filter) {
+        if (filter != null) {
+            RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
+            RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
+            RexNode augmentedCondition = rexBuilder.makeCall(
+                org.apache.calcite.sql.fun.SqlStdOperatorTable.AND,
+                filter.getCondition(),
+                matchAllPredicate
+            );
+            return replaceFilter(fragment, filter, augmentedCondition);
+        }
+        // Path A: no existing filter — insert a Filter(delegated_predicate(INT_MAX)) above the leaf scan.
+        RelNode leaf = findLeaf(fragment);
+        RexBuilder rexBuilder = leaf.getCluster().getRexBuilder();
+        RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
+        LogicalFilter newFilter = LogicalFilter.create(leaf, matchAllPredicate);
+        return replaceChild(fragment, leaf, newFilter);
+    }
+
+    private static RelNode replaceFilter(RelNode root, OpenSearchFilter target, RexNode newCondition) {
+        if (root == target) {
+            return target.copy(target.getTraitSet(), target.getInput(), newCondition);
+        }
+        List<RelNode> newInputs = new ArrayList<>(root.getInputs().size());
+        boolean replaced = false;
+        for (RelNode input : root.getInputs()) {
+            RelNode result = replaceFilter(input, target, newCondition);
+            newInputs.add(result);
+            if (result != input) replaced = true;
+        }
+        return replaced ? root.copy(root.getTraitSet(), newInputs) : root;
+    }
+
+    private static RelNode replaceChild(RelNode root, RelNode target, RelNode replacement) {
+        if (root == target) {
+            return replacement;
+        }
+        List<RelNode> newInputs = new ArrayList<>(root.getInputs().size());
+        boolean replaced = false;
+        for (RelNode input : root.getInputs()) {
+            RelNode result = replaceChild(input, target, replacement);
+            newInputs.add(result);
+            if (result != input) replaced = true;
+        }
+        return replaced ? root.copy(root.getTraitSet(), newInputs) : root;
+    }
+
+    private static DelegatedExpression createMatchAllDelegatedExpression() {
+        try (org.opensearch.common.io.stream.BytesStreamOutput output = new org.opensearch.common.io.stream.BytesStreamOutput()) {
+            output.writeNamedWriteable(new org.opensearch.index.query.MatchAllQueryBuilder());
+            byte[] bytes = org.opensearch.core.common.bytes.BytesReference.toBytes(output.bytes());
+            return new DelegatedExpression(LIVE_DOCS_MATCHALL_ANNOTATION_ID, "lucene", bytes);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Failed to serialize MatchAllQueryBuilder", e);
+        }
     }
 
     /**
