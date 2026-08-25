@@ -191,6 +191,12 @@ pub struct SingleCollectorEvaluator {
     last_next_doc: std::sync::atomic::AtomicI32,
     /// When true, call getLiveDocs per RG to filter deleted rows.
     deleted_doc_filtering_required: bool,
+    /// [a2-timing] Diagnostic accumulators (nanos, summed across all prefetch_rg calls) to break
+    /// down index_query_time. Logged once on Drop. No effect on behavior.
+    candidate_build_ns: std::sync::atomic::AtomicU64,
+    livedocs_and_ns: std::sync::atomic::AtomicU64,
+    prefetch_total_ns: std::sync::atomic::AtomicU64,
+    timed_rg_count: std::sync::atomic::AtomicU64,
 }
 
 /// Resources needed for per-RG bloom filter pruning.
@@ -239,7 +245,33 @@ impl SingleCollectorEvaluator {
             rg_index_to_pos,
             last_next_doc: std::sync::atomic::AtomicI32::new(i32::MIN),
             deleted_doc_filtering_required,
+            candidate_build_ns: std::sync::atomic::AtomicU64::new(0),
+            livedocs_and_ns: std::sync::atomic::AtomicU64::new(0),
+            prefetch_total_ns: std::sync::atomic::AtomicU64::new(0),
+            timed_rg_count: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+}
+
+impl Drop for SingleCollectorEvaluator {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let rgs = self.timed_rg_count.load(Relaxed);
+        if rgs == 0 {
+            return;
+        }
+        let ms = |ns: u64| ns as f64 / 1_000_000.0;
+        // [a2-timing] Breaks down the per-partition index_query_time: candidate_build is the
+        // collector FFM call (the injected live-docs collector for pure-DF), livedocs_and is the
+        // redundant prefetch_rg getLiveDocs AND. prefetch_total is the whole prefetch_rg span.
+        native_bridge_common::log_info!(
+            "[a2-timing] prefetch breakdown: rgs={} candidate_build={:.1}ms livedocs_and={:.1}ms prefetch_total={:.1}ms deleted_doc_filtering={}",
+            rgs,
+            ms(self.candidate_build_ns.load(Relaxed)),
+            ms(self.livedocs_and_ns.load(Relaxed)),
+            ms(self.prefetch_total_ns.load(Relaxed)),
+            self.deleted_doc_filtering_required,
+        );
     }
 }
 
@@ -362,6 +394,7 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // Build candidates either from the always-call correctness collector OR, when
         // the query is performance-only (no Collector leaves), from the page-pruned
         // universe. Performance leaves are AND'd in below if the selectivity gate fires.
+        let t_cand = Instant::now(); // [a2-timing]
         let mut candidates = match self.collector.as_ref() {
             Some(collector) => {
                 // Dispatch collector call strategy.
@@ -550,8 +583,13 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
             // );
         }
 
+        // [a2-timing] candidate build (collector FFM) done; record it.
+        self.candidate_build_ns
+            .fetch_add(t_cand.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+
         // LiveDocs filtering: AND with live-docs bitset to exclude deleted rows.
         if self.deleted_doc_filtering_required {
+            let t_live = Instant::now(); // [a2-timing]
             if let Ok(Some(live_bits)) = get_live_docs(
                 self.context_id,
                 self.writer_generation,
@@ -565,6 +603,8 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                 let live_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
                 candidates &= live_bm;
             }
+            self.livedocs_and_ns
+                .fetch_add(t_live.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         if candidates.is_empty() {
@@ -576,12 +616,19 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // representation the hot paths (`on_batch_mask`, `build_mask`)
         // need; they construct zero-copy `BooleanBuffer` views via
         // `BooleanBuffer::new(buf.clone(), bit_offset, bit_len)`.
+        // [a2-timing] record the full prefetch_rg span (this is what feeds index_query_time).
+        let prefetch_ns = t.elapsed().as_nanos() as u64;
+        self.prefetch_total_ns
+            .fetch_add(prefetch_ns, std::sync::atomic::Ordering::Relaxed);
+        self.timed_rg_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let mask_len = rg.num_rows as usize;
         let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
         let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
         Ok(Some(PrefetchedRg {
             candidates: candidates.clone(),
-            eval_nanos: t.elapsed().as_nanos() as u64,
+            eval_nanos: prefetch_ns,
             context: Box::new(SingleCollectorState {
                 candidates,
                 mask_buffer: mask_buffer.clone(),
