@@ -394,6 +394,10 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
         // Build candidates either from the always-call correctness collector OR, when
         // the query is performance-only (no Collector leaves), from the page-pruned
         // universe. Performance leaves are AND'd in below if the selectivity gate fires.
+        // [HACK: measurement only — WRONG RESULTS] When true, skip the collector FFM round-trip and
+        // treat every row in the call range as a match, to isolate the pure indexed-path cost
+        // (scan + refinement + aggregate) from the collector call. Flip to false for correctness.
+        const HACK_SKIP_COLLECTOR_FFM: bool = true;
         let t_cand = Instant::now(); // [a2-timing]
         let mut candidates = match self.collector.as_ref() {
             Some(collector) => {
@@ -423,34 +427,41 @@ impl RowGroupBitsetSource for SingleCollectorEvaluator {
                         continue;
                     }
                     let effective_min = next_doc_out.max(*r_min);
-                    let result = collector
-                        .collect_packed_u64_bitset(effective_min, *r_max)
-                        .map_err(|e| {
-                            format!(
-                                "collector.collect_packed_u64_bitset(rg={}, [{}, {})): {}",
-                                rg.index, r_min, r_max, e
-                            )
-                        })?;
-                    if let Some(ref c) = self.ffm_collector_calls {
-                        c.add(1);
-                    }
-                    // Advance only forward — the iterator position is monotonic; guard
-                    // against a stale/sentinel next_doc dragging it backward.
-                    next_doc_out = next_doc_out.max(result.next_doc);
                     let offset = (effective_min as i64 - rg.first_row) as u32;
                     let num_docs = (*r_max - effective_min) as u32;
-                    let bytes: &[u8] = unsafe {
-                        std::slice::from_raw_parts(
-                            result.words.as_ptr() as *const u8,
-                            result.words.len() * 8,
-                        )
-                    };
-                    let mut chunk = RoaringBitmap::from_lsb0_bytes(offset, bytes);
-                    let upper = offset.saturating_add(num_docs);
-                    if upper < u32::MAX {
-                        chunk.remove_range(upper..);
+                    if HACK_SKIP_COLLECTOR_FFM {
+                        // No FFM: every row in the range is a "match" (candidate = universe).
+                        bm.insert_range(offset..offset.saturating_add(num_docs));
+                        next_doc_out = next_doc_out.max(*r_max);
+                        let _ = &collector;
+                    } else {
+                        let result = collector
+                            .collect_packed_u64_bitset(effective_min, *r_max)
+                            .map_err(|e| {
+                                format!(
+                                    "collector.collect_packed_u64_bitset(rg={}, [{}, {})): {}",
+                                    rg.index, r_min, r_max, e
+                                )
+                            })?;
+                        if let Some(ref c) = self.ffm_collector_calls {
+                            c.add(1);
+                        }
+                        // Advance only forward — the iterator position is monotonic; guard
+                        // against a stale/sentinel next_doc dragging it backward.
+                        next_doc_out = next_doc_out.max(result.next_doc);
+                        let bytes: &[u8] = unsafe {
+                            std::slice::from_raw_parts(
+                                result.words.as_ptr() as *const u8,
+                                result.words.len() * 8,
+                            )
+                        };
+                        let mut chunk = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+                        let upper = offset.saturating_add(num_docs);
+                        if upper < u32::MAX {
+                            chunk.remove_range(upper..);
+                        }
+                        bm |= chunk;
                     }
-                    bm |= chunk;
                 }
                 self.last_next_doc
                     .store(next_doc_out, std::sync::atomic::Ordering::Release);
