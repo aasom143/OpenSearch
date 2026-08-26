@@ -1006,6 +1006,16 @@ async unsafe fn execute_indexed_with_context_inner(
             Some(e) => classify_filter(&e.tree),
         },
     };
+    // A forced SingleCollector/Tree with no filter expression has zero collector
+    // leaves (e.g. the pure-DF cost-analysis experiment forces CONJUNCTIVE, or a
+    // filterless `SELECT count(*)`). The SingleCollector/Tree arms require an
+    // extraction and would error; downgrade to predicate-only (still the indexed
+    // path via PredicateOnlyEvaluator).
+    let classification = if extraction.is_none() {
+        FilterClass::None
+    } else {
+        classification
+    };
     // Derive the parquet pushdown predicate from the BoolNode tree.
     // `scan()` ignores DataFusion's filters argument (which contains
     // the `delegated_predicate` UDF marker whose body panics) and uses this

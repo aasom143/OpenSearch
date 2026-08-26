@@ -260,7 +260,14 @@ public class FragmentConversionDriver {
                 factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds, logicalTableName)
                     .ifPresent(instructions::add);
             } else {
-                factory.createShardScanNode(requestsRowIds, logicalTableName).ifPresent(instructions::add);
+                // EXPERIMENT (pure-DF cost analysis): route zero-delegation queries through the
+                // indexed SingleCollector path instead of the plain ListingTable scan. Force
+                // CONJUNCTIVE (→ FilterClass::SingleCollector in Rust) with a delegated-predicate
+                // count of 0 so no collector/provider is created — the evaluator does only
+                // page-pruning + residual, isolating the indexed-path overhead vs ListingTable.
+                // Revert this branch to `createShardScanNode` to restore production routing.
+                factory.createShardScanWithDelegationNode(FilterTreeShape.CONJUNCTIVE, 0, requestsRowIds, logicalTableName)
+                    .ifPresent(instructions::add);
             }
             if (containsPartialAggregate(resolvedFragment)) {
                 factory.createPartialAggregateNode().ifPresent(instructions::add);
