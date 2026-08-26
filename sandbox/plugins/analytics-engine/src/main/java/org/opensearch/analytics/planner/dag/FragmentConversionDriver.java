@@ -122,7 +122,9 @@ public class FragmentConversionDriver {
             // not findNode's topmost (HAVING → NO_DELEGATION → collector skipped → over-count).
             List<OpenSearchFilter> filters = RelNodeUtils.findAllNodes(plan.resolvedFragment(), OpenSearchFilter.class);
             OpenSearchFilter filter = filters.isEmpty() ? null : filters.getLast();
-            FilterTreeShape treeShape = FilterTreeShape.CONJUNCTIVE; // HACK: force SingleCollector path for measurement
+            FilterTreeShape treeShape = filter != null
+                ? FilterTreeShapeDeriver.derive(filter, plan.backendId())
+                : FilterTreeShape.NO_DELEGATION;
 
             // Compute whether deleted-doc filtering is required for this query.
             // Stamped on the instruction node — the data node ANDs with hasDeletedDocs at runtime.
