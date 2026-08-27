@@ -133,13 +133,21 @@ public class FragmentConversionDriver {
 
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
 
+            // Inject only on shard-scan stages (leaf is a real table scan). Reduce-stage fragments
+            // (leaf is an OpenSearchStageInputScan) must not get a delegated marker. A no-filter
+            // query (e.g. `stats sum(...)` with no WHERE) still needs deleted-doc filtering, so we
+            // inject there too — as an OpenSearchFilter, never a bare LogicalFilter (which the
+            // OpenSearchProject child-check rejects).
+            boolean injectLiveDocs = requiresDeletedDocFiltering
+                && findLeaf(plan.resolvedFragment()) instanceof OpenSearchTableScan;
+
             // A2 experiment: route pure-DF queries through the indexed path by injecting a MatchAll
             // live-docs Collector (delegated_predicate(INT_MAX)). When deleted-doc filtering is
             // required and no covering Collector exists, augment the fragment before conversion so
             // Rust classifies it as SingleCollector and applies liveDocs per-RG (prefetch_rg AND).
             RelNode fragmentForConversion = plan.resolvedFragment();
-            if (requiresDeletedDocFiltering) {
-                fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter);
+            if (injectLiveDocs) {
+                fragmentForConversion = injectMatchAllDelegation(fragmentForConversion, filter, plan.backendId());
                 if (treeShape == FilterTreeShape.NO_DELEGATION) {
                     treeShape = FilterTreeShape.CONJUNCTIVE;
                 }
@@ -148,7 +156,7 @@ public class FragmentConversionDriver {
 
             // Assemble instruction list
             List<DelegatedExpression> delegated = new ArrayList<>(delegationBytes.getResult());
-            if (requiresDeletedDocFiltering) {
+            if (injectLiveDocs) {
                 delegated.add(createMatchAllDelegatedExpression());
             }
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, filter, delegated);
@@ -668,7 +676,7 @@ public class FragmentConversionDriver {
      * INT_MAX Collector matches all docs; the indexed path's per-RG liveDocs AND does the actual
      * deleted-row filtering.
      */
-    private static RelNode injectMatchAllDelegation(RelNode fragment, OpenSearchFilter filter) {
+    private static RelNode injectMatchAllDelegation(RelNode fragment, OpenSearchFilter filter, String backendId) {
         if (filter != null) {
             RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
             RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
@@ -679,11 +687,22 @@ public class FragmentConversionDriver {
             );
             return replaceFilter(fragment, filter, augmentedCondition);
         }
-        // Path A: no existing filter — insert a Filter(delegated_predicate(INT_MAX)) above the leaf scan.
+        // Path A: no existing filter (e.g. `stats sum(...)` with no WHERE) — insert an
+        // OpenSearchFilter(delegated_predicate(INT_MAX)) above the leaf table scan. It must be an
+        // OpenSearchFilter (an OpenSearchRelNode), not a bare LogicalFilter, so the downstream
+        // OpenSearch RelNode conversion (OpenSearchProject's child check) accepts it. Filter is
+        // schema-preserving, so parent field references stay aligned. The caller guarantees the
+        // leaf is an OpenSearchTableScan (shard-scan stage).
         RelNode leaf = findLeaf(fragment);
         RexBuilder rexBuilder = leaf.getCluster().getRexBuilder();
         RexNode matchAllPredicate = DelegatedPredicateFunction.makeCall(rexBuilder, LIVE_DOCS_MATCHALL_ANNOTATION_ID);
-        LogicalFilter newFilter = LogicalFilter.create(leaf, matchAllPredicate);
+        OpenSearchFilter newFilter = new OpenSearchFilter(
+            leaf.getCluster(),
+            leaf.getTraitSet(),
+            leaf,
+            matchAllPredicate,
+            List.of(backendId)
+        );
         return replaceChild(fragment, leaf, newFilter);
     }
 
