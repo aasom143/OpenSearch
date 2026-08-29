@@ -33,7 +33,7 @@ use datafusion_datasource::file_stream::FileOpener;
 use datafusion_datasource::morsel::Morselizer;
 
 use arrow::array::timezone::Tz;
-use arrow::datatypes::TimeUnit;
+use arrow::datatypes::{FieldRef, TimeUnit};
 use datafusion_common::DataFusionError;
 use datafusion_common::config::TableParquetOptions;
 use datafusion_datasource::TableSchema;
@@ -297,6 +297,11 @@ pub struct ParquetSource {
     /// Sort order driving `PreparedAccessPlan::reorder_by_statistics`
     /// in the opener.
     sort_order_for_reorder: Option<LexOrdering>,
+    /// Parquet virtual columns (backport of DF55). Each is an Arrow field carrying a
+    /// supported virtual extension type (e.g. `parquet.virtual.row_number`). The opener
+    /// enables them via `ArrowReaderOptions::with_virtual_columns` and appends them,
+    /// in order, after the projected file columns in every emitted batch.
+    pub(crate) virtual_columns: Vec<FieldRef>,
 }
 
 impl ParquetSource {
@@ -323,7 +328,16 @@ impl ParquetSource {
             encryption_factory: None,
             reverse_row_groups: false,
             sort_order_for_reorder: None,
+            virtual_columns: Vec::new(),
         }
+    }
+
+    /// Enable parquet virtual columns (backport of DF55) — e.g. the zero-I/O row-number.
+    /// The opener passes these to `ArrowReaderOptions::with_virtual_columns` and appends them
+    /// after the projected file columns in each emitted batch.
+    pub fn with_virtual_columns(mut self, virtual_columns: Vec<FieldRef>) -> Self {
+        self.virtual_columns = virtual_columns;
+        self
     }
 
     /// Set the `TableParquetOptions` for this ParquetSource.
@@ -613,6 +627,7 @@ impl FileSource for ParquetSource {
             max_predicate_cache_size: self.max_predicate_cache_size(),
             reverse_row_groups: self.reverse_row_groups,
             sort_order_for_reorder: self.sort_order_for_reorder.clone(),
+            virtual_columns: self.virtual_columns.clone(),
         }))
     }
 

@@ -116,6 +116,10 @@ pub(crate) struct PushDecoderStreamState {
     pub(crate) projector: Projector,
     pub(crate) output_schema: Arc<Schema>,
     pub(crate) replace_schema: bool,
+    /// Number of virtual columns (backport of DF55) the reader appends after the projected
+    /// file columns. When > 0, `output_schema` already includes them and `project_batch`
+    /// re-appends the trailing virtual arrays after projecting the real columns.
+    pub(crate) virtual_column_count: usize,
     pub(crate) arrow_reader_metrics: ArrowReaderMetrics,
     pub(crate) predicate_cache_inner_records: Gauge,
     pub(crate) predicate_cache_records: Gauge,
@@ -216,6 +220,25 @@ impl PushDecoderStreamState {
     }
 
     fn project_batch(&self, batch: &RecordBatch) -> Result<RecordBatch> {
+        // Virtual columns (e.g. the row-number) are appended by the reader after the projected
+        // file columns. Project the real columns as usual, then re-append the trailing virtual
+        // columns and stamp the extended output schema (which already includes them).
+        if self.virtual_column_count > 0 {
+            let real_cols = batch.num_columns() - self.virtual_column_count;
+            let real_indices: Vec<usize> = (0..real_cols).collect();
+            let real_batch = batch.project(&real_indices)?;
+            let projected = self.projector.project_batch(&real_batch)?;
+            let mut arrays: Vec<_> = projected.columns().to_vec();
+            for i in real_cols..batch.num_columns() {
+                arrays.push(Arc::clone(batch.column(i)));
+            }
+            let options = RecordBatchOptions::new().with_row_count(Some(projected.num_rows()));
+            return Ok(RecordBatch::try_new_with_options(
+                Arc::clone(&self.output_schema),
+                arrays,
+                &options,
+            )?);
+        }
         let mut batch = self.projector.project_batch(batch)?;
         if self.replace_schema {
             // Ensure the output batch has the expected schema.

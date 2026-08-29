@@ -44,7 +44,7 @@ use std::future::Future;
 use std::mem;
 use std::sync::Arc;
 
-use arrow::datatypes::{SchemaRef, TimeUnit};
+use arrow::datatypes::{FieldRef, Schema, SchemaRef, TimeUnit};
 #[cfg(feature = "parquet_encryption")]
 use datafusion_common::encryption::FileDecryptionProperties;
 use datafusion_common::stats::Precision;
@@ -141,6 +141,9 @@ pub(super) struct ParquetMorselizer {
     pub reverse_row_groups: bool,
     /// Optional sort order used to reorder row groups by their min/max statistics.
     pub sort_order_for_reorder: Option<LexOrdering>,
+    /// Parquet virtual columns (backport of DF55) to enable on the reader and append,
+    /// in order, after the projected file columns of each emitted batch.
+    pub virtual_columns: Vec<FieldRef>,
 }
 
 impl fmt::Debug for ParquetMorselizer {
@@ -294,6 +297,8 @@ struct PreparedParquetOpen {
     reverse_row_groups: bool,
     sort_order_for_reorder: Option<LexOrdering>,
     preserve_order: bool,
+    /// Virtual columns to enable on the reader and append after the projected file columns.
+    virtual_columns: Vec<FieldRef>,
     #[cfg(feature = "parquet_encryption")]
     file_decryption_properties: Option<Arc<FileDecryptionProperties>>,
 }
@@ -665,6 +670,7 @@ impl ParquetMorselizer {
             reverse_row_groups: self.reverse_row_groups,
             sort_order_for_reorder: self.sort_order_for_reorder.clone(),
             preserve_order: self.preserve_order,
+            virtual_columns: self.virtual_columns.clone(),
             #[cfg(feature = "parquet_encryption")]
             file_decryption_properties: None,
         })
@@ -731,6 +737,15 @@ impl PreparedParquetOpen {
         if let Some(fd_val) = &self.file_decryption_properties {
             options = options.with_file_decryption_properties(Arc::clone(fd_val));
         }
+
+        // Enable parquet virtual columns (backport of DF55). RowNumberReader computes the
+        // row-number from row-group metadata (zero I/O, skip-aware) and appends it after the
+        // projected file columns; build_stream extends the projected/output schema to match.
+        let options = if self.virtual_columns.is_empty() {
+            options
+        } else {
+            options.with_virtual_columns(self.virtual_columns.clone())?
+        };
 
         let mut metadata_timer = self.file_metrics.metadata_load_time.timer();
         // Begin by loading the metadata from the underlying reader (note
@@ -1238,7 +1253,18 @@ impl RowGroupsPrunedParquetOpen {
             .projection
             .try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
         let projector = projection.make_projector(&stream_schema)?;
-        let output_schema = Arc::clone(&prepared.output_schema);
+        // Virtual columns (backport of DF55) are appended by the reader after the projected file
+        // columns; extend the output schema so they survive to the DataSourceExec output. The
+        // projector still runs over the real columns only (see PushDecoderStreamState::project_batch).
+        let virtual_column_count = prepared.virtual_columns.len();
+        let output_schema = if virtual_column_count == 0 {
+            Arc::clone(&prepared.output_schema)
+        } else {
+            let mut fields: Vec<FieldRef> =
+                prepared.output_schema.fields().iter().cloned().collect();
+            fields.extend(prepared.virtual_columns.iter().cloned());
+            Arc::new(Schema::new(fields))
+        };
         let files_ranges_pruned_statistics =
             prepared.file_metrics.files_ranges_pruned_statistics.clone();
         let stream = PushDecoderStreamState {
@@ -1249,6 +1275,7 @@ impl RowGroupsPrunedParquetOpen {
             projector,
             output_schema,
             replace_schema,
+            virtual_column_count,
             arrow_reader_metrics,
             predicate_cache_inner_records,
             predicate_cache_records,
