@@ -202,6 +202,26 @@ impl TableProvider for LiveDocsRowNumberProvider {
     }
 }
 
+/// TEMP diagnostics: accumulates rows seen and rows cleared for one partition's stream; logs the
+/// summary when the stream is dropped (query end) so per-partition filtering can be compared run to run.
+struct PartitionMaskStats {
+    partition: usize,
+    rows: u64,
+    cleared: u64,
+    logged_first: bool,
+}
+
+impl Drop for PartitionMaskStats {
+    fn drop(&mut self) {
+        log::info!(
+            "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={}",
+            self.partition,
+            self.rows,
+            self.cleared
+        );
+    }
+}
+
 /// Physical node that drops deleted rows using the appended virtual row-number column and strips
 /// that column from the output. Wraps the parquet `DataSourceExec` directly (one partition per
 /// file/segment) so repartitioning is disabled to keep the partition↔segment mapping.
@@ -390,8 +410,37 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
             .unwrap_or_else(|| Arc::new(Vec::new()));
         let num_out_cols = self.num_out_cols;
         let output_schema = self.output_schema.clone();
+        // TEMP diagnostics: per-partition first-batch row-number range (identifies which file this
+        // partition actually reads → tests partition↔file stability) and a drop-time rows/cleared
+        // summary (tests whether the same partition clears the same rows across runs).
+        log::info!(
+            "LiveDocsRowNumber execute: partition={} deleted_len={} deleted_first={:?} deleted_last={:?}",
+            partition,
+            deleted.len(),
+            deleted.first(),
+            deleted.last()
+        );
+        let mut stats = PartitionMaskStats { partition, rows: 0, cleared: 0, logged_first: false };
         let mapped = input_stream.map(move |res| {
-            res.and_then(|batch| Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema))
+            res.and_then(|batch| {
+                let rows_in = batch.num_rows();
+                if stats.logged_first == false && rows_in > 0 && batch.num_columns() > num_out_cols {
+                    if let Some(rn) = batch.column(num_out_cols).as_any().downcast_ref::<Int64Array>() {
+                        log::info!(
+                            "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
+                            stats.partition,
+                            rn.value(0),
+                            rn.value(rows_in - 1),
+                            rows_in
+                        );
+                    }
+                    stats.logged_first = true;
+                }
+                let out = Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema)?;
+                stats.rows += rows_in as u64;
+                stats.cleared += (rows_in - out.num_rows()) as u64;
+                Ok(out)
+            })
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.output_schema.clone(),
