@@ -259,6 +259,13 @@ pub async unsafe fn create_session_context(
     }
     config.options_mut().execution.target_partitions = effective_partitions;
     config.options_mut().execution.batch_size = effective_batch_size;
+    // Keep the delete path's per-file scan parallelism. The provider emits one FileGroup per file;
+    // without this, DataFusion's file-scan repartitioner collapses them toward target_partitions
+    // (often a single serial group). The global-bitmap mask is order-independent, so preserving the
+    // per-file groups (one parallel partition each) is safe and matches the plain-scan latency.
+    if deleted_doc_filtering_required {
+        config.options_mut().optimizer.repartition_file_scans = false;
+    }
     // When the index has `index.sort.field`, ask DataFusion to use the sort-aware
     // file-group partitioner so `output_ordering` can propagate from the scan.
     // Skip on the delete path: the sort-aware partitioner re-bins the per-file groups by
