@@ -259,18 +259,9 @@ pub async unsafe fn create_session_context(
     }
     config.options_mut().execution.target_partitions = effective_partitions;
     config.options_mut().execution.batch_size = effective_batch_size;
-    // The virtual-row-number delete path (LiveDocsRowNumberProvider) maps one scan partition to
-    // exactly one file/segment, so the per-partition file-local deleted set stays aligned. Disable
-    // file-scan repartitioning so DataFusion never splits a file group across partitions.
-    if deleted_doc_filtering_required {
-        config.options_mut().optimizer.repartition_file_scans = false;
-    }
     // When the index has `index.sort.field`, ask DataFusion to use the sort-aware
     // file-group partitioner so `output_ordering` can propagate from the scan.
-    // Skip on the delete path: statistics-based splitting reorders/repartitions file groups,
-    // breaking the one-partition-per-file mapping that LiveDocsRowNumberProvider's per-partition
-    // deleted set relies on (partition i's rows would no longer come from files[i]).
-    if !shard_view.sort_fields.is_empty() && deleted_doc_filtering_required == false {
+    if !shard_view.sort_fields.is_empty() {
         config
             .options_mut()
             .execution

@@ -11,27 +11,27 @@
 //!
 //! Enables `parquet.virtual.row_number` on the `ParquetSource` so each decoded row carries its
 //! file-local physical position (computed from row-group metadata — zero column I/O, and correct
-//! under row-group/page pruning and predicate pushdown). The scan is wrapped in
-//! [`LiveDocsRowNumberFilterExec`], which drops rows whose position is deleted and strips the
-//! virtual column, so the output matches the requested projection.
+//! under row-group/page pruning and predicate pushdown), and exposes a `row_base` partition column
+//! that DataFusion stamps onto every row of a file (a literal, per `PartitionedFile`). The scan is
+//! wrapped in [`LiveDocsRowNumberFilterExec`], which drops rows whose **shard-global** id
+//! (`row_base + row_number`) is in a single deleted-docs bitmap and strips both helper columns.
 //!
-//! One file group per file, so a `DataSourceExec` partition maps to exactly one segment and the
-//! per-partition deleted set is that segment's file-local dead positions. The caller must disable
-//! file-scan repartitioning (`datafusion.optimizer.repartition_file_scans = false`) so that
-//! partition↔file mapping holds.
+//! Keying on the global id (not on partition index) makes filtering **order-independent**:
+//! DataFusion may assign file groups to partitions in any order and split them across partitions,
+//! but each row still carries its own `row_base`, so the global id — and therefore the mask — is
+//! always correct regardless of how the scan is partitioned.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, Int64Array};
 use datafusion::arrow::compute::FilterBuilder;
-use datafusion::arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{DataFusionError, Result, Statistics};
-use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::TableType;
@@ -41,9 +41,8 @@ use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::scalar::ScalarValue;
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::table_schema::TableSchema;
@@ -60,6 +59,8 @@ const ROW_NUMBER_COL: &str = "__row_number__";
 const VIRTUAL_ROW_NUMBER_EXT: &str = "parquet.virtual.row_number";
 /// Arrow metadata key that carries an extension type's name.
 const ARROW_EXTENSION_NAME_KEY: &str = "ARROW:extension:name";
+/// Name of the per-file `row_base` partition column (shard-global offset of the file's first row).
+const ROW_BASE_COL: &str = "row_base";
 
 /// The virtual row-number field the vendored parquet source enables via
 /// `ArrowReaderOptions::with_virtual_columns`. It is appended after the projected file columns.
@@ -72,34 +73,46 @@ fn row_number_field() -> FieldRef {
     Arc::new(Field::new(ROW_NUMBER_COL, DataType::Int64, false).with_metadata(md))
 }
 
-/// File-local dead-doc positions (strictly ascending) derived from a segment's liveDocs (alive
-/// bits). Empty when the segment has no deletions. The row-number indexes this directly (no
-/// `row_base`) because each file group holds a single file/segment.
-fn build_file_deleted(context_id: i64, writer_generation: i64, num_rows: u64) -> Vec<u64> {
-    let mut deleted = Vec::new();
-    if let Ok(Some(alive)) = get_live_docs(context_id, writer_generation, 0, num_rows as i32) {
-        for (w, &word) in alive.iter().enumerate() {
-            if word == u64::MAX {
-                continue;
-            }
-            let base = (w as u64) * 64;
-            let mut dead = !word;
-            while dead != 0 {
-                let local = base + dead.trailing_zeros() as u64;
-                if local < num_rows {
-                    deleted.push(local);
+/// Build the shard-global deleted-docs bitmap by folding each segment's liveDocs into
+/// `row_base + local_dead_position`. `row_bases[i]` is the global offset of `files[i]`'s first row
+/// (cumulative row count in file order). The result is strictly ascending — files are visited in
+/// ascending `row_base`, and locals ascending within a file — so it is used directly as a sorted
+/// slice for the per-batch lookup, no sort needed.
+fn build_global_deleted(context_id: i64, files: &[LiveDocsFileInfo], row_bases: &[u64]) -> Vec<u64> {
+    let mut deleted: Vec<u64> = Vec::new();
+    for (f, &row_base) in files.iter().zip(row_bases.iter()) {
+        if let Ok(Some(alive)) =
+            get_live_docs(context_id, f.writer_generation, 0, f.num_rows as i32)
+        {
+            for (w, &word) in alive.iter().enumerate() {
+                if word == u64::MAX {
+                    continue;
                 }
-                dead &= dead - 1;
+                let base = (w as u64) * 64;
+                let mut dead = !word;
+                while dead != 0 {
+                    let local = base + dead.trailing_zeros() as u64;
+                    if local < f.num_rows {
+                        deleted.push(row_base + local);
+                    }
+                    dead &= dead - 1;
+                }
             }
         }
     }
+    debug_assert!(
+        deleted.windows(2).all(|w| w[0] < w[1]),
+        "global deleted ids must be strictly ascending"
+    );
     deleted
 }
 
-/// TableProvider that scans parquet with the virtual row-number column enabled and filters deleted
-/// docs post-decode, keeping DataFusion's row-group/page pruning and predicate pushdown.
+/// TableProvider that scans parquet with the virtual row-number column enabled plus a `row_base`
+/// partition column, and drops shard-globally-deleted rows post-decode — keeping DataFusion's
+/// row-group/page pruning and predicate pushdown.
 pub struct LiveDocsRowNumberProvider {
-    schema: SchemaRef,
+    /// The real file schema (what the planner projects against).
+    file_schema: SchemaRef,
     files: Vec<LiveDocsFileInfo>,
     store_url: ObjectStoreUrl,
     context_id: i64,
@@ -107,13 +120,13 @@ pub struct LiveDocsRowNumberProvider {
 
 impl LiveDocsRowNumberProvider {
     pub fn new(
-        schema: SchemaRef,
+        file_schema: SchemaRef,
         files: Vec<LiveDocsFileInfo>,
         store_url: ObjectStoreUrl,
         context_id: i64,
     ) -> Self {
         Self {
-            schema,
+            file_schema,
             files,
             store_url,
             context_id,
@@ -132,7 +145,7 @@ impl std::fmt::Debug for LiveDocsRowNumberProvider {
 #[async_trait]
 impl TableProvider for LiveDocsRowNumberProvider {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.file_schema.clone()
     }
 
     fn table_type(&self) -> TableType {
@@ -153,49 +166,68 @@ impl TableProvider for LiveDocsRowNumberProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // One file group per file → a scan partition maps to exactly one segment, so its deleted
-        // set is that segment's file-local dead positions. Requires file-scan repartitioning off.
-        let mut groups: Vec<FileGroup> = Vec::with_capacity(self.files.len());
-        let mut deleted_per_partition: Vec<Arc<Vec<u64>>> = Vec::with_capacity(self.files.len());
+        let num_file_cols = self.file_schema.fields().len();
+
+        // Assign each file a shard-global row_base (cumulative row count in file order) and stamp it
+        // as the file's partition value. All files go in one FileGroup; DataFusion may repartition
+        // freely — the global id keeps the mask correct regardless of the partition layout.
+        let mut row_bases: Vec<u64> = Vec::with_capacity(self.files.len());
+        let mut acc: u64 = 0;
+        let mut partitioned_files: Vec<PartitionedFile> = Vec::with_capacity(self.files.len());
         for f in &self.files {
-            groups.push(FileGroup::new(vec![PartitionedFile::from(f.object_meta.clone())]));
-            deleted_per_partition.push(Arc::new(build_file_deleted(
-                self.context_id,
-                f.writer_generation,
-                f.num_rows,
-            )));
+            row_bases.push(acc);
+            let mut pf = PartitionedFile::from(f.object_meta.clone());
+            pf.partition_values = vec![ScalarValue::Int64(Some(acc as i64))];
+            partitioned_files.push(pf);
+            acc += f.num_rows;
         }
+        let file_groups = vec![FileGroup::new(partitioned_files)];
 
-        let projected_schema: SchemaRef = match projection {
-            Some(proj) => Arc::new(
-                self.schema
-                    .project(proj)
-                    .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?,
-            ),
-            None => self.schema.clone(),
+        // Build the deleted-docs bitmap now (scan time — the getLiveDocs FFM binding exists).
+        let deleted = Arc::new(build_global_deleted(self.context_id, &self.files, &row_bases));
+        log_info!(
+            "LiveDocsRowNumber scan: files={} global_deleted={}",
+            self.files.len(),
+            deleted.len()
+        );
+
+        // Output schema = requested real columns (row_base and row_number are stripped by the exec).
+        let out_indices: Vec<usize> = match projection {
+            Some(p) => p.iter().copied().filter(|&i| i < num_file_cols).collect(),
+            None => (0..num_file_cols).collect(),
         };
-        let num_out_cols = projected_schema.fields().len();
+        let out_fields: Vec<FieldRef> =
+            out_indices.iter().map(|&i| self.file_schema.fields()[i].clone()).collect();
+        let output_schema = Arc::new(Schema::new(out_fields));
+        let num_out_cols = output_schema.fields().len();
 
-        let table_schema = TableSchema::new(self.schema.clone(), vec![]);
+        // table_schema = file schema + row_base partition column (appended last, index num_file_cols).
+        let table_schema = TableSchema::new(
+            self.file_schema.clone(),
+            vec![Arc::new(Field::new(ROW_BASE_COL, DataType::Int64, true))],
+        );
         // Enable the virtual row-number column; the vendored opener appends it after the projected
-        // file columns and RowNumberReader fills it (zero I/O, skip-aware).
+        // (real + row_base) columns and RowNumberReader fills it (zero I/O, skip-aware).
         let parquet_source =
             ParquetSource::new(table_schema).with_virtual_columns(vec![row_number_field()]);
-        let mut builder =
+
+        // Projection into the table schema: requested real columns (in requested order) followed by
+        // the row_base partition column. The decoded batch is therefore
+        // [real cols (num_out_cols)] + [row_base] + [row_number].
+        let mut proj_indices = out_indices.clone();
+        proj_indices.push(num_file_cols); // row_base
+        let builder =
             FileScanConfigBuilder::new(self.store_url.clone(), Arc::new(parquet_source))
-                .with_file_groups(groups);
-        if let Some(proj) = projection {
-            builder = builder
-                .with_projection_indices(Some(proj.clone()))
+                .with_file_groups(file_groups)
+                .with_projection_indices(Some(proj_indices))
                 .map_err(|e| DataFusionError::Internal(format!("{e}")))?;
-        }
         let scan = DataSourceExec::from_data_source(builder.build());
 
         Ok(Arc::new(LiveDocsRowNumberFilterExec::new(
             scan,
-            projected_schema,
+            output_schema,
             num_out_cols,
-            Arc::new(deleted_per_partition),
+            deleted,
         )))
     }
 
@@ -204,29 +236,19 @@ impl TableProvider for LiveDocsRowNumberProvider {
     }
 }
 
-/// TEMP diagnostics: per-partition counters shared between the mask closure and the terminal
-/// summary batch. `noncontig` counts batches whose row-numbers were NOT the fully-contiguous
-/// [g0, g0+n) run (row-group reorder / pruning → binary-search path in mask_batch).
-#[derive(Default)]
-struct PartitionMaskCounters {
-    rows: AtomicU64,
-    cleared: AtomicU64,
-    noncontig: AtomicU64,
-    logged_first: AtomicBool,
-}
-
-/// Physical node that drops deleted rows using the appended virtual row-number column and strips
-/// that column from the output. Wraps the parquet `DataSourceExec` directly (one partition per
-/// file/segment) so repartitioning is disabled to keep the partition↔segment mapping.
+/// Physical node that drops shard-globally-deleted rows using the `row_base` partition column and
+/// the appended virtual row-number column (`global = row_base + row_number`), then strips both
+/// helper columns from the output. Order-independent: correctness does not depend on how the input
+/// scan is partitioned, so this simply mirrors the input's partitioning.
 #[derive(Debug)]
 pub struct LiveDocsRowNumberFilterExec {
     input: Arc<dyn ExecutionPlan>,
     output_schema: SchemaRef,
-    /// Number of requested output columns; the virtual row-number sits at this index in the
-    /// decoded batch (real columns [0, num_out_cols), row-number at num_out_cols).
+    /// Number of requested output columns. Batch layout: real cols [0, num_out_cols), row_base at
+    /// `num_out_cols`, virtual row-number at `num_out_cols + 1`.
     num_out_cols: usize,
-    /// One entry per input partition (= per file/segment): its file-local dead positions, ascending.
-    deleted_per_partition: Arc<Vec<Arc<Vec<u64>>>>,
+    /// Shard-global deleted ids (`row_base + local`), strictly ascending; shared across partitions.
+    deleted: Arc<Vec<u64>>,
     properties: Arc<PlanProperties>,
 }
 
@@ -235,7 +257,7 @@ impl LiveDocsRowNumberFilterExec {
         input: Arc<dyn ExecutionPlan>,
         output_schema: SchemaRef,
         num_out_cols: usize,
-        deleted_per_partition: Arc<Vec<Arc<Vec<u64>>>>,
+        deleted: Arc<Vec<u64>>,
     ) -> Self {
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema.clone()),
@@ -247,7 +269,7 @@ impl LiveDocsRowNumberFilterExec {
             input,
             output_schema,
             num_out_cols,
-            deleted_per_partition,
+            deleted,
             properties,
         }
     }
@@ -268,10 +290,11 @@ impl LiveDocsRowNumberFilterExec {
         .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
     }
 
-    /// Drop rows whose file-local row-number is deleted, then emit only the real columns (strip the
-    /// virtual row-number). `deleted` is file-local, ascending. The row-number is contiguous within
-    /// a batch when no rows were skipped during decode (range-clear, O(deletes-in-batch)); when
-    /// pushdown/pruning gapped the batch it falls back to a per-row binary search (still correct).
+    /// Drop rows whose shard-global id (`row_base + row_number`) is deleted, then emit only the real
+    /// columns (strip row_base and row_number). `row_base` is a constant within a batch (the file's
+    /// offset); the row-number is file-local. When the row-numbers are the fully-contiguous
+    /// [rn0, rn0+n) run (no pruning/reorder gaps) the global ids are also contiguous and the deleted
+    /// ids are cleared via a range lookup (O(deletes-in-batch)); otherwise a per-row binary search.
     fn mask_batch(
         batch: &RecordBatch,
         deleted: &[u64],
@@ -279,25 +302,34 @@ impl LiveDocsRowNumberFilterExec {
         output_schema: &SchemaRef,
     ) -> Result<RecordBatch> {
         let n = batch.num_rows();
-        // No deletes, empty batch, or the virtual column wasn't appended (all-alive segment) → project.
-        if deleted.is_empty() || n == 0 || batch.num_columns() <= num_out_cols {
+        // No deletes, empty batch, or helper columns absent → project real columns through.
+        if deleted.is_empty() || n == 0 || batch.num_columns() < num_out_cols + 2 {
             return Self::project_only(batch, num_out_cols, output_schema, n);
         }
 
-        let rownum = batch
+        let row_base_arr = batch
             .column(num_out_cols)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| DataFusionError::Internal("row_base column is not Int64".into()))?;
+        let rownum = batch
+            .column(num_out_cols + 1)
             .as_any()
             .downcast_ref::<Int64Array>()
             .ok_or_else(|| {
                 DataFusionError::Internal("virtual row_number column is not Int64".into())
             })?;
 
+        // row_base is a per-file constant literal, so it is identical for every row of a batch.
+        let row_base = row_base_arr.value(0);
+
         let mut keep = vec![true; n];
         let mut cleared = 0usize;
-        let g0 = rownum.value(0);
-        let g_last = rownum.value(n - 1);
-        if g_last - g0 == (n as i64 - 1) {
-            // Contiguous: clear the deleted ids in [g0, g0 + n) via a range lookup.
+        let rn0 = rownum.value(0);
+        let rn_last = rownum.value(n - 1);
+        let g0 = row_base + rn0;
+        if rn_last - rn0 == n as i64 - 1 {
+            // Contiguous: global ids span [g0, g0 + n); clear the deleted ids in that range.
             let gn = g0 + n as i64;
             let start = deleted.partition_point(|&x| (x as i64) < g0);
             let mut idx = start;
@@ -308,7 +340,8 @@ impl LiveDocsRowNumberFilterExec {
             }
         } else {
             for i in 0..n {
-                if deleted.binary_search(&(rownum.value(i) as u64)).is_ok() {
+                let global = (row_base + rownum.value(i)) as u64;
+                if deleted.binary_search(&global).is_ok() {
                     keep[i] = false;
                     cleared += 1;
                 }
@@ -322,7 +355,7 @@ impl LiveDocsRowNumberFilterExec {
         let kept = n - cleared;
         let mask = BooleanArray::from(keep);
         let predicate = FilterBuilder::new(&mask).optimize().build();
-        // Filter only the output columns — never the virtual row-number (read solely to build the mask).
+        // Filter only the output columns — never the helper columns (read solely to build the mask).
         let cols: Vec<ArrayRef> = (0..num_out_cols)
             .map(|p| predicate.filter(batch.column(p)))
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -340,8 +373,8 @@ impl DisplayAs for LiveDocsRowNumberFilterExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "LiveDocsRowNumberFilterExec: partitions={}",
-            self.deleted_per_partition.len()
+            "LiveDocsRowNumberFilterExec: deleted={}",
+            self.deleted.len()
         )
     }
 }
@@ -367,23 +400,13 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
             .into_iter()
             .next()
             .unwrap_or_else(|| Arc::clone(&self.input));
-        Ok(Arc::new(LiveDocsRowNumberFilterExec {
+        // Recompute properties so partitioning tracks the (possibly repartitioned) input.
+        Ok(Arc::new(LiveDocsRowNumberFilterExec::new(
             input,
-            output_schema: self.output_schema.clone(),
-            num_out_cols: self.num_out_cols,
-            deleted_per_partition: Arc::clone(&self.deleted_per_partition),
-            properties: Arc::clone(&self.properties),
-        }))
-    }
-
-    /// Repartitioning is disabled: the partition↔file/segment mapping (and thus the per-partition
-    /// deleted set) must be preserved, so we never add or split partitions.
-    fn repartitioned(
-        &self,
-        _target_partitions: usize,
-        _config: &ConfigOptions,
-    ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        Ok(None)
+            self.output_schema.clone(),
+            self.num_out_cols,
+            Arc::clone(&self.deleted),
+        )))
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
@@ -396,65 +419,30 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let input_stream = self.input.execute(partition, context)?;
-        let deleted = self
-            .deleted_per_partition
-            .get(partition)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let deleted = Arc::clone(&self.deleted);
         let num_out_cols = self.num_out_cols;
         let output_schema = self.output_schema.clone();
-        // TEMP diagnostics: per-partition first-batch row-number range (identifies which file this
-        // partition actually reads → tests partition↔file stability) and a drop-time rows/cleared
-        // summary (tests whether the same partition clears the same rows across runs).
-        log_info!(
-            "LiveDocsRowNumber execute: partition={} deleted_len={} deleted_first={:?} deleted_last={:?}",
-            partition,
-            deleted.len(),
-            deleted.first(),
-            deleted.last()
-        );
-        // TEMP diagnostics: accumulate into shared atomics and emit a summary from a terminal
-        // zero-row batch appended to the stream. Drop-based summaries were unreliable here — the
-        // real (polled) streams aren't dropped within the query window, so their stats were lost.
-        let counters = Arc::new(PartitionMaskCounters::default());
-        let c = Arc::clone(&counters);
+        // TEMP diagnostics: per-stream rows/cleared, emitted from a terminal zero-row batch at
+        // stream end (Drop-based logging is unreliable — polled streams outlive the query window).
+        let rows = Arc::new(AtomicU64::new(0));
+        let cleared = Arc::new(AtomicU64::new(0));
+        let (rows_c, cleared_c) = (Arc::clone(&rows), Arc::clone(&cleared));
         let mapped = input_stream.map(move |res| {
             res.and_then(|batch| {
                 let rows_in = batch.num_rows();
-                if rows_in > 0 && batch.num_columns() > num_out_cols {
-                    if let Some(rn) =
-                        batch.column(num_out_cols).as_any().downcast_ref::<Int64Array>()
-                    {
-                        let g0 = rn.value(0);
-                        let g_last = rn.value(rows_in - 1);
-                        if g_last - g0 != rows_in as i64 - 1 {
-                            c.noncontig.fetch_add(1, Ordering::Relaxed);
-                        }
-                        if c.logged_first.swap(true, Ordering::Relaxed) == false {
-                            log_info!(
-                                "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
-                                partition,
-                                g0,
-                                g_last,
-                                rows_in
-                            );
-                        }
-                    }
-                }
                 let out = Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema)?;
-                c.rows.fetch_add(rows_in as u64, Ordering::Relaxed);
-                c.cleared.fetch_add((rows_in - out.num_rows()) as u64, Ordering::Relaxed);
+                rows_c.fetch_add(rows_in as u64, Ordering::Relaxed);
+                cleared_c.fetch_add((rows_in - out.num_rows()) as u64, Ordering::Relaxed);
                 Ok(out)
             })
         });
         let terminal_schema = self.output_schema.clone();
         let terminal = futures::stream::once(async move {
             log_info!(
-                "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={} noncontig_batches={}",
+                "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={}",
                 partition,
-                counters.rows.load(Ordering::Relaxed),
-                counters.cleared.load(Ordering::Relaxed),
-                counters.noncontig.load(Ordering::Relaxed)
+                rows.load(Ordering::Relaxed),
+                cleared.load(Ordering::Relaxed)
             );
             Ok(RecordBatch::new_empty(terminal_schema))
         });
