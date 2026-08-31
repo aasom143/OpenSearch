@@ -48,6 +48,7 @@ use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
 use datafusion_datasource::table_schema::TableSchema;
 use datafusion_datasource::PartitionedFile;
 use futures::StreamExt;
+use native_bridge_common::log_info;
 
 use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::live_docs_table_provider::LiveDocsFileInfo;
@@ -213,7 +214,7 @@ struct PartitionMaskStats {
 
 impl Drop for PartitionMaskStats {
     fn drop(&mut self) {
-        log::info!(
+        log_info!(
             "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={}",
             self.partition,
             self.rows,
@@ -413,7 +414,7 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
         // TEMP diagnostics: per-partition first-batch row-number range (identifies which file this
         // partition actually reads → tests partition↔file stability) and a drop-time rows/cleared
         // summary (tests whether the same partition clears the same rows across runs).
-        log::info!(
+        log_info!(
             "LiveDocsRowNumber execute: partition={} deleted_len={} deleted_first={:?} deleted_last={:?}",
             partition,
             deleted.len(),
@@ -426,7 +427,7 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
                 let rows_in = batch.num_rows();
                 if stats.logged_first == false && rows_in > 0 && batch.num_columns() > num_out_cols {
                     if let Some(rn) = batch.column(num_out_cols).as_any().downcast_ref::<Int64Array>() {
-                        log::info!(
+                        log_info!(
                             "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
                             stats.partition,
                             rn.value(0),
