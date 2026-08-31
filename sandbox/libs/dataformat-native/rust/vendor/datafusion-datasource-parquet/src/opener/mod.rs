@@ -785,6 +785,28 @@ impl MetadataLoadedParquetOpen {
         //   parquet reader will actually produce.
         let mut physical_file_schema = Arc::clone(reader_metadata.schema());
 
+        // Virtual columns (backport of DF55) are appended to the reader's schema after the real
+        // file columns. All schema coercion, `with_schema`, and predicate/projection rewriting
+        // below must see the real file columns only — the reader tracks virtual columns separately
+        // (`options.virtual_columns`) and re-appends them to each output batch; `build_stream`
+        // extends the output schema to match. Feeding the virtual field into `with_schema` here
+        // would make the parquet arrow-schema matcher compare N+virtual fields against the file's N
+        // real fields and fail ("incompatible arrow schema, expected N struct fields got N+1").
+        if prepared.virtual_columns.is_empty() == false {
+            let total = physical_file_schema.fields().len();
+            let real = total.saturating_sub(prepared.virtual_columns.len());
+            let real_fields: Vec<_> = physical_file_schema
+                .fields()
+                .iter()
+                .take(real)
+                .cloned()
+                .collect();
+            physical_file_schema = Arc::new(
+                Schema::new(real_fields)
+                    .with_metadata(physical_file_schema.metadata().clone()),
+            );
+        }
+
         // The schema loaded from the file may not be the same as the
         // desired schema (for example if we want to instruct the parquet
         // reader to read strings using Utf8View instead). Update if necessary
