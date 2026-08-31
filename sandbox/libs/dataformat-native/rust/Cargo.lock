@@ -2826,6 +2826,7 @@ dependencies = [
  "datafusion",
  "datafusion-common",
  "datafusion-datasource",
+ "datafusion-datasource-parquet",
  "datafusion-execution",
  "datafusion-expr",
  "datafusion-substrait",

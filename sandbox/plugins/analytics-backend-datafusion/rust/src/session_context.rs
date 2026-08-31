@@ -384,11 +384,11 @@ pub async unsafe fn create_session_context(
     };
 
     if deleted_doc_filtering_required {
-        // Virtual-row-number delete path: register LiveDocsRowNumberProvider. It enables the
-        // parquet `parquet.virtual.row_number` column on a standard DataSourceExec (keeping
-        // row-group/page pruning and predicate pushdown) and drops deleted rows post-decode by
-        // file-local position. One file group per file → each scan partition maps to one segment,
-        // so repartition_file_scans was disabled above to keep that mapping.
+        // Deleted-doc RowFilter path: register LiveDocsRowFilterProvider. It enables the parquet
+        // virtual `row_number` column and attaches each file's deleted positions as a
+        // DeletedRowNumbers extension; the vendored opener drops deleted rows via a RowFilter
+        // predicate on row_number (late-materialized after the query predicate, flat under scatter).
+        // Plain DataSourceExec — no wrapper exec, no row_base column.
         let metadata_cache = runtime.runtime_env.cache_manager.get_file_metadata_cache();
         let store = Arc::clone(&shard_view.store);
         let mut files: Vec<crate::live_docs_table_provider::LiveDocsFileInfo> =
@@ -420,7 +420,7 @@ pub async unsafe fn create_session_context(
         // The deleted set is built lazily in the provider's scan() (query time), when the
         // getLiveDocs FFM binding is registered — building it here would be too early.
         let provider = Arc::new(
-            crate::live_docs_rownumber_provider::LiveDocsRowNumberProvider::new(
+            crate::live_docs_rowfilter_provider::LiveDocsRowFilterProvider::new(
                 resolved_schema,
                 files,
                 store_url,
@@ -430,7 +430,7 @@ pub async unsafe fn create_session_context(
         ctx.register_table(register_name.as_str(), provider)
             .map_err(|e| {
                 error!(
-                    "create_session_context: failed to register LiveDocsRowNumberProvider '{}': {}",
+                    "create_session_context: failed to register LiveDocsRowFilterProvider '{}': {}",
                     register_name, e
                 );
                 e

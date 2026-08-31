@@ -68,7 +68,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use arrow::array::BooleanArray;
+use arrow::array::{Array, BooleanArray, Int64Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
@@ -1080,6 +1080,65 @@ pub fn build_row_filter(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|filters| Some(RowFilter::new(filters)))
+}
+
+/// Per-file, file-local deleted row positions (0-based, strictly ascending), attached to a
+/// [`PartitionedFile`](datafusion_datasource::PartitionedFile) via `with_extension`. When present,
+/// `build_stream` appends a [`RowFilter`] predicate that drops these rows using the virtual
+/// `row_number` column — late-materialized after the query predicate, with no run-length encoding
+/// (so it stays flat as deletions scatter, unlike a `RowSelection`).
+#[derive(Debug, Clone)]
+pub struct DeletedRowNumbers(pub Arc<Vec<u64>>);
+
+/// A [`RowFilter`] predicate that keeps rows whose virtual `row_number` is NOT in `deleted`.
+///
+/// The parquet reader appends the virtual row-number column as the trailing column of the batch
+/// handed to [`ArrowPredicate::evaluate`], regardless of the predicate's projection mask, so this
+/// uses an empty real-column projection ([`ProjectionMask::none`]) and reads the last column by
+/// position. `deleted` must be strictly ascending (binary search).
+struct DeletedRowFilter {
+    projection: ProjectionMask,
+    deleted: Arc<Vec<u64>>,
+}
+
+impl ArrowPredicate for DeletedRowFilter {
+    fn projection(&self) -> &ProjectionMask {
+        &self.projection
+    }
+
+    fn evaluate(&mut self, batch: RecordBatch) -> ArrowResult<BooleanArray> {
+        let n = batch.num_rows();
+        if self.deleted.is_empty() || batch.num_columns() == 0 {
+            return Ok(BooleanArray::from(vec![true; n]));
+        }
+        // The virtual row-number is the trailing column (empty real projection ⇒ it is column 0).
+        let rn = batch
+            .column(batch.num_columns() - 1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| {
+                ArrowError::ComputeError(
+                    "DeletedRowFilter: trailing virtual row_number column is not Int64".to_string(),
+                )
+            })?;
+        let deleted = &self.deleted;
+        let keep: BooleanArray = (0..n)
+            .map(|i| deleted.binary_search(&(rn.value(i) as u64)).is_err())
+            .collect();
+        Ok(keep)
+    }
+}
+
+/// Build the delete `RowFilter` predicate for a file from its file-local deleted positions.
+/// Uses an empty real-column projection — the reader delivers the virtual row-number regardless.
+pub(crate) fn build_deleted_row_filter(
+    deleted: Arc<Vec<u64>>,
+    num_leaf_columns: usize,
+) -> Box<dyn ArrowPredicate> {
+    Box::new(DeletedRowFilter {
+        projection: ProjectionMask::none(num_leaf_columns),
+        deleted,
+    })
 }
 
 /// Builds row filters for decoder runs.

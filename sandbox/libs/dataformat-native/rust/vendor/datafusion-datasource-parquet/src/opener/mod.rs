@@ -26,7 +26,9 @@ use self::encryption::EncryptionContext;
 use crate::access_plan::PreparedAccessPlan;
 use crate::page_filter::PagePruningAccessPlanFilter;
 use crate::push_decoder::{DecoderBuilderConfig, PushDecoderStreamState};
-use crate::row_filter::{RowFilterGenerator, build_projection_read_plan};
+use crate::row_filter::{
+    DeletedRowNumbers, RowFilterGenerator, build_deleted_row_filter, build_projection_read_plan,
+};
 use crate::row_group_filter::{BloomFilterStatistics, RowGroupAccessPlanFilter};
 use crate::{
     Int96Coercer, ParquetAccessPlan, ParquetFileMetrics, ParquetFileReaderFactory,
@@ -69,7 +71,7 @@ use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use log::debug;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::arrow_reader::metrics::ArrowReaderMetrics;
-use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowFilter};
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::parquet_column;
 use parquet::basic::Type;
@@ -1212,11 +1214,25 @@ impl RowGroupsPrunedParquetOpen {
                 &prepared.file_metrics,
             );
 
+            // Deleted-doc filtering (this fork): a per-file, file-local set of deleted row positions
+            // attached to the PartitionedFile. When present, a RowFilter predicate on the virtual
+            // row-number column drops these rows — applied after the query predicate, so it only
+            // evaluates on rows surviving pushdown, and unlike a RowSelection it does not run-length
+            // encode (flat under scatter). Every row group needs the filter (deletes are everywhere).
+            let deleted_row_numbers: Option<Arc<Vec<u64>>> = prepared
+                .extensions
+                .get::<DeletedRowNumbers>()
+                .map(|d| Arc::clone(&d.0))
+                .filter(|d| !d.is_empty());
+            let has_deletes = deleted_row_numbers.is_some();
+            let num_leaf_columns = reader_metadata.parquet_schema().num_columns();
+
             // Split into consecutive runs of row groups that share the same filter
             // requirement. Fully matched row groups skip the RowFilter; others need it.
             // Reverse the run order for reverse scans so the combined decoder stream
             // preserves the requested global row group order.
-            let mut runs = access_plan.split_runs(row_filter_generator.has_row_filter());
+            let mut runs =
+                access_plan.split_runs(row_filter_generator.has_row_filter() || has_deletes);
             if prepared.reverse_row_groups {
                 runs.reverse();
             }
@@ -1238,8 +1254,27 @@ impl RowGroupsPrunedParquetOpen {
                 let prepared_access_plan = prepare_access_plan(run.access_plan)?;
                 let mut builder =
                     decoder_config.build(prepared_access_plan, reader_metadata.clone());
-                if run.needs_filter {
-                    if let Some(row_filter) = row_filter_generator.next_filter() {
+                if run.needs_filter || has_deletes {
+                    // Query predicate for this run (if any), then the deleted-doc predicate appended
+                    // last so it only evaluates on rows surviving the query predicate.
+                    let query_filter = if run.needs_filter {
+                        row_filter_generator.next_filter()
+                    } else {
+                        None
+                    };
+                    let combined = match (query_filter, deleted_row_numbers.clone()) {
+                        (Some(rf), Some(deleted)) => {
+                            let mut preds = rf.into_predicates();
+                            preds.push(build_deleted_row_filter(deleted, num_leaf_columns));
+                            Some(RowFilter::new(preds))
+                        }
+                        (Some(rf), None) => Some(rf),
+                        (None, Some(deleted)) => Some(RowFilter::new(vec![
+                            build_deleted_row_filter(deleted, num_leaf_columns),
+                        ])),
+                        (None, None) => None,
+                    };
+                    if let Some(row_filter) = combined {
                         builder = builder.with_row_filter(row_filter);
                     }
                     if let Some(max_predicate_cache_size) =
@@ -1276,17 +1311,11 @@ impl RowGroupsPrunedParquetOpen {
             .try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
         let projector = projection.make_projector(&stream_schema)?;
         // Virtual columns (backport of DF55) are appended by the reader after the projected file
-        // columns; extend the output schema so they survive to the DataSourceExec output. The
-        // projector still runs over the real columns only (see PushDecoderStreamState::project_batch).
+        // columns. In this fork the virtual row-number is used ONLY by the deleted-doc RowFilter
+        // predicate, never emitted — so the output schema stays the requested projection and
+        // project_batch strips the trailing virtual column(s).
         let virtual_column_count = prepared.virtual_columns.len();
-        let output_schema = if virtual_column_count == 0 {
-            Arc::clone(&prepared.output_schema)
-        } else {
-            let mut fields: Vec<FieldRef> =
-                prepared.output_schema.fields().iter().cloned().collect();
-            fields.extend(prepared.virtual_columns.iter().cloned());
-            Arc::new(Schema::new(fields))
-        };
+        let output_schema = Arc::clone(&prepared.output_schema);
         let files_ranges_pruned_statistics =
             prepared.file_metrics.files_ranges_pruned_statistics.clone();
         let stream = PushDecoderStreamState {
