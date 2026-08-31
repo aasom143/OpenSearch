@@ -31,7 +31,7 @@ use datafusion::arrow::compute::FilterBuilder;
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::{DataFusionError, Result, Statistics};
+use datafusion::common::{DFSchema, DataFusionError, Result, Statistics};
 use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::TableType;
@@ -161,9 +161,9 @@ impl TableProvider for LiveDocsRowNumberProvider {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let num_file_cols = self.file_schema.fields().len();
@@ -208,8 +208,20 @@ impl TableProvider for LiveDocsRowNumberProvider {
         );
         // Enable the virtual row-number column; the vendored opener appends it after the projected
         // (real + row_base) columns and RowNumberReader fills it (zero I/O, skip-aware).
-        let parquet_source =
+        let mut parquet_source =
             ParquetSource::new(table_schema).with_virtual_columns(vec![row_number_field()]);
+        // Push the query predicate into the scan so parquet row-group / page-index pruning runs.
+        // DataFusion can't push the FilterExec through this wrapper exec into the DataSourceExec
+        // automatically, so without this the scan reads every row. The virtual row-number stays
+        // correct under pruning (row-group-metadata based); mask_batch's binary-search path handles
+        // the resulting gapped (non-contiguous) batches.
+        if let Some(pred) = filters.iter().cloned().reduce(|a, b| a.and(b)) {
+            if let Ok(df_schema) = DFSchema::try_from(self.file_schema.as_ref().clone()) {
+                if let Ok(phys) = state.create_physical_expr(pred, &df_schema) {
+                    parquet_source = parquet_source.with_predicate(phys);
+                }
+            }
+        }
 
         // Projection into the table schema: requested real columns (in requested order) followed by
         // the row_base partition column. The decoded batch is therefore
