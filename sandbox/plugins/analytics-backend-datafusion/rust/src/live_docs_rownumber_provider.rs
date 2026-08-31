@@ -168,7 +168,10 @@ impl TableProvider for LiveDocsRowNumberProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let num_file_cols = self.file_schema.fields().len();
 
-        // TEMP latency-attribution toggle (env LIVEDOCS_DELETE_MODE):
+        // TEMP latency-attribution toggle. Read per-query from the file /tmp/livedocs_delete_mode
+        // (not an env var — gradle testcluster forks the JVM with a scrubbed environment). Flip it
+        // with `echo strip > /tmp/livedocs_delete_mode` — no node restart needed; `rm` or `echo
+        // full` restores normal filtering.
         //   "plain" — plain parquet scan of the requested columns only: no virtual column, no
         //             row_base, no wrapper exec. Plan drops LiveDocsRowNumberFilterExec entirely →
         //             baseline (does NOT filter deletes; measurement only).
@@ -177,7 +180,9 @@ impl TableProvider for LiveDocsRowNumberProvider {
         //             filtering. Isolates the virtual/row_base cost (vs "plain") from the mask cost
         //             (full − "strip"). Also does NOT filter deletes; measurement only.
         //   else    — full delete filtering (default, correct).
-        let mode = std::env::var("LIVEDOCS_DELETE_MODE").unwrap_or_default();
+        let mode = std::fs::read_to_string("/tmp/livedocs_delete_mode")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
 
         // Output schema = requested real columns (row_base and row_number are stripped by the exec).
         let out_indices: Vec<usize> = match projection {
