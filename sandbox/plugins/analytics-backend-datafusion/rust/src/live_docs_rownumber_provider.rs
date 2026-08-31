@@ -21,6 +21,7 @@
 //! partition↔file mapping holds.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -203,31 +204,15 @@ impl TableProvider for LiveDocsRowNumberProvider {
     }
 }
 
-/// TEMP diagnostics: accumulates rows seen, rows cleared, and non-contiguous batches for one
-/// partition's stream; logs the summary when the stream is dropped (query end). Only streams that
-/// actually processed rows are logged — DataFusion builds and drops probe streams that never poll.
-struct PartitionMaskStats {
-    partition: usize,
-    rows: u64,
-    cleared: u64,
-    /// Batches whose row-numbers were NOT the fully-contiguous [g0, g0+n) run (row-group reorder /
-    /// pruning), which forces the per-row binary-search path in mask_batch.
-    noncontig: u64,
-    logged_first: bool,
-}
-
-impl Drop for PartitionMaskStats {
-    fn drop(&mut self) {
-        if self.rows > 0 {
-            log_info!(
-                "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={} noncontig_batches={}",
-                self.partition,
-                self.rows,
-                self.cleared,
-                self.noncontig
-            );
-        }
-    }
+/// TEMP diagnostics: per-partition counters shared between the mask closure and the terminal
+/// summary batch. `noncontig` counts batches whose row-numbers were NOT the fully-contiguous
+/// [g0, g0+n) run (row-group reorder / pruning → binary-search path in mask_batch).
+#[derive(Default)]
+struct PartitionMaskCounters {
+    rows: AtomicU64,
+    cleared: AtomicU64,
+    noncontig: AtomicU64,
+    logged_first: AtomicBool,
 }
 
 /// Physical node that drops deleted rows using the appended virtual row-number column and strips
@@ -428,8 +413,11 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
             deleted.first(),
             deleted.last()
         );
-        let mut stats =
-            PartitionMaskStats { partition, rows: 0, cleared: 0, noncontig: 0, logged_first: false };
+        // TEMP diagnostics: accumulate into shared atomics and emit a summary from a terminal
+        // zero-row batch appended to the stream. Drop-based summaries were unreliable here — the
+        // real (polled) streams aren't dropped within the query window, so their stats were lost.
+        let counters = Arc::new(PartitionMaskCounters::default());
+        let c = Arc::clone(&counters);
         let mapped = input_stream.map(move |res| {
             res.and_then(|batch| {
                 let rows_in = batch.num_rows();
@@ -440,29 +428,39 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
                         let g0 = rn.value(0);
                         let g_last = rn.value(rows_in - 1);
                         if g_last - g0 != rows_in as i64 - 1 {
-                            stats.noncontig += 1;
+                            c.noncontig.fetch_add(1, Ordering::Relaxed);
                         }
-                        if stats.logged_first == false {
+                        if c.logged_first.swap(true, Ordering::Relaxed) == false {
                             log_info!(
                                 "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
-                                stats.partition,
+                                partition,
                                 g0,
                                 g_last,
                                 rows_in
                             );
-                            stats.logged_first = true;
                         }
                     }
                 }
                 let out = Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema)?;
-                stats.rows += rows_in as u64;
-                stats.cleared += (rows_in - out.num_rows()) as u64;
+                c.rows.fetch_add(rows_in as u64, Ordering::Relaxed);
+                c.cleared.fetch_add((rows_in - out.num_rows()) as u64, Ordering::Relaxed);
                 Ok(out)
             })
         });
+        let terminal_schema = self.output_schema.clone();
+        let terminal = futures::stream::once(async move {
+            log_info!(
+                "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={} noncontig_batches={}",
+                partition,
+                counters.rows.load(Ordering::Relaxed),
+                counters.cleared.load(Ordering::Relaxed),
+                counters.noncontig.load(Ordering::Relaxed)
+            );
+            Ok(RecordBatch::new_empty(terminal_schema))
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.output_schema.clone(),
-            mapped,
+            mapped.chain(terminal),
         )))
     }
 
