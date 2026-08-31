@@ -422,7 +422,11 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
-        vec![false]
+        // Let EnforceDistribution repartition the underlying parquet scan into the session's slice
+        // count (search.concurrent.max_slice_count) so the delete path parallelizes like the plain
+        // scan. with_new_children rewraps the repartitioned input and recomputes partitioning; the
+        // global-bitmap mask is order-independent, so any slice layout is correct.
+        vec![true]
     }
 
     fn execute(
