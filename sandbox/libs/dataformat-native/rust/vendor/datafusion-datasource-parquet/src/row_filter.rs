@@ -1108,7 +1108,7 @@ impl ArrowPredicate for DeletedRowFilter {
 
     fn evaluate(&mut self, batch: RecordBatch) -> ArrowResult<BooleanArray> {
         let n = batch.num_rows();
-        if self.deleted.is_empty() || batch.num_columns() == 0 {
+        if self.deleted.is_empty() || n == 0 || batch.num_columns() == 0 {
             return Ok(BooleanArray::from(vec![true; n]));
         }
         // The virtual row-number is the trailing column (empty real projection ⇒ it is column 0).
@@ -1122,10 +1122,28 @@ impl ArrowPredicate for DeletedRowFilter {
                 )
             })?;
         let deleted = &self.deleted;
-        let keep: BooleanArray = (0..n)
-            .map(|i| deleted.binary_search(&(rn.value(i) as u64)).is_err())
-            .collect();
-        Ok(keep)
+        // Keep-all, then clear the deleted rows. When the batch's row-numbers are the fully
+        // contiguous run [g0, g0+n) (no prior selection gapped it), clear via a range lookup —
+        // O(deletes-in-batch) rather than a per-row binary search. Otherwise fall back to per-row.
+        let mut keep = vec![true; n];
+        let g0 = rn.value(0);
+        let g_last = rn.value(n - 1);
+        if g_last - g0 == n as i64 - 1 {
+            let gn = g0 + n as i64;
+            let start = deleted.partition_point(|&x| (x as i64) < g0);
+            let mut idx = start;
+            while idx < deleted.len() && (deleted[idx] as i64) < gn {
+                keep[(deleted[idx] as i64 - g0) as usize] = false;
+                idx += 1;
+            }
+        } else {
+            for i in 0..n {
+                if deleted.binary_search(&(rn.value(i) as u64)).is_ok() {
+                    keep[i] = false;
+                }
+            }
+        }
+        Ok(BooleanArray::from(keep))
     }
 }
 
