@@ -168,6 +168,53 @@ impl TableProvider for LiveDocsRowNumberProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let num_file_cols = self.file_schema.fields().len();
 
+        // TEMP latency-attribution toggle (env LIVEDOCS_DELETE_MODE):
+        //   "plain" — plain parquet scan of the requested columns only: no virtual column, no
+        //             row_base, no wrapper exec. Plan drops LiveDocsRowNumberFilterExec entirely →
+        //             baseline (does NOT filter deletes; measurement only).
+        //   "strip" — full scan (virtual row_number + row_base) wrapped by the exec, but with an
+        //             empty deleted set so it materializes + strips the helper columns without
+        //             filtering. Isolates the virtual/row_base cost (vs "plain") from the mask cost
+        //             (full − "strip"). Also does NOT filter deletes; measurement only.
+        //   else    — full delete filtering (default, correct).
+        let mode = std::env::var("LIVEDOCS_DELETE_MODE").unwrap_or_default();
+
+        // Output schema = requested real columns (row_base and row_number are stripped by the exec).
+        let out_indices: Vec<usize> = match projection {
+            Some(p) => p.iter().copied().filter(|&i| i < num_file_cols).collect(),
+            None => (0..num_file_cols).collect(),
+        };
+        let out_fields: Vec<FieldRef> =
+            out_indices.iter().map(|&i| self.file_schema.fields()[i].clone()).collect();
+        let output_schema = Arc::new(Schema::new(out_fields));
+        let num_out_cols = output_schema.fields().len();
+
+        // "plain" mode: return a bare parquet scan (no virtual column, no row_base, no wrapper).
+        if mode == "plain" {
+            log_info!("LiveDocsRowNumber scan: MODE=plain (no filtering, baseline)");
+            let ps = ParquetSource::new(TableSchema::new(self.file_schema.clone(), vec![]));
+            let ps = match filters.iter().cloned().reduce(|a, b| a.and(b)) {
+                Some(pred) => match DFSchema::try_from(self.file_schema.as_ref().clone()) {
+                    Ok(dfs) => match state.create_physical_expr(pred, &dfs) {
+                        Ok(phys) => ps.with_predicate(phys),
+                        Err(_) => ps,
+                    },
+                    Err(_) => ps,
+                },
+                None => ps,
+            };
+            let groups: Vec<FileGroup> = self
+                .files
+                .iter()
+                .map(|f| FileGroup::new(vec![PartitionedFile::from(f.object_meta.clone())]))
+                .collect();
+            let builder = FileScanConfigBuilder::new(self.store_url.clone(), Arc::new(ps))
+                .with_file_groups(groups)
+                .with_projection_indices(Some(out_indices))
+                .map_err(|e| DataFusionError::Internal(format!("{e}")))?;
+            return Ok(DataSourceExec::from_data_source(builder.build()));
+        }
+
         // Assign each file a shard-global row_base (cumulative row count in file order) and stamp it
         // as the file's partition value. Emit one FileGroup per file so DataFusion runs the files in
         // parallel (one partition each); the partition↔file order is irrelevant because the global
@@ -184,22 +231,18 @@ impl TableProvider for LiveDocsRowNumberProvider {
         }
 
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs FFM binding exists).
-        let deleted = Arc::new(build_global_deleted(self.context_id, &self.files, &row_bases));
+        // "strip" mode uses an empty set so the mask never filters (materialize + strip only).
+        let deleted = if mode == "strip" {
+            log_info!("LiveDocsRowNumber scan: MODE=strip (materialize+strip, no filtering)");
+            Arc::new(Vec::new())
+        } else {
+            Arc::new(build_global_deleted(self.context_id, &self.files, &row_bases))
+        };
         log_info!(
             "LiveDocsRowNumber scan: files={} global_deleted={}",
             self.files.len(),
             deleted.len()
         );
-
-        // Output schema = requested real columns (row_base and row_number are stripped by the exec).
-        let out_indices: Vec<usize> = match projection {
-            Some(p) => p.iter().copied().filter(|&i| i < num_file_cols).collect(),
-            None => (0..num_file_cols).collect(),
-        };
-        let out_fields: Vec<FieldRef> =
-            out_indices.iter().map(|&i| self.file_schema.fields()[i].clone()).collect();
-        let output_schema = Arc::new(Schema::new(out_fields));
-        let num_out_cols = output_schema.fields().len();
 
         // table_schema = file schema + row_base partition column (appended last, index num_file_cols).
         let table_schema = TableSchema::new(
