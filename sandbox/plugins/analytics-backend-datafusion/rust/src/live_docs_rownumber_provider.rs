@@ -169,19 +169,19 @@ impl TableProvider for LiveDocsRowNumberProvider {
         let num_file_cols = self.file_schema.fields().len();
 
         // Assign each file a shard-global row_base (cumulative row count in file order) and stamp it
-        // as the file's partition value. All files go in one FileGroup; DataFusion may repartition
-        // freely — the global id keeps the mask correct regardless of the partition layout.
+        // as the file's partition value. Emit one FileGroup per file so DataFusion runs the files in
+        // parallel (one partition each); the partition↔file order is irrelevant because the global
+        // id (row_base + row_number) keeps the mask correct regardless of the partition layout.
         let mut row_bases: Vec<u64> = Vec::with_capacity(self.files.len());
         let mut acc: u64 = 0;
-        let mut partitioned_files: Vec<PartitionedFile> = Vec::with_capacity(self.files.len());
+        let mut file_groups: Vec<FileGroup> = Vec::with_capacity(self.files.len());
         for f in &self.files {
             row_bases.push(acc);
             let mut pf = PartitionedFile::from(f.object_meta.clone());
             pf.partition_values = vec![ScalarValue::Int64(Some(acc as i64))];
-            partitioned_files.push(pf);
+            file_groups.push(FileGroup::new(vec![pf]));
             acc += f.num_rows;
         }
-        let file_groups = vec![FileGroup::new(partitioned_files)];
 
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs FFM binding exists).
         let deleted = Arc::new(build_global_deleted(self.context_id, &self.files, &row_bases));
