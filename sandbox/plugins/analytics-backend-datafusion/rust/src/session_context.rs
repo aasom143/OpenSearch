@@ -267,7 +267,10 @@ pub async unsafe fn create_session_context(
     }
     // When the index has `index.sort.field`, ask DataFusion to use the sort-aware
     // file-group partitioner so `output_ordering` can propagate from the scan.
-    if !shard_view.sort_fields.is_empty() {
+    // Skip on the delete path: statistics-based splitting reorders/repartitions file groups,
+    // breaking the one-partition-per-file mapping that LiveDocsRowNumberProvider's per-partition
+    // deleted set relies on (partition i's rows would no longer come from files[i]).
+    if !shard_view.sort_fields.is_empty() && deleted_doc_filtering_required == false {
         config
             .options_mut()
             .execution
