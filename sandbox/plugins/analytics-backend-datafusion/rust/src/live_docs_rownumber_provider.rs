@@ -203,23 +203,30 @@ impl TableProvider for LiveDocsRowNumberProvider {
     }
 }
 
-/// TEMP diagnostics: accumulates rows seen and rows cleared for one partition's stream; logs the
-/// summary when the stream is dropped (query end) so per-partition filtering can be compared run to run.
+/// TEMP diagnostics: accumulates rows seen, rows cleared, and non-contiguous batches for one
+/// partition's stream; logs the summary when the stream is dropped (query end). Only streams that
+/// actually processed rows are logged — DataFusion builds and drops probe streams that never poll.
 struct PartitionMaskStats {
     partition: usize,
     rows: u64,
     cleared: u64,
+    /// Batches whose row-numbers were NOT the fully-contiguous [g0, g0+n) run (row-group reorder /
+    /// pruning), which forces the per-row binary-search path in mask_batch.
+    noncontig: u64,
     logged_first: bool,
 }
 
 impl Drop for PartitionMaskStats {
     fn drop(&mut self) {
-        log_info!(
-            "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={}",
-            self.partition,
-            self.rows,
-            self.cleared
-        );
+        if self.rows > 0 {
+            log_info!(
+                "LiveDocsRowNumber summary: partition={} rows_seen={} cleared={} noncontig_batches={}",
+                self.partition,
+                self.rows,
+                self.cleared,
+                self.noncontig
+            );
+        }
     }
 }
 
@@ -421,21 +428,31 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
             deleted.first(),
             deleted.last()
         );
-        let mut stats = PartitionMaskStats { partition, rows: 0, cleared: 0, logged_first: false };
+        let mut stats =
+            PartitionMaskStats { partition, rows: 0, cleared: 0, noncontig: 0, logged_first: false };
         let mapped = input_stream.map(move |res| {
             res.and_then(|batch| {
                 let rows_in = batch.num_rows();
-                if stats.logged_first == false && rows_in > 0 && batch.num_columns() > num_out_cols {
-                    if let Some(rn) = batch.column(num_out_cols).as_any().downcast_ref::<Int64Array>() {
-                        log_info!(
-                            "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
-                            stats.partition,
-                            rn.value(0),
-                            rn.value(rows_in - 1),
-                            rows_in
-                        );
+                if rows_in > 0 && batch.num_columns() > num_out_cols {
+                    if let Some(rn) =
+                        batch.column(num_out_cols).as_any().downcast_ref::<Int64Array>()
+                    {
+                        let g0 = rn.value(0);
+                        let g_last = rn.value(rows_in - 1);
+                        if g_last - g0 != rows_in as i64 - 1 {
+                            stats.noncontig += 1;
+                        }
+                        if stats.logged_first == false {
+                            log_info!(
+                                "LiveDocsRowNumber first-batch: partition={} rownum[0]={} rownum[last]={} n={}",
+                                stats.partition,
+                                g0,
+                                g_last,
+                                rows_in
+                            );
+                            stats.logged_first = true;
+                        }
                     }
-                    stats.logged_first = true;
                 }
                 let out = Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema)?;
                 stats.rows += rows_in as u64;
