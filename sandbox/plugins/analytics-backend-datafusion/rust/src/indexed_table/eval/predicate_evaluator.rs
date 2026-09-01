@@ -139,27 +139,64 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         let mask_len = rg.num_rows as usize;
         let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
         let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
+        // With delete filtering, carry the candidate bitmap (page-universe ∩ liveDocs, RG-relative)
+        // into on_batch_mask. Block-granular RowSelection can't skip scattered deletes (no whole
+        // block is all-deleted), so deleted rows are delivered and must be masked post-decode. The
+        // Some(residual) refinement mask is authoritative (the stream ignores the candidate-derived
+        // current_mask when on_batch_mask returns Some), so we AND the liveDocs in there ourselves.
+        let context: Box<dyn std::any::Any + Send + Sync> = if self.deleted_doc_filtering_required {
+            Box::new(candidates.clone())
+        } else {
+            Box::new(())
+        };
         Ok(Some(PrefetchedRg {
             candidates,
             eval_nanos: t.elapsed().as_nanos() as u64,
-            context: Box::new(()),
+            context,
             mask_buffer: Some(mask_buffer),
         }))
     }
 
     fn on_batch_mask(
         &self,
-        _rg_state: &dyn std::any::Any,
+        rg_state: &dyn std::any::Any,
         _rg_first_row: i64,
-        _position_map: &PositionMap,
-        _batch_offset: usize,
+        position_map: &PositionMap,
+        batch_offset: usize,
         batch_len: usize,
         batch: &RecordBatch,
     ) -> Result<Option<BooleanArray>, String> {
-        let Some(ref residual) = self.residual_expr else {
-            return Ok(None);
+        // Residual predicate (e.g. RegionID = 229), if any.
+        let residual_mask = match self.residual_expr {
+            Some(ref residual) => Some(evaluate_residual(residual, batch, batch_len)?),
+            None => None,
         };
-        Ok(Some(evaluate_residual(residual, batch, batch_len)?))
+        // Deleted-doc mask: candidate carried from prefetch_rg is the RG-relative universe already
+        // ANDed with liveDocs. Map this batch's delivered rows to their RG positions and keep only
+        // the alive (candidate) ones — this is what actually excludes deleted rows from the output.
+        let live_mask: Option<BooleanArray> = if self.deleted_doc_filtering_required {
+            rg_state.downcast_ref::<RoaringBitmap>().map(|cand| {
+                (0..batch_len)
+                    .map(|i| {
+                        position_map
+                            .rg_position(batch_offset + i)
+                            .map(|pos| cand.contains(pos as u32))
+                            .unwrap_or(false)
+                    })
+                    .collect::<BooleanArray>()
+            })
+        } else {
+            None
+        };
+        match (residual_mask, live_mask) {
+            (Some(r), Some(l)) => Ok(Some(
+                datafusion::arrow::compute::kernels::boolean::and_kleene(&r, &l)
+                    .map_err(|e| format!("delete AND residual: {e}"))?,
+            )),
+            (Some(r), None) => Ok(Some(r)),
+            (None, Some(l)) => Ok(Some(l)),
+            (None, None) => Ok(None),
+        }
     }
 }
 
