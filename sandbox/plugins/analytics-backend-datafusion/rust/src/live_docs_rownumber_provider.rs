@@ -38,7 +38,7 @@ use datafusion::datasource::TableType;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
@@ -263,13 +263,22 @@ impl TableProvider for LiveDocsRowNumberProvider {
         // automatically, so without this the scan reads every row. The virtual row-number stays
         // correct under pruning (row-group-metadata based); mask_batch's binary-search path handles
         // the resulting gapped (non-contiguous) batches.
-        if let Some(pred) = filters.iter().cloned().reduce(|a, b| a.and(b)) {
+        let combined_filter = filters.iter().cloned().reduce(|a, b| a.and(b));
+        if let Some(pred) = combined_filter.clone() {
             if let Ok(df_schema) = DFSchema::try_from(self.file_schema.as_ref().clone()) {
                 if let Ok(phys) = state.create_physical_expr(pred, &df_schema) {
                     parquet_source = parquet_source.with_predicate(phys);
                 }
             }
         }
+        // Build the same predicate against the OUTPUT (projected real) schema so the mask can fuse
+        // it — its Column indices must match the projected batch, not the file schema. None (e.g.
+        // the filter column isn't projected) falls back to alive-only masking (still correct).
+        let mask_predicate: Option<Arc<dyn PhysicalExpr>> = combined_filter.and_then(|pred| {
+            DFSchema::try_from(output_schema.as_ref().clone())
+                .ok()
+                .and_then(|dfs| state.create_physical_expr(pred, &dfs).ok())
+        });
 
         // Projection into the table schema: requested real columns (in requested order) followed by
         // the row_base partition column. The decoded batch is therefore
@@ -288,6 +297,7 @@ impl TableProvider for LiveDocsRowNumberProvider {
             output_schema,
             num_out_cols,
             deleted,
+            mask_predicate,
         )))
     }
 
@@ -309,6 +319,12 @@ pub struct LiveDocsRowNumberFilterExec {
     num_out_cols: usize,
     /// Shard-global deleted ids (`row_base + local`), strictly ascending; shared across partitions.
     deleted: Arc<Vec<u64>>,
+    /// The query predicate (e.g. `RegionID = 229`) over the output (real) columns, if it could be
+    /// lowered. Fused into the mask so the single filter pass emits only the surviving-AND-alive
+    /// rows (~18M) instead of all-alive rows (~117M) that the outer FilterExec would then discard.
+    /// `None` (e.g. filter column not projected) falls back to alive-only masking (still correct;
+    /// the outer FilterExec applies the predicate).
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     properties: Arc<PlanProperties>,
 }
 
@@ -318,6 +334,7 @@ impl LiveDocsRowNumberFilterExec {
         output_schema: SchemaRef,
         num_out_cols: usize,
         deleted: Arc<Vec<u64>>,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
     ) -> Self {
         let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(output_schema.clone()),
@@ -330,6 +347,7 @@ impl LiveDocsRowNumberFilterExec {
             output_schema,
             num_out_cols,
             deleted,
+            predicate,
             properties,
         }
     }
@@ -360,59 +378,82 @@ impl LiveDocsRowNumberFilterExec {
         deleted: &[u64],
         num_out_cols: usize,
         output_schema: &SchemaRef,
+        predicate: Option<&Arc<dyn PhysicalExpr>>,
     ) -> Result<RecordBatch> {
         let n = batch.num_rows();
-        // No deletes, empty batch, or helper columns absent → project real columns through.
-        if deleted.is_empty() || n == 0 || batch.num_columns() < num_out_cols + 2 {
+        if n == 0 {
             return Self::project_only(batch, num_out_cols, output_schema, n);
         }
 
-        let row_base_arr = batch
-            .column(num_out_cols)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| DataFusionError::Internal("row_base column is not Int64".into()))?;
-        let rownum = batch
-            .column(num_out_cols + 1)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| {
-                DataFusionError::Internal("virtual row_number column is not Int64".into())
-            })?;
-
-        // row_base is a per-file constant literal, so it is identical for every row of a batch.
-        let row_base = row_base_arr.value(0);
-
         let mut keep = vec![true; n];
-        let mut cleared = 0usize;
-        let rn0 = rownum.value(0);
-        let rn_last = rownum.value(n - 1);
-        let g0 = row_base + rn0;
-        if rn_last - rn0 == n as i64 - 1 {
-            // Contiguous: global ids span [g0, g0 + n); clear the deleted ids in that range.
-            let gn = g0 + n as i64;
-            let start = deleted.partition_point(|&x| (x as i64) < g0);
-            let mut idx = start;
-            while idx < deleted.len() && (deleted[idx] as i64) < gn {
-                keep[(deleted[idx] as i64 - g0) as usize] = false;
-                cleared += 1;
-                idx += 1;
-            }
-        } else {
-            for i in 0..n {
-                let global = (row_base + rownum.value(i)) as u64;
-                if deleted.binary_search(&global).is_ok() {
-                    keep[i] = false;
-                    cleared += 1;
+        let mut removed = 0usize;
+
+        // 1) Deletes: clear rows whose global id (row_base + row_number) is deleted. Skipped when
+        // there are no deletes or the helper columns are absent (all-alive segment).
+        if deleted.is_empty() == false && batch.num_columns() >= num_out_cols + 2 {
+            let row_base_arr = batch
+                .column(num_out_cols)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| DataFusionError::Internal("row_base column is not Int64".into()))?;
+            let rownum = batch
+                .column(num_out_cols + 1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Internal("virtual row_number column is not Int64".into())
+                })?;
+            // row_base is a per-file constant literal, identical for every row of a batch.
+            let row_base = row_base_arr.value(0);
+            let rn0 = rownum.value(0);
+            let rn_last = rownum.value(n - 1);
+            let g0 = row_base + rn0;
+            if rn_last - rn0 == n as i64 - 1 {
+                // Contiguous: global ids span [g0, g0 + n); clear the deleted ids in that range.
+                let gn = g0 + n as i64;
+                let start = deleted.partition_point(|&x| (x as i64) < g0);
+                let mut idx = start;
+                while idx < deleted.len() && (deleted[idx] as i64) < gn {
+                    keep[(deleted[idx] as i64 - g0) as usize] = false;
+                    removed += 1;
+                    idx += 1;
+                }
+            } else {
+                for i in 0..n {
+                    let global = (row_base + rownum.value(i)) as u64;
+                    if deleted.binary_search(&global).is_ok() {
+                        keep[i] = false;
+                        removed += 1;
+                    }
                 }
             }
         }
 
-        if cleared == 0 {
+        // 2) Query predicate (e.g. RegionID = 229) fused in: drop non-matching rows here so the
+        // single filter pass below emits only the survivors (~18M), not all ~117M alive rows that
+        // the outer FilterExec would otherwise copy then discard. Null (3VL) is treated as excluded.
+        if let Some(expr) = predicate {
+            let arr = expr
+                .evaluate(batch)
+                .and_then(|cv| cv.into_array(n))
+                .map_err(|e| DataFusionError::Internal(format!("fused predicate eval: {e}")))?;
+            let pmask = arr
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| DataFusionError::Internal("fused predicate is not boolean".into()))?;
+            for i in 0..n {
+                if keep[i] && (pmask.is_valid(i) == false || pmask.value(i) == false) {
+                    keep[i] = false;
+                    removed += 1;
+                }
+            }
+        }
+
+        if removed == 0 {
             return Self::project_only(batch, num_out_cols, output_schema, n);
         }
 
-        let kept = n - cleared;
+        let kept = n - removed;
         let mask = BooleanArray::from(keep);
         let predicate = FilterBuilder::new(&mask).optimize().build();
         // Filter only the output columns — never the helper columns (read solely to build the mask).
@@ -466,6 +507,7 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
             self.output_schema.clone(),
             self.num_out_cols,
             Arc::clone(&self.deleted),
+            self.predicate.clone(),
         )))
     }
 
@@ -486,6 +528,7 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
         let deleted = Arc::clone(&self.deleted);
         let num_out_cols = self.num_out_cols;
         let output_schema = self.output_schema.clone();
+        let predicate = self.predicate.clone();
         // TEMP diagnostics: per-stream rows/cleared, emitted from a terminal zero-row batch at
         // stream end (Drop-based logging is unreliable — polled streams outlive the query window).
         let rows = Arc::new(AtomicU64::new(0));
@@ -494,7 +537,8 @@ impl ExecutionPlan for LiveDocsRowNumberFilterExec {
         let mapped = input_stream.map(move |res| {
             res.and_then(|batch| {
                 let rows_in = batch.num_rows();
-                let out = Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema)?;
+                let out =
+                    Self::mask_batch(&batch, &deleted, num_out_cols, &output_schema, predicate.as_ref())?;
                 rows_c.fetch_add(rows_in as u64, Ordering::Relaxed);
                 cleared_c.fetch_add((rows_in - out.num_rows()) as u64, Ordering::Relaxed);
                 Ok(out)
