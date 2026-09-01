@@ -237,6 +237,9 @@ impl TableProvider for LiveDocsRowNumberProvider {
 
         // Build the deleted-docs bitmap now (scan time — the getLiveDocs FFM binding exists).
         // "strip" mode uses an empty set so the mask never filters (materialize + strip only).
+        // This "prepare live" step (per-segment getLiveDocs FFM + invert alive→dead + fold into the
+        // global sorted Vec) is serial on the query hot path — time it to attribute setup cost.
+        let build_start = std::time::Instant::now();
         let deleted = if mode == "strip" {
             log_info!("LiveDocsRowNumber scan: MODE=strip (materialize+strip, no filtering)");
             Arc::new(Vec::new())
@@ -244,9 +247,10 @@ impl TableProvider for LiveDocsRowNumberProvider {
             Arc::new(build_global_deleted(self.context_id, &self.files, &row_bases))
         };
         log_info!(
-            "LiveDocsRowNumber scan: files={} global_deleted={}",
+            "LiveDocsRowNumber scan: files={} global_deleted={} build_live_ms={:.1}",
             self.files.len(),
-            deleted.len()
+            deleted.len(),
+            build_start.elapsed().as_secs_f64() * 1000.0
         );
 
         // table_schema = file schema + row_base partition column (appended last, index num_file_cols).
