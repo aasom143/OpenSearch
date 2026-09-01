@@ -28,8 +28,18 @@ use super::eval_helpers::{
 use super::{PrefetchedRg, RowGroupBitsetSource};
 use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
-use crate::indexed_table::row_selection::{bitmap_to_packed_bits, PositionMap};
+use crate::indexed_table::row_selection::{bitmap_to_packed_bits, build_mask, PositionMap};
 use crate::indexed_table::stream::RowGroupInfo;
+
+/// Per-RG state carried from `prefetch_rg` to `on_batch_mask` for delete filtering. Holds the
+/// candidate bitmap (page-universe ∩ liveDocs) and a lazily-built full-RG delivered liveDocs mask.
+/// `build_mask` needs the stream's `position_map` (only known at decode time), so the mask is built
+/// once on the RG's first batch (memcpy-speed for identity) and sliced per batch thereafter — the
+/// same efficient path the stream uses for `current_mask`, instead of a per-row `contains()`.
+struct DeleteRgState {
+    candidates: RoaringBitmap,
+    live_mask: std::sync::OnceLock<BooleanArray>,
+}
 
 /// Evaluator for predicate-only queries (no Collector).
 ///
@@ -145,7 +155,10 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         // Some(residual) refinement mask is authoritative (the stream ignores the candidate-derived
         // current_mask when on_batch_mask returns Some), so we AND the liveDocs in there ourselves.
         let context: Box<dyn std::any::Any + Send + Sync> = if self.deleted_doc_filtering_required {
-            Box::new(candidates.clone())
+            Box::new(DeleteRgState {
+                candidates: candidates.clone(),
+                live_mask: std::sync::OnceLock::new(),
+            })
         } else {
             Box::new(())
         };
@@ -171,24 +184,21 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             Some(ref residual) => Some(evaluate_residual(residual, batch, batch_len)?),
             None => None,
         };
-        // Deleted-doc mask: candidate carried from prefetch_rg is the RG-relative universe already
-        // ANDed with liveDocs. Map this batch's delivered rows to their RG positions and keep only
-        // the alive (candidate) ones — this is what actually excludes deleted rows from the output.
-        let live_mask: Option<BooleanArray> = if self.deleted_doc_filtering_required {
-            rg_state.downcast_ref::<RoaringBitmap>().map(|cand| {
-                (0..batch_len)
-                    .map(|i| {
-                        position_map
-                            .rg_position(batch_offset + i)
-                            .map(|pos| cand.contains(pos as u32))
-                            .unwrap_or(false)
-                    })
-                    .collect::<BooleanArray>()
-            })
+        // Deleted-doc mask: the candidate (page-universe ∩ liveDocs) → full-RG delivered mask, built
+        // ONCE per RG via build_mask (memcpy-speed for identity) and cached, then sliced to this
+        // batch (zero-copy). This is the stream's own current_mask path — not a per-row contains().
+        let live_slice: Option<BooleanArray> = if self.deleted_doc_filtering_required {
+            match rg_state.downcast_ref::<DeleteRgState>() {
+                Some(st) => {
+                    let full = st.live_mask.get_or_init(|| build_mask(&st.candidates, position_map));
+                    Some(full.slice(batch_offset, batch_len))
+                }
+                None => None,
+            }
         } else {
             None
         };
-        match (residual_mask, live_mask) {
+        match (residual_mask, live_slice) {
             (Some(r), Some(l)) => Ok(Some(
                 datafusion::arrow::compute::kernels::boolean::and_kleene(&r, &l)
                     .map_err(|e| format!("delete AND residual: {e}"))?,
