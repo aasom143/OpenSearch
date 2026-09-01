@@ -260,15 +260,11 @@ public class FragmentConversionDriver {
                 factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds, logicalTableName)
                     .ifPresent(instructions::add);
             } else {
-                // EXPERIMENT (pure-DF cost analysis): route zero-delegation queries through the
-                // indexed executor instead of the plain ListingTable scan, but WITHOUT a collector.
-                // NO_DELEGATION (→ FilterClass::None in Rust) with a delegated-predicate count of 0
-                // selects the PredicateOnlyEvaluator: page-pruning + residual only, no FFM upcalls,
-                // no SingleCollector machinery. This isolates the indexed-path overhead vs
-                // ListingTable for a query that has no real index collector.
-                // Revert this branch to `createShardScanNode` to restore production routing.
-                factory.createShardScanWithDelegationNode(FilterTreeShape.NO_DELEGATION, 0, requestsRowIds, logicalTableName)
-                    .ifPresent(instructions::add);
+                // Zero-delegation queries take the plain ListingTable scan by default. Routing a
+                // pure-DF query through the indexed executor (PredicateOnlyEvaluator) is controlled
+                // at the backend by the dynamic `datafusion.indexed.route_pure_parquet_through_indexed`
+                // setting, so no coordinator-side reroute is needed here.
+                factory.createShardScanNode(requestsRowIds, logicalTableName).ifPresent(instructions::add);
             }
             if (containsPartialAggregate(resolvedFragment)) {
                 factory.createPartialAggregateNode().ifPresent(instructions::add);
