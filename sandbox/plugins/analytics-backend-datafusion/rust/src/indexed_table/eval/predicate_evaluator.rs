@@ -37,8 +37,12 @@ use crate::indexed_table::stream::RowGroupInfo;
 /// once on the RG's first batch (memcpy-speed for identity) and sliced per batch thereafter — the
 /// same efficient path the stream uses for `current_mask`, instead of a per-row `contains()`.
 struct DeleteRgState {
+    /// Candidate bitmap (RG-relative) — used only for the rare non-identity position_map fallback.
     candidates: RoaringBitmap,
-    live_mask: std::sync::OnceLock<BooleanArray>,
+    /// Full-RG liveDocs mask as a packed BooleanArray, pre-built in prefetch_rg from the packed bits
+    /// already computed there (no recompute). For the common identity position_map, on_batch_mask
+    /// just slices this per batch (zero-copy).
+    live_arr: BooleanArray,
 }
 
 /// Evaluator for predicate-only queries (no Collector).
@@ -148,19 +152,28 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
 
         let mask_len = rg.num_rows as usize;
         let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
+        // Pre-build the packed liveDocs BooleanArray from the same bits (only when delete filtering
+        // is on) so on_batch_mask can slice it per batch without recomputing build_mask.
+        let live_arr = if self.deleted_doc_filtering_required {
+            Some(crate::indexed_table::row_selection::packed_bits_to_boolean_array(
+                packed_bits.clone(),
+                mask_len,
+            ))
+        } else {
+            None
+        };
         let mask_buffer = datafusion::arrow::buffer::Buffer::from_vec(packed_bits);
         // With delete filtering, carry the candidate bitmap (page-universe ∩ liveDocs, RG-relative)
         // into on_batch_mask. Block-granular RowSelection can't skip scattered deletes (no whole
         // block is all-deleted), so deleted rows are delivered and must be masked post-decode. The
         // Some(residual) refinement mask is authoritative (the stream ignores the candidate-derived
         // current_mask when on_batch_mask returns Some), so we AND the liveDocs in there ourselves.
-        let context: Box<dyn std::any::Any + Send + Sync> = if self.deleted_doc_filtering_required {
-            Box::new(DeleteRgState {
+        let context: Box<dyn std::any::Any + Send + Sync> = match live_arr {
+            Some(live_arr) => Box::new(DeleteRgState {
                 candidates: candidates.clone(),
-                live_mask: std::sync::OnceLock::new(),
-            })
-        } else {
-            Box::new(())
+                live_arr,
+            }),
+            None => Box::new(()),
         };
         Ok(Some(PrefetchedRg {
             candidates,
@@ -189,10 +202,12 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         // batch (zero-copy). This is the stream's own current_mask path — not a per-row contains().
         let live_slice: Option<BooleanArray> = if self.deleted_doc_filtering_required {
             match rg_state.downcast_ref::<DeleteRgState>() {
-                Some(st) => {
-                    let full = st.live_mask.get_or_init(|| build_mask(&st.candidates, position_map));
-                    Some(full.slice(batch_offset, batch_len))
-                }
+                Some(st) => match position_map {
+                    // Identity (delivered idx == RG position): slice the pre-built RG mask (zero-copy).
+                    PositionMap::Identity { .. } => Some(st.live_arr.slice(batch_offset, batch_len)),
+                    // Non-identity (block-granular RowSelection): map via position_map, then slice.
+                    _ => Some(build_mask(&st.candidates, position_map).slice(batch_offset, batch_len)),
+                },
                 None => None,
             }
         } else {
