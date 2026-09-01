@@ -98,6 +98,9 @@ async fn run_constant_residual(residual: Arc<dyn PhysicalExpr>) -> usize {
                     Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
                     None,
                     HashMap::new(),
+                    false,
+                    0,
+                    0,
                 ));
                 Ok(eval)
             },

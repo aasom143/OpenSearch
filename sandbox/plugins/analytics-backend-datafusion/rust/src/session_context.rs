@@ -54,6 +54,10 @@ pub struct SessionContextHandle {
     pub sort_orders: Vec<String>,
     pub query_context: QueryTrackingContext,
     pub table_name: String,
+    /// When true, the shard has deleted docs and evaluators must AND the segment's liveDocs into
+    /// candidates per RG. Set on every session (vanilla + indexed) so the pure-DF indexed path
+    /// (which uses the vanilla session) also sees it. Sourced from the Java coordinator flag.
+    pub deleted_doc_filtering_required: bool,
     /// When set, indicates this session uses the indexed execution path with filter delegation.
     pub indexed_config: Option<IndexedExecutionConfig>,
     /// Per-query tuning knobs (batch size, partitions, filter strategies, etc.)
@@ -80,6 +84,9 @@ pub struct IndexedExecutionConfig {
     pub delegated_predicate_count: i32,
     /// QTF query phase: scan must emit shard-global `__row_id__`.
     pub requests_row_ids: bool,
+    /// When true, the shard has deleted docs and evaluators must AND the segment's liveDocs into
+    /// candidates per RG. Sourced from the Java coordinator's `requiresDeletedDocFiltering` flag.
+    pub deleted_doc_filtering_required: bool,
 }
 
 /// Widens `inferred` to the plan's `base_schema` (for index-pattern / alias scans) so the
@@ -176,6 +183,7 @@ pub async unsafe fn create_session_context(
     shard_view_ptr: i64,
     table_name: &str,
     context_id: i64,
+    deleted_doc_filtering_required: bool,
     has_partial_aggregate: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
@@ -420,6 +428,7 @@ pub async unsafe fn create_session_context(
         sort_orders: shard_view.sort_orders.clone(),
         query_context,
         table_name: table_name.to_string(),
+        deleted_doc_filtering_required,
         indexed_config: None,
         query_config,
         io_handle: tokio::runtime::Handle::current(),
@@ -507,6 +516,7 @@ pub async unsafe fn create_worker_session_context(
         sort_fields: Vec::new(),
         sort_orders: Vec::new(),
         table_name: String::new(),
+        deleted_doc_filtering_required: false,
         indexed_config: None,
         query_config,
         aggregate_mode: crate::agg_mode::Mode::Default,
@@ -541,6 +551,7 @@ pub async unsafe fn create_session_context_indexed(
     tree_shape: i32,
     delegated_predicate_count: i32,
     requests_row_ids: bool,
+    deleted_doc_filtering_required: bool,
     has_partial_aggregate: bool,
     query_config: DatafusionQueryConfig,
     plan_bytes: &[u8],
@@ -550,6 +561,7 @@ pub async unsafe fn create_session_context_indexed(
         shard_view_ptr,
         table_name,
         context_id,
+        deleted_doc_filtering_required,
         has_partial_aggregate,
         query_config,
         plan_bytes,
@@ -564,6 +576,7 @@ pub async unsafe fn create_session_context_indexed(
         tree_shape,
         delegated_predicate_count,
         requests_row_ids,
+        deleted_doc_filtering_required,
     });
 
     Ok(ptr)
@@ -904,6 +917,7 @@ mod tests {
             sort_orders: vec![],
             query_context,
             table_name: "t".to_string(),
+            deleted_doc_filtering_required: false,
             indexed_config: None,
             query_config: crate::datafusion_query_config::DatafusionQueryConfig::test_default(),
             io_handle: tokio::runtime::Handle::current(),

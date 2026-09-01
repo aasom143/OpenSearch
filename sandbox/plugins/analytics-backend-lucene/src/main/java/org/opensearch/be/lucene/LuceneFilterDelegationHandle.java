@@ -294,6 +294,131 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     }
 
     @Override
+    public int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, MemorySegment out) {
+        String segName = generationToSegmentName.get(writerGeneration);
+        if (segName == null) {
+            LOGGER.debug("[scf] getLiveDocs writerGeneration={} → segment not found", writerGeneration);
+            return -1;
+        }
+        LeafReaderContext leaf = null;
+        for (LeafReaderContext lrc : leaves) {
+            if (unwrapSegmentReader(lrc.reader()).getSegmentInfo().info.name.equals(segName)) {
+                leaf = lrc;
+                break;
+            }
+        }
+        if (leaf == null) {
+            LOGGER.debug("[scf] getLiveDocs writerGeneration={} segment={} → leaf not found", writerGeneration, segName);
+            return -1;
+        }
+        org.apache.lucene.util.Bits liveDocs = leaf.reader().getLiveDocs();
+        if (liveDocs == null) {
+            return -2;
+        }
+        int leafMaxDoc = leaf.reader().maxDoc();
+        int effectiveMaxDoc = Math.min(maxDoc, leafMaxDoc);
+        int effectiveMinDoc = Math.min(minDoc, leafMaxDoc);
+        int span = effectiveMaxDoc - effectiveMinDoc;
+        if (span <= 0) {
+            return -2;
+        }
+        int wordCount = (span + 63) >>> 6;
+        fillLiveDocsWords(liveDocs, effectiveMinDoc, span, wordCount, out);
+        return wordCount;
+    }
+
+    /**
+     * Pack the LIVE-docs slice {@code [minDoc, minDoc+span)} into {@code out} as {@code wordCount}
+     * LSB-first longs (set bit == live). Dense segments recover the backing {@link FixedBitSet}
+     * (O(words)); sparse segments fill all-alive then clear the O(deletions) deleted bits; anything
+     * else falls back to a per-bit loop. Caller guarantees {@code liveDocs != null} and {@code span > 0}.
+     */
+    private static void fillLiveDocsWords(org.apache.lucene.util.Bits liveDocs, int minDoc, int span, int wordCount, MemorySegment out) {
+        int maxDoc = minDoc + span;
+        if (liveDocs instanceof org.apache.lucene.util.LiveDocs ld) {
+            FixedBitSet liveBits = org.apache.lucene.util.BitSetIterator.getFixedBitSetOrNull(ld.liveDocsIterator());
+            if (liveBits != null) {
+                copyLiveWords(liveBits, out, minDoc, span, wordCount);
+                return;
+            }
+            for (int w = 0; w < wordCount; w++) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, w, -1L);
+            }
+            int trailingBits = span & 63;
+            if (trailingBits != 0) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, (1L << trailingBits) - 1);
+            }
+            try {
+                DocIdSetIterator deleted = ld.deletedDocsIterator();
+                int doc = deleted.advance(minDoc);
+                while (doc != DocIdSetIterator.NO_MORE_DOCS && doc < maxDoc) {
+                    int rel = doc - minDoc;
+                    int w = rel >>> 6;
+                    long cur = out.getAtIndex(ValueLayout.JAVA_LONG, w);
+                    out.setAtIndex(ValueLayout.JAVA_LONG, w, cur & ~(1L << (rel & 63)));
+                    doc = deleted.nextDoc();
+                }
+                return;
+            } catch (IOException e) {
+                LOGGER.warn("[scf] fillLiveDocsWords deletedDocsIterator failed; falling back to per-bit", e);
+            }
+        }
+
+        if (liveDocs instanceof FixedBitSet fbs) {
+            copyLiveWords(fbs, out, minDoc, span, wordCount);
+            return;
+        }
+
+        long word = 0;
+        int wordIdx = 0;
+        for (int i = 0; i < span; i++) {
+            if (liveDocs.get(minDoc + i)) {
+                word |= (1L << (i & 63));
+            }
+            if ((i & 63) == 63) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+                word = 0;
+                wordIdx++;
+            }
+        }
+        if ((span & 63) != 0) {
+            out.setAtIndex(ValueLayout.JAVA_LONG, wordIdx, word);
+        }
+    }
+
+    /**
+     * Copy the LIVE-docs slice {@code [effectiveMinDoc, effectiveMinDoc + span)} of a
+     * {@link FixedBitSet} into {@code out} as {@code wordCount} packed longs (set bit == live).
+     */
+    private static void copyLiveWords(FixedBitSet fbs, MemorySegment out, int effectiveMinDoc, int span, int wordCount) {
+        long[] srcWords = fbs.getBits();
+        int startWord = effectiveMinDoc >>> 6;
+        int bitOffset = effectiveMinDoc & 63;
+
+        if (bitOffset == 0) {
+            int availWords = Math.max(0, srcWords.length - startWord);
+            int copyWords = Math.min(wordCount, availWords);
+            if (copyWords > 0) {
+                MemorySegment.copy(srcWords, startWord, out, ValueLayout.JAVA_LONG, 0L, copyWords);
+            }
+            for (int w = copyWords; w < wordCount; w++) {
+                out.setAtIndex(ValueLayout.JAVA_LONG, w, 0L);
+            }
+        } else {
+            for (int i = 0; i < wordCount; i++) {
+                long lo = (startWord + i < srcWords.length) ? srcWords[startWord + i] >>> bitOffset : 0L;
+                long hi = (startWord + i + 1 < srcWords.length) ? srcWords[startWord + i + 1] << (64 - bitOffset) : 0L;
+                out.setAtIndex(ValueLayout.JAVA_LONG, i, lo | hi);
+            }
+        }
+        int trailing = span & 63;
+        if (trailing != 0) {
+            long lastWord = out.getAtIndex(ValueLayout.JAVA_LONG, wordCount - 1);
+            out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, lastWord & ((1L << trailing) - 1));
+        }
+    }
+
+    @Override
     public void close() {
         weightsByProviderKey.clear();
         scorersByCollectorKey.clear();

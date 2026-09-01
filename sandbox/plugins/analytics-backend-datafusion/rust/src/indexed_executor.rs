@@ -138,6 +138,7 @@ pub async fn execute_indexed_query(
             crate::query_tracker::QueryType::Shard,
         ),
         table_name: table_name.clone(),
+        deleted_doc_filtering_required: false,
         indexed_config: None, // derive classification from tree
         query_config: Arc::unwrap_or_clone(query_config),
         io_handle: tokio::runtime::Handle::current(),
@@ -892,6 +893,10 @@ async unsafe fn execute_indexed_with_context_inner(
         .indexed_config
         .as_ref()
         .is_some_and(|c| c.requests_row_ids);
+    // Deleted-doc filtering flag (Java coordinator): when set, evaluators AND the segment's liveDocs
+    // into candidates per RG. Stored on the handle by both the vanilla and indexed session-creation
+    // paths (pure-DF uses the vanilla session), so read it there rather than from indexed_config.
+    let deleted_doc_filtering_required = handle.deleted_doc_filtering_required;
     let classification_override = handle.indexed_config.map(|config| {
         // FilterTreeShape: 1 = CONJUNCTIVE → SingleCollector, 2 = INTERLEAVED → Tree.
         match (config.tree_shape, config.delegated_predicate_count) {
@@ -1128,6 +1133,9 @@ async unsafe fn execute_indexed_with_context_inner(
                             Some(PagePruneMetrics::from_stream_metrics(stream_metrics)),
                             stats_prune_tree.cloned(),
                             rg_index_to_pos,
+                            deleted_doc_filtering_required,
+                            context_id,
+                            segment.writer_generation,
                         ));
                         Ok(eval)
                     },

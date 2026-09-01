@@ -26,6 +26,7 @@ use super::eval_helpers::{
     compute_page_ranges, evaluate_residual, universe_bitmap_from_page_ranges,
 };
 use super::{PrefetchedRg, RowGroupBitsetSource};
+use crate::indexed_table::ffm_callbacks::get_live_docs;
 use crate::indexed_table::page_pruner::{PagePruneMetrics, PagePruner, StatsPruneTree};
 use crate::indexed_table::row_selection::{bitmap_to_packed_bits, PositionMap};
 use crate::indexed_table::stream::RowGroupInfo;
@@ -33,6 +34,9 @@ use crate::indexed_table::stream::RowGroupInfo;
 /// Evaluator for predicate-only queries (no Collector).
 ///
 /// Candidates = page-pruned universe. Residual predicate applied in `on_batch_mask`.
+/// When `deleted_doc_filtering_required` is set, the segment's liveDocs bitset is ANDed into the
+/// candidate bitmap per row group (same mechanism as `SingleCollectorEvaluator`) so deleted rows
+/// are excluded before refinement — this is how the pure-DF indexed path filters deletes.
 pub struct PredicateOnlyEvaluator {
     page_pruner: Arc<PagePruner>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
@@ -41,9 +45,16 @@ pub struct PredicateOnlyEvaluator {
     stats_prune_tree: Option<Arc<StatsPruneTree>>,
     /// Reverse map: absolute RG index → position in `rg_can_match` vectors.
     rg_index_to_pos: HashMap<usize, usize>,
+    /// When true, AND the segment's liveDocs into candidates (drop deleted rows).
+    deleted_doc_filtering_required: bool,
+    /// Per-query id, routes the getLiveDocs FFM upcall to the right Java handle.
+    context_id: i64,
+    /// Stable per-segment id; identifies which segment's liveDocs to fetch.
+    writer_generation: i64,
 }
 
 impl PredicateOnlyEvaluator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         page_pruner: Arc<PagePruner>,
         pruning_predicate: Option<Arc<PruningPredicate>>,
@@ -51,6 +62,9 @@ impl PredicateOnlyEvaluator {
         page_prune_metrics: Option<PagePruneMetrics>,
         stats_prune_tree: Option<Arc<StatsPruneTree>>,
         rg_index_to_pos: HashMap<usize, usize>,
+        deleted_doc_filtering_required: bool,
+        context_id: i64,
+        writer_generation: i64,
     ) -> Self {
         Self {
             page_pruner,
@@ -59,6 +73,9 @@ impl PredicateOnlyEvaluator {
             page_prune_metrics,
             stats_prune_tree,
             rg_index_to_pos,
+            deleted_doc_filtering_required,
+            context_id,
+            writer_generation,
         }
     }
 }
@@ -68,7 +85,7 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
         &self,
         rg: &RowGroupInfo,
         min_doc: i32,
-        _max_doc: i32,
+        max_doc: i32,
     ) -> Result<Option<PrefetchedRg>, String> {
         let t = Instant::now();
 
@@ -93,11 +110,31 @@ impl RowGroupBitsetSource for PredicateOnlyEvaluator {
             self.page_prune_metrics.as_ref(),
         );
 
-        let candidates = match universe_bitmap_from_page_ranges(&page_ranges, rg) {
+        let mut candidates = match universe_bitmap_from_page_ranges(&page_ranges, rg) {
             Some(bm) if bm.is_empty() => return Ok(None),
             Some(bm) => bm,
             None => return Ok(None),
         };
+
+        // LiveDocs filtering: AND with the segment's live-docs bitset to exclude deleted rows.
+        // Same mechanism as SingleCollectorEvaluator — the liveDocs words are LSB-first packed bits
+        // in the RG-relative `[min_doc, max_doc)` range, converted to a RoaringBitmap at the
+        // RG-relative offset and intersected with the candidate universe.
+        if self.deleted_doc_filtering_required {
+            if let Ok(Some(live_bits)) =
+                get_live_docs(self.context_id, self.writer_generation, min_doc, max_doc)
+            {
+                let offset = (min_doc as i64 - rg.first_row) as u32;
+                let bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(live_bits.as_ptr() as *const u8, live_bits.len() * 8)
+                };
+                let live_bm = RoaringBitmap::from_lsb0_bytes(offset, bytes);
+                candidates &= live_bm;
+            }
+            if candidates.is_empty() {
+                return Ok(None);
+            }
+        }
 
         let mask_len = rg.num_rows as usize;
         let packed_bits = bitmap_to_packed_bits(&candidates, mask_len as u32);
@@ -172,6 +209,9 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
+            false,
+            0,
+            0,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -195,6 +235,9 @@ mod tests {
             None,
             Some(Arc::new(spt)),
             HashMap::from([(0, 0)]),
+            false,
+            0,
+            0,
         );
         let rg = RowGroupInfo {
             index: 0,
@@ -211,7 +254,7 @@ mod tests {
     #[test]
     fn stats_prune_tree_none_does_not_prune() {
         let pruner = minimal_page_pruner();
-        let eval = PredicateOnlyEvaluator::new(pruner, None, None, None, None, HashMap::new());
+        let eval = PredicateOnlyEvaluator::new(pruner, None, None, None, None, HashMap::new(), false, 0, 0);
         let rg = RowGroupInfo {
             index: 0,
             first_row: 0,

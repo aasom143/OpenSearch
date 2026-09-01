@@ -78,6 +78,8 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     FilterTreeShape.NO_DELEGATION.ordinal(),
                     0,
                     true,
+                    // TODO(deleted-docs): derive from coordinator flag / reader hasDeletions().
+                    true,
                     context.hasPartialAggregate(),
                     segment.address(),
                     context.getFragmentBytes()
@@ -89,6 +91,9 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     runtimePtr,
                     tableName,
                     contextId,
+                    // TODO(deleted-docs): derive from coordinator flag / reader hasDeletions().
+                    // Pure-DF path routed to the indexed PredicateOnlyEvaluator relies on this.
+                    true,
                     context.hasPartialAggregate(),
                     segment.address(),
                     context.getFragmentBytes()

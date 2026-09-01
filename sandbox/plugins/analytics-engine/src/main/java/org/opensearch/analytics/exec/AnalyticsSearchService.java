@@ -836,6 +836,10 @@ public class AnalyticsSearchService implements AutoCloseable {
 
             backendContext = applyInstructionHandlers(backend, resolved.plan.getInstructions(), ctx);
 
+            // Lucene backend used as the liveDocs source for the deleted-doc getLiveDocs FFM callback
+            // on the non-Lucene (DataFusion) driving path (registered below when there is no delegation).
+            AnalyticsSearchBackendPlugin luceneBackend = backends.get("lucene");
+
             // Handle exchange — if plan has delegation, ask accepting backend for handle and pass to driving
             // TODO: currently assumes single accepting backend. When multiple accepting backends exist
             // (e.g., Lucene + Tantivy), group expressions by acceptingBackendId and create one handle per group.
@@ -877,6 +881,16 @@ public class AnalyticsSearchService implements AutoCloseable {
                 // queries have isolated FFM callback bindings. The returned cleanup removes the
                 // binding after query execution completes.
                 trackerCleanup = backend.configureFilterDelegation(contextId, handle, tracker, backendContext);
+            } else if (luceneBackend != null && task != null && !"lucene".equals(resolved.plan.getBackendId())) {
+                // No delegation, but a non-Lucene driving backend (e.g. DataFusion) needs a Lucene
+                // handle registered so Rust's getLiveDocs FFM callback can resolve liveDocs for the
+                // pure-DF indexed path (PredicateOnlyEvaluator's per-RG liveDocs AND). This is NOT a
+                // query collector — it only answers getLiveDocs(writerGeneration) with the segment's
+                // liveDocs bitset. Skip when Lucene is the driving backend: it applies liveDocs
+                // natively via its Collector and does not implement configureFilterDelegation.
+                long contextId = task.getId();
+                FilterDelegationHandle handle = luceneBackend.getFilterDelegationHandle(java.util.List.of(), ctx);
+                trackerCleanup = backend.configureFilterDelegation(contextId, handle, null, backendContext);
             }
 
             // Hash-shuffle producer routing: if the instruction chain produced a

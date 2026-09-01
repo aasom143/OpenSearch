@@ -76,6 +76,10 @@ public class ShardScanWithDelegationHandler implements FragmentInstructionHandle
                 treeShape.ordinal(),
                 delegatedPredicateCount,
                 node.requestsRowIds(),
+                // TODO(deleted-docs): derive from the coordinator flag (requiresDeletedDocFiltering)
+                // and/or the shard reader's hasDeletions(). `true` is safe/correct — segments with no
+                // deletions short-circuit (getLiveDocs → -2) at ~zero cost — but probes every RG.
+                true,
                 context.hasPartialAggregate(),
                 segment.address(),
                 context.getFragmentBytes()

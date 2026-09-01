@@ -92,4 +92,16 @@ public interface FilterDelegationHandle extends Closeable {
     default boolean isCancelled() {
         return false;
     }
+
+    /**
+     * Fetch the segment's liveDocs bitset for the doc range {@code [minDoc, maxDoc)}, packed as
+     * LSB-first {@code u64} words into {@code out}. Used by the deleted-doc filtering path (Rust ANDs
+     * this into per-row-group candidates).
+     *
+     * @return number of {@code u64} words written, {@code -2} if all docs are alive (no deletions),
+     *         or {@code -1} on error
+     */
+    default int getLiveDocs(long writerGeneration, int minDoc, int maxDoc, java.lang.foreign.MemorySegment out) {
+        return -2;
+    }
 }
