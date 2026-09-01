@@ -248,6 +248,13 @@ pub async unsafe fn create_session_context(
     let has_topk = has_partial_aggregate && substrait_has_fetch_rel(plan_bytes);
     config.options_mut().execution.parquet.pushdown_filters =
         query_config.listing_table_pushdown_filters;
+    // Deleted-doc RowFilter path: force parquet row-level filter pushdown so the query predicate
+    // (e.g. RegionID=229) becomes a row-reducing RowFilter *before* our deleted-doc predicate in the
+    // reader's filter chain. arrow-rs then decodes row_number and runs the alive check only for the
+    // query's survivors (~18M), not all ~118M rows — the late-materialization the wrapper mask can't do.
+    if deleted_doc_filtering_required {
+        config.options_mut().execution.parquet.pushdown_filters = true;
+    }
     // Disable DataFusion's adaptive skip-partial-aggregation when TopK is active.
     // If DF abandons partial agg midstream, the partial state sent to the coordinator is
     // incomplete — TopK sees wrong group counts and produces incorrect results.
