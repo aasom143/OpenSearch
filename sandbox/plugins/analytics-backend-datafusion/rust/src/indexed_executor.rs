@@ -881,15 +881,18 @@ mod tests {
         // `count(*)` on a shard with deletions: candidates must be exactly the live docs.
         let out = inject_live_docs_collector(None).unwrap();
         assert!(is_live_docs_leaf(&out.tree));
-        assert_eq!(single_collector_id(&out.tree), Some(LIVE_DOCS_MATCH_ALL_ANNOTATION_ID));
+        assert_eq!(
+            single_collector_id(&out.tree),
+            Some(LIVE_DOCS_MATCH_ALL_ANNOTATION_ID)
+        );
     }
 
     #[test]
     fn inject_pure_predicate_tree_prepends_collector_and_stays_single_collector() {
         // Pure-DF predicate AND tree: match-all becomes the correctness collector,
         // predicates stay as the residual. Classification must remain SingleCollector.
-        let out = inject_live_docs_collector(extraction_of(BoolNode::And(vec![pred(), pred()])))
-            .unwrap();
+        let out =
+            inject_live_docs_collector(extraction_of(BoolNode::And(vec![pred(), pred()]))).unwrap();
         match out.tree.as_ref() {
             BoolNode::And(children) => {
                 assert_eq!(children.len(), 3);
@@ -899,7 +902,10 @@ mod tests {
             other => panic!("expected And, got {:?}", other),
         }
         assert_eq!(classify_filter(&out.tree), FilterClass::SingleCollector);
-        assert_eq!(single_collector_id(&out.tree), Some(LIVE_DOCS_MATCH_ALL_ANNOTATION_ID));
+        assert_eq!(
+            single_collector_id(&out.tree),
+            Some(LIVE_DOCS_MATCH_ALL_ANNOTATION_ID)
+        );
         // Residual (what DF evaluates) keeps both predicates.
         let residual = extract_single_collector_residual(&out.tree).unwrap();
         match residual {
@@ -912,8 +918,8 @@ mod tests {
     fn inject_or_predicate_tree_wraps_in_and() {
         // Pure-DF OR tree (no collectors): AND(live_docs, OR(P, P)) — still SingleCollector
         // (the OR subtree has no collectors, so it rides as the residual).
-        let out = inject_live_docs_collector(extraction_of(BoolNode::Or(vec![pred(), pred()])))
-            .unwrap();
+        let out =
+            inject_live_docs_collector(extraction_of(BoolNode::Or(vec![pred(), pred()]))).unwrap();
         match out.tree.as_ref() {
             BoolNode::And(children) => {
                 assert_eq!(children.len(), 2);
@@ -930,15 +936,16 @@ mod tests {
         // AND(Collector, P) — the existing correctness collector's bitmap is already
         // live-docs-filtered on the Java side; injecting a second collector would demote
         // SingleCollector → Tree. Tree must be unchanged.
-        let out = inject_live_docs_collector(extraction_of(BoolNode::And(vec![
-            collector(7),
-            pred(),
-        ])))
-        .unwrap();
+        let out =
+            inject_live_docs_collector(extraction_of(BoolNode::And(vec![collector(7), pred()])))
+                .unwrap();
         match out.tree.as_ref() {
             BoolNode::And(children) => {
                 assert_eq!(children.len(), 2);
-                assert!(matches!(children[0], BoolNode::Collector { annotation_id: 7 }));
+                assert!(matches!(
+                    children[0],
+                    BoolNode::Collector { annotation_id: 7 }
+                ));
             }
             other => panic!("expected unchanged And, got {:?}", other),
         }
@@ -978,10 +985,8 @@ mod tests {
     fn inject_tree_class_not_over_collector_gets_top_level_and() {
         // NOT(C) readmits deleted docs at the leaf level — the root AND with the live set
         // is what masks them.
-        let out = inject_live_docs_collector(extraction_of(BoolNode::Not(Box::new(
-            collector(4),
-        ))))
-        .unwrap();
+        let out = inject_live_docs_collector(extraction_of(BoolNode::Not(Box::new(collector(4)))))
+            .unwrap();
         match out.tree.as_ref() {
             BoolNode::And(children) => {
                 assert_eq!(children.len(), 2);
