@@ -421,10 +421,12 @@ pub const LIVE_DOCS_MATCH_ALL_ANNOTATION_ID: i32 = -2;
 ///   AND'ed at the root. This is required for correctness — leaf-level liveDocs filtering is
 ///   NOT sufficient under NOT (a `NOT(leaf)` readmits deleted docs), but a top-level AND with
 ///   the live set masks them regardless of the inner shape.
-/// - SingleCollector trees that already carry a correctness Collector: left untouched. Their
-///   collector bitmap is already live-docs-filtered (Java `collectDocs` applies the segment's
-///   liveDocs while iterating the scorer), candidates are the intersection with that bitmap,
-///   and injecting a second Collector would demote the query from SingleCollector to Tree.
+/// - Trees already covered by a correctness Collector: left untouched. Coverage is decided by
+///   [`BoolNode::is_covered_by_live_docs`] (mirrors the coordinator's
+///   `FilterTreeShapeDeriver.isCoveredByLiveDocs`), so this now also skips shapes the old
+///   `SingleCollector`-only check missed — e.g. `OR(Collector, Collector)`, whose union of two
+///   live-filtered bitmaps already excludes deleted docs. Injecting a second Collector there
+///   would be redundant work (and could demote a SingleCollector tree to Tree).
 fn inject_live_docs_collector(extraction: Option<ExtractionResult>) -> Option<ExtractionResult> {
     let live_docs_leaf = BoolNode::Collector {
         annotation_id: LIVE_DOCS_MATCH_ALL_ANNOTATION_ID,
@@ -434,11 +436,9 @@ fn inject_live_docs_collector(extraction: Option<ExtractionResult>) -> Option<Ex
             tree: Arc::new(live_docs_leaf),
         }),
         Some(e) => {
-            if classify_filter(&e.tree) == FilterClass::SingleCollector
-                && e.tree.collector_leaf_count() >= 1
-            {
-                // Existing correctness Collector in SingleCollector shape — its bitmap is
-                // already live-filtered on the Java side; keep the shape.
+            if e.tree.is_covered_by_live_docs() {
+                // Already covered by an existing correctness Collector whose bitmap is
+                // live-filtered on the Java side; injecting another would be redundant.
                 return Some(e);
             }
             let tree = Arc::try_unwrap(e.tree).unwrap_or_else(|arc| (*arc).clone());
@@ -962,14 +962,32 @@ mod tests {
     }
 
     #[test]
-    fn inject_tree_class_or_of_collectors_gets_top_level_and() {
-        // OR(C₁, C₂) classifies Tree — leaf-level liveDocs is insufficient under OR/NOT
-        // composition, so the live-docs collector must be AND'ed at the root.
+    fn inject_skips_or_of_collectors() {
+        // OR(C₁, C₂) is covered: the union of two live-filtered collector bitmaps still
+        // excludes deleted docs, so no live-docs collector is injected. Tree unchanged.
         let out = inject_live_docs_collector(extraction_of(BoolNode::Or(vec![
             collector(1),
             collector(2),
         ])))
         .unwrap();
+        match out.tree.as_ref() {
+            BoolNode::Or(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(children
+                    .iter()
+                    .all(|c| matches!(c, BoolNode::Collector { .. })));
+            }
+            other => panic!("expected unchanged Or, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inject_or_with_uncovered_branch_wraps_in_and() {
+        // OR(C, P): the predicate branch re-admits deleted docs into the union, so the tree
+        // is NOT covered and the live-docs collector must be AND'ed at the root.
+        let out =
+            inject_live_docs_collector(extraction_of(BoolNode::Or(vec![collector(1), pred()])))
+                .unwrap();
         match out.tree.as_ref() {
             BoolNode::And(children) => {
                 assert_eq!(children.len(), 2);
@@ -978,7 +996,28 @@ mod tests {
             }
             other => panic!("expected And, got {:?}", other),
         }
-        assert_eq!(classify_filter(&out.tree), FilterClass::Tree);
+    }
+
+    #[test]
+    fn inject_skips_and_with_covered_collector_and_not() {
+        // AND(C, NOT(C₂)): the AND is covered by C — intersecting with C's live-only bitmap
+        // masks the deleted docs that NOT(C₂) would otherwise re-admit. Tree unchanged.
+        let out = inject_live_docs_collector(extraction_of(BoolNode::And(vec![
+            collector(1),
+            BoolNode::Not(Box::new(collector(2))),
+        ])))
+        .unwrap();
+        match out.tree.as_ref() {
+            BoolNode::And(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(
+                    children[0],
+                    BoolNode::Collector { annotation_id: 1 }
+                ));
+                assert!(matches!(children[1], BoolNode::Not(_)));
+            }
+            other => panic!("expected unchanged And, got {:?}", other),
+        }
     }
 
     #[test]
