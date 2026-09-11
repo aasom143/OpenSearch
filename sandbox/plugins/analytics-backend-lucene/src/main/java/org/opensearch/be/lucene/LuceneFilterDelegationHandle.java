@@ -253,37 +253,23 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             return 0;
         }
         int span = maxDoc - minDoc;
+        int wordCount = (span + 63) >>> 6;
+        if (handle.emitLiveDocs) {
+            // Reserved match-all provider (deleted-doc filtering): the candidate set is exactly the
+            // segment's live docs over the RG range — no scorer iteration.
+            // nextDoc = maxDoc (match-all never exhausts) so callers never skip later RGs.
+            if (handle.liveDocs == null) {
+                // Segment has no deletions — every doc is live (all-ones, trailing word masked).
+                fillAllAliveWords(out, span, wordCount);
+            } else {
+                // Word-wise copy of the liveDocs slice (set bit == live).
+                fillLiveDocsWords(handle.liveDocs, minDoc, span, wordCount, out);
+            }
+            return ((long) maxDoc << 32) | (wordCount & 0xFFFFFFFFL);
+        }
         FixedBitSet bits = new FixedBitSet(span);
         int nextDoc = Integer.MAX_VALUE;
-
-        if (handle.emitLiveDocs) {
-            // Reserved match-all provider (deleted-doc filtering): the bitset is exactly the
-            // segment's live docs over the requested range — no scorer iteration. nextDoc is
-            // reported as maxDoc (match-all never exhausts), so callers never skip later RGs.
-            int scanFrom = Math.max(minDoc, handle.partitionMinDoc);
-            int scanTo = Math.min(maxDoc, handle.partitionMaxDoc);
-            int wordCount = (span + 63) >>> 6;
-            if (scanFrom < scanTo && handle.liveDocs != null && scanFrom == minDoc && scanTo == maxDoc) {
-                // Common case (RG chunk fully inside the partition): word-wise copy of the
-                // liveDocs slice straight into out (set bit == live). Returns early, bypassing the
-                // shared bits→out copy below; encoding matches it (nextDoc=maxDoc, same wordCount).
-                fillLiveDocsWords(handle.liveDocs, minDoc, span, wordCount, out);
-                return ((long) maxDoc << 32) | (wordCount & 0xFFFFFFFFL);
-            }
-            if (scanFrom < scanTo) {
-                if (handle.liveDocs == null) {
-                    // Segment has no deletions — every doc in range is live.
-                    bits.set(scanFrom - minDoc, scanTo - minDoc);
-                } else {
-                    for (int doc = scanFrom; doc < scanTo; doc++) {
-                        if (handle.liveDocs.get(doc)) {
-                            bits.set(doc - minDoc);
-                        }
-                    }
-                }
-            }
-            nextDoc = maxDoc;
-        } else if (handle.scorer != null) {
+        if (handle.scorer != null) {
             int scanFrom = Math.max(minDoc, handle.partitionMinDoc);
             int scanTo = Math.min(maxDoc, handle.partitionMaxDoc);
 
@@ -321,7 +307,6 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         }
 
         long[] words = bits.getBits();
-        int wordCount = (span + 63) >>> 6;
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug(
@@ -349,6 +334,21 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     }
 
     /**
+     * Write {@code span} all-alive bits (all-ones, trailing partial word masked to {@code span & 63})
+     * into {@code out} as {@code wordCount} LSB-first longs. Used when a segment has no deletions —
+     * every doc in range is live — so no liveDocs lookup is needed.
+     */
+    private static void fillAllAliveWords(MemorySegment out, int span, int wordCount) {
+        for (int w = 0; w < wordCount; w++) {
+            out.setAtIndex(ValueLayout.JAVA_LONG, w, -1L);
+        }
+        int trailing = span & 63;
+        if (trailing != 0) {
+            out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, (1L << trailing) - 1);
+        }
+    }
+
+    /**
      * Pack the LIVE-docs slice {@code [minDoc, minDoc+span)} into {@code out} as {@code wordCount}
      * LSB-first longs (set bit == live). Used by the reserved match-all collector (deleted-doc
      * filtering path) in {@link #collectDocs}. Dense segments recover the backing {@link FixedBitSet}
@@ -363,13 +363,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                 copyLiveWords(liveBits, out, minDoc, span, wordCount);
                 return;
             }
-            for (int w = 0; w < wordCount; w++) {
-                out.setAtIndex(ValueLayout.JAVA_LONG, w, -1L);
-            }
-            int trailingBits = span & 63;
-            if (trailingBits != 0) {
-                out.setAtIndex(ValueLayout.JAVA_LONG, wordCount - 1, (1L << trailingBits) - 1);
-            }
+            fillAllAliveWords(out, span, wordCount);
             try {
                 DocIdSetIterator deleted = ld.deletedDocsIterator();
                 int doc = deleted.advance(minDoc);
