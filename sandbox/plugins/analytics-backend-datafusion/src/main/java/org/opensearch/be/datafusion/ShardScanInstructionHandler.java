@@ -80,7 +80,9 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                 // so delegatedPredicateCount=0. When the shard has deletions, route through
                 // SingleCollector (CONJUNCTIVE) so the injected match-all Collector excludes deleted
                 // docs from candidates before the row-ids are emitted. Otherwise NO_DELEGATION →
-                // PredicateOnlyEvaluator (no liveDocs work).
+                // PredicateOnlyEvaluator (no liveDocs work). Row-ids stay correct: they index into
+                // the Collector's live-only candidate bitmap, so deleted docs get no row-id.
+                // hasPartialAggregate is orthogonal (aggregate-mode stripping) and forwarded as-is.
                 int rowIdTreeShape = deletedDocFilteringRequired
                     ? FilterTreeShape.CONJUNCTIVE.ordinal()
                     : FilterTreeShape.NO_DELEGATION.ordinal();

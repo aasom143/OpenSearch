@@ -265,7 +265,8 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             int wordCount = (span + 63) >>> 6;
             if (scanFrom < scanTo && handle.liveDocs != null && scanFrom == minDoc && scanTo == maxDoc) {
                 // Common case (RG chunk fully inside the partition): word-wise copy of the
-                // liveDocs slice straight into the out buffer (set bit == live).
+                // liveDocs slice straight into out (set bit == live). Returns early, bypassing the
+                // shared bits→out copy below; encoding matches it (nextDoc=maxDoc, same wordCount).
                 fillLiveDocsWords(handle.liveDocs, minDoc, span, wordCount, out);
                 return ((long) maxDoc << 32) | (wordCount & 0xFFFFFFFFL);
             }
@@ -410,6 +411,10 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     /**
      * Copy the LIVE-docs slice {@code [effectiveMinDoc, effectiveMinDoc + span)} of a
      * {@link FixedBitSet} into {@code out} as {@code wordCount} packed longs (set bit == live).
+     *
+     * <p>Over-copy is safe without per-word clearing: bits past {@code fbs.length()} are 0
+     * (FixedBitSet invariant), and only the final word can hold bits beyond {@code span} — the
+     * trailing mask below clears it.
      */
     private static void copyLiveWords(FixedBitSet fbs, MemorySegment out, int effectiveMinDoc, int span, int wordCount) {
         long[] srcWords = fbs.getBits();
