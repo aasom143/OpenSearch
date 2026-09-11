@@ -252,6 +252,10 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         if (maxDoc <= minDoc) {
             return 0;
         }
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("[scf] collectDocs START collectorKey={} range=[{},{})", collectorKey, minDoc, maxDoc);
+        }
+        long startNanos = System.nanoTime();
         int span = maxDoc - minDoc;
         int wordCount = (span + 63) >>> 6;
         if (handle.emitLiveDocs) {
@@ -264,6 +268,18 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             } else {
                 // Word-wise copy of the liveDocs slice (set bit == live).
                 fillLiveDocsWords(handle.liveDocs, minDoc, span, wordCount, out);
+            }
+            long elapsedNanos = System.nanoTime() - startNanos;
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug(
+                    "[scf] collectDocs END collectorKey={} range=[{},{}) → emitLiveDocs words={} nextDoc={} took={}us",
+                    collectorKey,
+                    minDoc,
+                    maxDoc,
+                    wordCount,
+                    maxDoc,
+                    elapsedNanos / 1000
+                );
             }
             return ((long) maxDoc << 32) | (wordCount & 0xFFFFFFFFL);
         }
@@ -308,15 +324,17 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
         long[] words = bits.getBits();
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
+        long elapsedNanos = System.nanoTime() - startNanos;
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug(
-                "[scf] collectDocs collectorKey={} range=[{},{}) → cardinality={} words={} nextDoc={}",
+                "[scf] collectDocs END collectorKey={} range=[{},{}) → cardinality={} words={} nextDoc={} took={}us",
                 collectorKey,
                 minDoc,
                 maxDoc,
                 bits.cardinality(),
                 wordCount,
-                nextDoc
+                nextDoc,
+                elapsedNanos / 1000
             );
         }
         return ((long) nextDoc << 32) | (wordCount & 0xFFFFFFFFL);
