@@ -256,6 +256,14 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             if (fillLiveDocsWords(handle.liveDocs, minDoc, span, wordCount, out)) {
                 return ((long) maxDoc << 32) | (wordCount & 0xFFFFFFFFL);
             }
+            // Fast path could not materialize the live docs — fall back to the match-all scorer.
+            LOGGER.info(
+                "[scf] collectDocs live-docs fast path unavailable, falling back to scorer: collectorKey={} range=[{},{}) liveDocs={}",
+                collectorKey,
+                minDoc,
+                maxDoc,
+                handle.liveDocs == null ? "null" : handle.liveDocs.getClass().getName()
+            );
         }
         FixedBitSet bits = new FixedBitSet(span);
         int nextDoc = Integer.MAX_VALUE;
