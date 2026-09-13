@@ -358,6 +358,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     private static boolean fillLiveDocsWords(org.apache.lucene.util.Bits liveDocs, int minDoc, int span, int wordCount, MemorySegment out) {
         if (liveDocs == null) {
             // Segment has no deletions — every doc is live (all-ones, trailing word masked).
+            LOGGER.info("[scf] fillLiveDocsWords strategy=all-alive (no deletions) range=[{},{})", minDoc, minDoc + span);
             fillAllAliveWords(out, span, wordCount);
             return true;
         }
@@ -365,9 +366,11 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         if (liveDocs instanceof org.apache.lucene.util.LiveDocs ld) {
             FixedBitSet liveBits = org.apache.lucene.util.BitSetIterator.getFixedBitSetOrNull(ld.liveDocsIterator());
             if (liveBits != null) {
+                LOGGER.info("[scf] fillLiveDocsWords strategy=dense-word-copy range=[{},{})", minDoc, maxDoc);
                 copyLiveWords(liveBits, out, minDoc, span, wordCount);
                 return true;
             }
+            LOGGER.info("[scf] fillLiveDocsWords strategy=sparse-clear-deletions range=[{},{})", minDoc, maxDoc);
             fillAllAliveWords(out, span, wordCount);
             try {
                 DocIdSetIterator deleted = ld.deletedDocsIterator();
@@ -387,6 +390,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         }
 
         if (liveDocs instanceof FixedBitSet fbs) {
+            LOGGER.info("[scf] fillLiveDocsWords strategy=fixedbitset-word-copy range=[{},{})", minDoc, maxDoc);
             copyLiveWords(fbs, out, minDoc, span, wordCount);
             return true;
         }
