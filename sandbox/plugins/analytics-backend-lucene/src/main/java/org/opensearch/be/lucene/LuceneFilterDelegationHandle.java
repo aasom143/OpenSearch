@@ -300,11 +300,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                     boolean preFiltered = handle.liveIntersection != null;
                     DocIdSetIterator iterator = preFiltered ? handle.liveIntersection : handle.scorer.iterator();
                     int docId = handle.currentDoc;
+                    int loopIters = 0;
                     if (docId != DocIdSetIterator.NO_MORE_DOCS) {
                         if (docId < scanFrom) {
                             docId = iterator.advance(scanFrom);
                         }
                         while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
+                            loopIters++;
                             if (preFiltered || handle.liveDocs == null || handle.liveDocs.get(docId)) {
                                 bits.set(docId - minDoc);
                             }
@@ -313,6 +315,19 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                         handle.currentDoc = docId;
                     }
                     nextDoc = handle.currentDoc;
+                    // Diagnostic: how many docs each strategy walked. For the intersect path loopIters
+                    // is the number of live matches yielded; for the scorer path it is every match
+                    // (incl. deleted, filtered by liveDocs.get). Same loopIters ⇒ the conjunction is
+                    // not skipping, which would explain equal latency vs the plain scorer.
+                    LOGGER.info(
+                        "[scf] collectDocs collectorKey={} range=[{},{}) strategy={} loopIters={} collected={}",
+                        collectorKey,
+                        minDoc,
+                        maxDoc,
+                        preFiltered ? "intersect" : "scorer",
+                        loopIters,
+                        bits.cardinality()
+                    );
                 } catch (IOException exception) {
                     LOGGER.warn("IOException during collectDocs, returning partial bitset", exception);
                     // Iteration is only partial — don't signal exhaustion (MAX_VALUE),
