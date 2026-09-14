@@ -219,30 +219,29 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             Scorer scorer = weight.scorer(leaf);
             // Intersect the scorer with the live docs via a conjunction that leads with the lower-cardinality side.
             DocIdSetIterator liveIntersection = null;
-            if (!emitLiveDocs && scorer != null && liveDocs instanceof LiveDocs ld) {
-                FixedBitSet liveBits = BitSetIterator.getFixedBitSetOrNull(ld.liveDocsIterator());
-                if (liveBits != null) {
-                    liveIntersection = ConjunctionUtils.intersectIterators(
-                        List.of(new BitSetIterator(liveBits, liveBits.cardinality()), scorer.iterator())
-                    );
-                    LOGGER.info(
-                        "[scf] createCollector providerKey={} range=[{},{}) → scorer∩liveDocs intersect iterator "
-                            + "(DenseLiveDocs, live={} of maxDoc={})",
-                        providerKey,
-                        minDoc,
-                        maxDoc,
-                        liveBits.cardinality(),
-                        liveBits.length()
-                    );
-                } else if (liveDocs != null) {
-                    LOGGER.info(
-                        "[scf] createCollector providerKey={} range=[{},{}) → liveDocs.get path (not DenseLiveDocs: {})",
-                        providerKey,
-                        minDoc,
-                        maxDoc,
-                        liveDocs.getClass().getSimpleName()
-                    );
-                }
+            FixedBitSet liveBits = null;
+            if (!emitLiveDocs && liveDocs instanceof LiveDocs ld) {
+                liveBits = BitSetIterator.getFixedBitSetOrNull(ld.liveDocsIterator());
+            }
+            if (!emitLiveDocs && scorer != null && liveBits != null) {
+                liveIntersection = ConjunctionUtils.intersectIterators(
+                    List.of(new BitSetIterator(liveBits, liveBits.cardinality()), scorer.iterator())
+                );
+            }
+            if (!emitLiveDocs && scorer != null) {
+                // Diagnostic: liveDocs state for this predicate collector and which path collectDocs takes.
+                // liveDocs=null ⇒ no deletions on the reader (the scorer never sees deleted docs);
+                // DenseLiveDocs/SparseLiveDocs ⇒ deletions present. live/maxDoc show how many docs survive.
+                LOGGER.info(
+                    "[scf] createCollector providerKey={} range=[{},{}) path={} liveDocsClass={} live={} maxDoc={}",
+                    providerKey,
+                    minDoc,
+                    maxDoc,
+                    liveIntersection != null ? "intersect" : "scorer/liveDocs.get",
+                    liveDocs == null ? "null" : liveDocs.getClass().getSimpleName(),
+                    liveBits != null ? liveBits.cardinality() : -1,
+                    liveBits != null ? liveBits.length() : -1
+                );
             }
             int collectorKey = nextCollectorKey.getAndIncrement();
             scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc, liveDocs, emitLiveDocs, liveIntersection));
