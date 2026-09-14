@@ -11,6 +11,7 @@ package org.opensearch.analytics.spi;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.opensearch.analytics.backend.EngineResultStream;
+import org.opensearch.analytics.backend.ShardScanExecutionContext;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.index.engine.exec.IndexReaderProvider.Reader;
 import org.opensearch.index.shard.IndexShard;
@@ -315,7 +316,7 @@ public interface AnalyticsSearchBackendPlugin {
      * {@link FilterDelegationHandle#LIVE_DOCS_MATCH_ALL_ANNOTATION_ID}). Default {@code false};
      * backends with a native hasDeletions signal (e.g. Lucene) override.
      */
-    default boolean hasDeletedDocs(CommonExecutionContext ctx) {
+    default boolean hasDeletedDocs(ShardScanExecutionContext ctx) {
         return false;
     }
 }

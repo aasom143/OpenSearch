@@ -75,10 +75,17 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     private final BooleanSupplier isCancelledSupplier;
     private final Map<Long, String> generationToSegmentName;
 
-    private final ConcurrentHashMap<Integer, Weight> weightsByProviderKey = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, ProviderEntry> weightsByProviderKey = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, ScorerHandle> scorersByCollectorKey = new ConcurrentHashMap<>();
-    /** Provider keys created from {@link #LIVE_DOCS_MATCH_ALL_ANNOTATION_ID} — collectDocs takes the live-docs fast path. */
-    private final java.util.Set<Integer> liveDocsProviderKeys = ConcurrentHashMap.newKeySet();
+
+    /** Distinguishes the reserved live-docs match-all provider from ordinary delegated predicates. */
+    private enum ProviderKind {
+        PREDICATE,
+        LIVE_DOCS_MATCH_ALL
+    }
+
+    /** A compiled provider: its {@link Weight} plus what kind of provider it is. */
+    private record ProviderEntry(Weight weight, ProviderKind kind) {}
     private final AtomicInteger nextProviderKey = new AtomicInteger(1);
     private final AtomicInteger nextCollectorKey = new AtomicInteger(1);
 
@@ -150,11 +157,10 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         try {
             Weight weight = searcher.createWeight(searcher.rewrite(query), ScoreMode.COMPLETE_NO_SCORES, 1.0f);
             int providerKey = nextProviderKey.getAndIncrement();
-            weightsByProviderKey.put(providerKey, weight);
-            if (annotationId == LIVE_DOCS_MATCH_ALL_ANNOTATION_ID) {
-                // Mark so collectDocs takes the live-docs fast path for this provider's collectors.
-                liveDocsProviderKeys.add(providerKey);
-            }
+            ProviderKind kind = annotationId == LIVE_DOCS_MATCH_ALL_ANNOTATION_ID
+                ? ProviderKind.LIVE_DOCS_MATCH_ALL
+                : ProviderKind.PREDICATE;
+            weightsByProviderKey.put(providerKey, new ProviderEntry(weight, kind));
             LOGGER.debug("[scf] createProvider annotationId={} → providerKey={}", annotationId, providerKey);
             return providerKey;
         } catch (IOException exception) {
@@ -165,10 +171,11 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     @Override
     public int createCollector(int providerKey, long writerGeneration, int minDoc, int maxDoc) {
-        Weight weight = weightsByProviderKey.get(providerKey);
-        if (weight == null) {
+        ProviderEntry provider = weightsByProviderKey.get(providerKey);
+        if (provider == null) {
             return -1;
         }
+        Weight weight = provider.weight();
         String segName = generationToSegmentName.get(writerGeneration);
         if (segName == null) {
             LOGGER.error(
@@ -215,7 +222,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             // drop deleted docs. Scorer is always created — for the match-all provider it's the
             // correctness fallback when the live docs can't be emitted directly (see collectDocs).
             Bits liveDocs = leaf.reader().getLiveDocs();
-            boolean emitLiveDocs = liveDocsProviderKeys.contains(providerKey);
+            boolean emitLiveDocs = provider.kind() == ProviderKind.LIVE_DOCS_MATCH_ALL;
             Scorer scorer = weight.scorer(leaf);
             // Intersect the scorer with the live docs via a conjunction that leads with the lower-cardinality side.
             DocIdSetIterator liveIntersection = null;
@@ -332,7 +339,6 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
     @Override
     public void releaseProvider(int providerKey) {
         weightsByProviderKey.remove(providerKey);
-        liveDocsProviderKeys.remove(providerKey);
     }
 
     /**

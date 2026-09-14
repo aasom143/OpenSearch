@@ -64,20 +64,18 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment segment = arena.allocate(WireConfigSnapshot.BYTE_SIZE);
             snapshot.writeTo(segment);
-            // Per-shard hasDeletions signal (stamped by AnalyticsSearchService). When true and the
-            // query has no delegation, route the pure-DF scan through the indexed SingleCollector
-            // path (CONJUNCTIVE) so the native executor filters deleted docs; when false, the
-            // vanilla ListingTable path runs with zero extra work.
-            boolean deletedDocFilteringRequired = context.hasDeletedDocs();
+            boolean requestsRowIds = node.requestsRowIds();
+            // Per-shard hasDeletions signal (stamped by AnalyticsSearchService). Deletions force the
+            // indexed SingleCollector path (CONJUNCTIVE) so the synthetic live-docs collector filters
+            // deleted docs from candidates; row-ids then index into the live-only bitmap.
+            boolean requiresLiveDocs = context.hasDeletedDocs();
             SessionContextHandle sessionCtxHandle;
-            if (node.requestsRowIds()) {
-                // QTF query phase — narrowed scan emits __row_id__ via the indexed session context.
-                // No delegated predicates here (delegation goes through ShardScanWithDelegationHandler),
-                // so delegatedPredicateCount=0. On a shard with deletions, route through SingleCollector
-                // (CONJUNCTIVE) so row-ids index into the live-only candidate bitmap (deleted docs get
-                // no row-id); otherwise NO_DELEGATION → PredicateOnlyEvaluator. hasPartialAggregate is
-                // orthogonal and forwarded as-is.
-                int rowIdTreeShape = deletedDocFilteringRequired
+            // Indexed execution is required either for QTF row IDs or for liveDocs masking. No
+            // delegated predicates here (delegation goes through ShardScanWithDelegationHandler), so
+            // delegatedPredicateCount=0. Otherwise the vanilla ListingTable path runs with zero extra
+            // work (its plan bytes let Rust widen the schema for multi-index queries).
+            if (requestsRowIds || requiresLiveDocs) {
+                int treeShape = requiresLiveDocs
                     ? FilterTreeShape.CONJUNCTIVE.ordinal()
                     : FilterTreeShape.NO_DELEGATION.ordinal();
                 sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
@@ -85,32 +83,15 @@ public class ShardScanInstructionHandler implements FragmentInstructionHandler<S
                     runtimePtr,
                     tableName,
                     contextId,
-                    rowIdTreeShape,
+                    treeShape,
                     0,
-                    true,
-                    deletedDocFilteringRequired,
-                    context.hasPartialAggregate(),
-                    segment.address(),
-                    context.getFragmentBytes()
-                );
-            } else if (deletedDocFilteringRequired) {
-                // Pure-DF query on a shard with deletions: force the indexed SingleCollector path
-                // (CONJUNCTIVE, 0 delegated, no row-ids) so the native executor filters deleted docs.
-                sessionCtxHandle = NativeBridge.createSessionContextForIndexedExecution(
-                    readerPtr,
-                    runtimePtr,
-                    tableName,
-                    contextId,
-                    FilterTreeShape.CONJUNCTIVE.ordinal(),
-                    0,
-                    false,
-                    true,
+                    requestsRowIds,
+                    requiresLiveDocs,
                     context.hasPartialAggregate(),
                     segment.address(),
                     context.getFragmentBytes()
                 );
             } else {
-                // Plan bytes let Rust widen the schema for multi-index queries (null-fill missing columns).
                 sessionCtxHandle = NativeBridge.createSessionContext(
                     readerPtr,
                     runtimePtr,
