@@ -225,6 +225,23 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                     liveIntersection = ConjunctionUtils.intersectIterators(
                         List.of(new BitSetIterator(liveBits, liveBits.cardinality()), scorer.iterator())
                     );
+                    LOGGER.info(
+                        "[scf] createCollector providerKey={} range=[{},{}) → scorer∩liveDocs intersect iterator "
+                            + "(DenseLiveDocs, live={} of maxDoc={})",
+                        providerKey,
+                        minDoc,
+                        maxDoc,
+                        liveBits.cardinality(),
+                        liveBits.length()
+                    );
+                } else if (liveDocs != null) {
+                    LOGGER.info(
+                        "[scf] createCollector providerKey={} range=[{},{}) → liveDocs.get path (not DenseLiveDocs: {})",
+                        providerKey,
+                        minDoc,
+                        maxDoc,
+                        liveDocs.getClass().getSimpleName()
+                    );
                 }
             }
             int collectorKey = nextCollectorKey.getAndIncrement();
