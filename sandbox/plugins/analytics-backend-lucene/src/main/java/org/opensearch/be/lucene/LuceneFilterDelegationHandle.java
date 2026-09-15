@@ -267,11 +267,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                 try {
                     DocIdSetIterator iterator = handle.scorer.iterator();
                     int docId = handle.currentDoc;
+                    int loopIters = 0;
                     if (docId != DocIdSetIterator.NO_MORE_DOCS) {
                         if (docId < scanFrom) {
                             docId = iterator.advance(scanFrom);
                         }
                         while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
+                            loopIters++;
                             // Deleted-doc filtering: Weight.scorer iterators do NOT consult liveDocs
                             // (Lucene applies them as acceptDocs in BulkScorer, which this path
                             // bypasses), so drop deleted docs here. No-op on segments without
@@ -284,6 +286,19 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                         handle.currentDoc = docId;
                     }
                     nextDoc = handle.currentDoc;
+                    // Diagnostic: loopIters = every match the scorer yielded; collected = live subset;
+                    // deletedSurfaced = matches the scorer surfaced and liveDocs.get dropped. liveDocs
+                    // == null means the reader has no deletions (nothing to drop).
+                    LOGGER.info(
+                        "[scf] collectDocs collectorKey={} range=[{},{}) strategy=scorer loopIters={} collected={} deletedSurfaced={} liveDocs={}",
+                        collectorKey,
+                        minDoc,
+                        maxDoc,
+                        loopIters,
+                        bits.cardinality(),
+                        loopIters - bits.cardinality(),
+                        handle.liveDocs == null ? "null" : handle.liveDocs.getClass().getSimpleName()
+                    );
                 } catch (IOException exception) {
                     LOGGER.warn("IOException during collectDocs, returning partial bitset", exception);
                     // Iteration is only partial — don't signal exhaustion (MAX_VALUE),
