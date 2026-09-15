@@ -243,6 +243,7 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                 try {
                     DocIdSetIterator iterator = handle.scorer.iterator();
                     int docId = handle.currentDoc;
+                    int loopIters = 0;
                     if (docId != DocIdSetIterator.NO_MORE_DOCS) {
                         if (docId < scanFrom) {
                             docId = iterator.advance(scanFrom);
@@ -254,6 +255,15 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                         handle.currentDoc = docId;
                     }
                     nextDoc = handle.currentDoc;
+                    LOGGER.info(
+                        "[scf] collectDocs collectorKey={} range=[{},{}) strategy={} loopIters={} collected={}",
+                        collectorKey,
+                        minDoc,
+                        maxDoc,
+                        "scorer",
+                        loopIters,
+                        bits.cardinality()
+                    );
                 } catch (IOException exception) {
                     LOGGER.warn("IOException during collectDocs, returning partial bitset", exception);
                     // Iteration is only partial — don't signal exhaustion (MAX_VALUE),
